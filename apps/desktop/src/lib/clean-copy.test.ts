@@ -26,16 +26,22 @@ describe("clean-copy", () => {
     expect(md).toContain("data-file-ref");
     const { html, text } = clean(`${md}<button aria-label="复制">复制</button>`);
     expect(html).toContain("<code>src/lib/utils.ts:12</code>");
+    // 界面上只显示文件名；复制的是回复原文里的完整路径与行号
     expect(html).not.toContain("button");
     expect(text).toBe("看 src/lib/utils.ts:12 这里");
   });
 
-  it("列表保留符号与序号，代码块保留换行，表格用制表符", () => {
+  it("不加任何内容：列表不加符号与序号，分隔线不加记号；代码块保留换行、缩进与空行，表格用制表符", () => {
     const md = renderMarkdown(
-      "1. 第一\n2. 第二\n   - 子项\n\n```\nconst a = 1;\n  b();\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |",
+      "1. 第一\n2. 第二\n   - 子项\n\n---\n\n```\nconst a = 1;\n\n\n  b();\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |",
     );
     const { text } = clean(md);
-    expect(text).toBe("1. 第一\n2. 第二\n  - 子项\nconst a = 1;\n  b();\nA\tB\n1\t2");
+    expect(text).toBe("第一\n第二\n子项\nconst a = 1;\n\n\n  b();\nA\tB\n1\t2");
+  });
+
+  it("列表项里的段落（li > p）不被拆开，也不加符号", () => {
+    const { text } = clean("<ul><li><p>项目</p><p>补充</p></li><li>二</li></ul>");
+    expect(text).toBe("项目\n补充\n二");
   });
 
   it("外链只保留 http(s) 地址，外链图标不复制", () => {
@@ -44,7 +50,7 @@ describe("clean-copy", () => {
     expect(text).toBe("文档");
   });
 
-  it("copy 事件：写入干净的 HTML 与纯文本并阻止默认；输入框里的复制保持默认", () => {
+  it("copy 事件：只写入纯文本并阻止默认；输入框里的复制保持默认", () => {
     document.body.innerHTML = `<div class="md">${renderMarkdown("**你好** 世界")}</div><textarea>原文</textarea>`;
     const p = document.querySelector(".md p") as HTMLElement;
     const range = document.createRange();
@@ -53,16 +59,10 @@ describe("clean-copy", () => {
     sel.removeAllRanges();
     sel.addRange(range);
     expect(isNativeCopy(sel)).toBe(false);
-    const data: Record<string, string> = {};
-    let prevented = false;
-    handleCopy({
-      target: p,
-      clipboardData: { setData: (k: string, v: string) => (data[k] = v) },
-      preventDefault: () => (prevented = true),
-    } as unknown as ClipboardEvent);
-    expect(prevented).toBe(true);
+    const data = copy(p);
+    expect(data.prevented).toBe(true);
     expect(data["text/plain"]).toBe("你好 世界");
-    expect(data["text/html"]).toBe("<strong>你好</strong> 世界");
+    expect(data["text/html"]).toBeUndefined();
 
     const ta = document.querySelector("textarea") as HTMLTextAreaElement;
     const r2 = document.createRange();
@@ -71,4 +71,42 @@ describe("clean-copy", () => {
     sel.addRange(r2);
     expect(isNativeCopy(sel)).toBe(true);
   });
+
+  it("从列表项选到下一项开头（三击选中一行）：只复制这一项的文字，不加序号", () => {
+    document.body.innerHTML = `<div class="md">${renderMarkdown("1. 添加 `PRIMUS_ASR_KEY`\n2. 第二步")}</div>`;
+    const items = document.querySelectorAll(".md li");
+    const range = document.createRange();
+    range.setStart((items[0] as Node).firstChild as Node, 0);
+    range.setEnd(items[1] as Node, 0);
+    const sel = document.getSelection() as Selection;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    expect(copy(items[0] as HTMLElement)["text/plain"]).toBe("添加 PRIMUS_ASR_KEY");
+  });
+
+  it("只选中代码块内部的几行：保留换行与缩进", () => {
+    document.body.innerHTML = `<div class="md">${renderMarkdown("```\nif a:\n    b()\n\nc()\n```")}</div>`;
+    const code = document.querySelector(".md pre code") as HTMLElement;
+    const textNode = (() => {
+      const w = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+      return w.nextNode() as Text;
+    })();
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, textNode.data.indexOf("c()"));
+    const sel = document.getSelection() as Selection;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    expect(copy(code)["text/plain"]).toBe("if a:\n    b()\n");
+  });
 });
+
+function copy(target: HTMLElement) {
+  const data: Record<string, string> & { prevented?: boolean } = {};
+  handleCopy({
+    target,
+    clipboardData: { setData: (k: string, v: string) => (data[k] = v) },
+    preventDefault: () => (data.prevented = true),
+  } as unknown as ClipboardEvent);
+  return data;
+}

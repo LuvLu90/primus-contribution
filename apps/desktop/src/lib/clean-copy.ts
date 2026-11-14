@@ -2,11 +2,11 @@
 //
 // WebView2（Chromium）默认把选区连同“计算后的样式”一起复制成 HTML：字体、字号、颜色（深色模式下是浅色字）、
 // 背景、圆角等都以内联 style 带进 Word、邮件、飞书等富文本编辑器；文件引用胶囊只复制出文件名，完整路径丢失；
-// 列表的序号与圆点、图标都不在纯文本里。这里改为：
-// - text/html：只保留语义结构（段落、标题、粗体、斜体、代码、列表、引用、表格、链接），去掉所有 class / style
-//   与图标、按钮，文件引用换成 `<code>完整路径:行号</code>`，粘贴后跟随目标文档自己的格式；
-// - text/plain：可读的纯文本，列表保留“- ”与“1. ”，表格单元格用制表符分隔，文件引用为完整路径。
-// 不添加任何额外内容（来源、水印、链接等）。输入框、代码编辑器、终端里的复制保持系统默认行为。
+// 粘贴到富文本编辑器还会变成列表、代码块。这里改为：
+// 只写 text/plain：选中的文字本身，不带任何格式（粘贴到富文本编辑器时不会变成列表、代码块、表格），
+// 也不添加任何内容（列表的符号与序号、分隔线记号、来源、水印等都不加）。图标、按钮不复制；
+// 文件引用胶囊界面上只显示文件名，复制为回复原文里的完整路径与行号；代码块的换行、缩进与空行原样保留；
+// 表格单元格用制表符分隔。输入框、代码编辑器、终端里的复制保持系统默认行为。
 
 /** 选区在这些元素里时不接管（它们有自己的复制逻辑或本来就是纯文本） */
 const NATIVE_COPY =
@@ -128,13 +128,17 @@ function appendClean(node: Node, parent: Node, doc: Document): void {
   for (const c of Array.from(el.childNodes)) appendClean(c, target, doc);
 }
 
-/** 干净片段的纯文本：块元素分段，列表带符号，表格用制表符 */
+/**
+ * 干净片段的纯文本：只有选中的文字本身，不添加任何内容（不加列表符号与序号、分隔线记号等）。
+ * 块元素各自成行，表格单元格用制表符分隔；代码块（pre）里的换行、缩进与空行原样保留，
+ * 只合并普通段落之间多余的空行。
+ */
 export function fragmentText(root: Node): string {
-  const lines: string[] = [];
+  // 每行记下是否来自代码块：代码块里的空行原样保留
+  const lines: { text: string; pre: boolean }[] = [];
   let line = "";
   const flush = () => {
-    if (line.trim() !== "" || lines.length === 0 || lines.at(-1) !== "")
-      lines.push(line.replace(/\s+$/, ""));
+    lines.push({ text: line.replace(/\s+$/, ""), pre: false });
     line = "";
   };
   const breakBlock = () => {
@@ -142,19 +146,10 @@ export function fragmentText(root: Node): string {
     else line = "";
   };
 
-  const walk = (node: Node, pre: boolean, indent: string) => {
+  const walk = (node: Node) => {
     if (node.nodeType === 3) {
-      const text = node.textContent ?? "";
-      if (pre) {
-        const parts = text.split("\n");
-        parts.forEach((p, i) => {
-          if (i > 0) flush();
-          line += p;
-        });
-      } else {
-        const collapsed = text.replace(/[ \t\r\n]+/g, " ");
-        line += line === "" || /\s$/.test(line) ? collapsed.replace(/^ /, "") : collapsed;
-      }
+      const collapsed = (node.textContent ?? "").replace(/[ \t\r\n]+/g, " ");
+      line += line === "" || /\s$/.test(line) ? collapsed.replace(/^ /, "") : collapsed;
       return;
     }
     if (node.nodeType !== 1 && node.nodeType !== 11) return;
@@ -166,50 +161,38 @@ export function fragmentText(root: Node): string {
         return;
       case "hr":
         breakBlock();
-        lines.push("---");
         return;
-      case "ul":
-      case "ol": {
-        breakBlock();
-        let n = Number((node as Element).getAttribute("start") ?? "1") || 1;
-        for (const li of kids) {
-          if (li.nodeType !== 1 || (li as Element).tagName.toLowerCase() !== "li") {
-            walk(li, pre, indent);
-            continue;
-          }
-          breakBlock();
-          line = `${indent}${tag === "ol" ? `${n++}. ` : "- "}`;
-          for (const c of Array.from(li.childNodes)) walk(c, pre, `${indent}  `);
-          breakBlock();
-        }
-        return;
-      }
       case "tr": {
         breakBlock();
         const cells = kids
           .filter((c) => c.nodeType === 1)
           .map((c) => fragmentText(c).replace(/\n+/g, " ").trim());
-        lines.push(cells.join("\t"));
+        lines.push({ text: cells.join("\t"), pre: false });
         return;
       }
-      case "pre":
+      case "pre": {
         breakBlock();
-        for (const c of kids) walk(c, true, indent);
-        breakBlock();
+        // 原样保留；源码末尾的换行不算一行
+        const raw = (node.textContent ?? "").replace(/\r\n?/g, "\n").replace(/\n$/, "");
+        for (const l of raw.split("\n")) lines.push({ text: l, pre: true });
         return;
+      }
     }
     const block = BLOCK.has(tag);
     if (block) breakBlock();
-    for (const c of kids) walk(c, pre, indent);
+    for (const c of kids) walk(c);
     if (block) breakBlock();
   };
-  walk(root, false, "");
+  walk(root);
   if (line.trim() !== "") flush();
-  // 去掉首尾空行、合并连续空行
-  return lines
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/^\n+|\n+$/g, "");
+  // 普通段落之间不留连续空行，首尾不留空行；代码块里的行原样保留
+  const out: { text: string; pre: boolean }[] = [];
+  for (const l of lines) {
+    if (!l.pre && l.text === "" && (out.length === 0 || out.at(-1)?.text === "")) continue;
+    out.push(l);
+  }
+  while (out.length > 0 && !out.at(-1)?.pre && out.at(-1)?.text === "") out.pop();
+  return out.map((l) => l.text).join("\n");
 }
 
 /** 选区应交给系统默认复制（输入框、编辑器、终端里，或没有选中内容）时返回 true */
@@ -220,17 +203,26 @@ export function isNativeCopy(selection: Selection | null): boolean {
   return !el || !!el.closest(NATIVE_COPY);
 }
 
-/** document 的 copy 事件处理：接管时写入干净的 HTML 与纯文本 */
+/** document 的 copy 事件处理：接管时只写入选中的纯文本（不带格式，也不添加任何内容） */
 export function handleCopy(e: ClipboardEvent): void {
   const doc = (e.target as Node | null)?.ownerDocument ?? document;
   const selection = doc.getSelection();
   if (isNativeCopy(selection) || !e.clipboardData || !selection) return;
   const holder = doc.createElement("div");
-  for (let i = 0; i < selection.rangeCount; i++)
-    holder.appendChild(cleanFragment(selection.getRangeAt(i).cloneContents(), doc));
+  for (let i = 0; i < selection.rangeCount; i++) {
+    const range = selection.getRangeAt(i);
+    const fragment = cleanFragment(range.cloneContents(), doc);
+    // 只选中代码块内部的文字时，克隆出的片段不含外层 pre：补上，保留换行与缩进
+    const anc = range.commonAncestorContainer;
+    const ancEl = anc.nodeType === 1 ? (anc as Element) : anc.parentElement;
+    if (ancEl?.closest("pre")) {
+      const pre = doc.createElement("pre");
+      pre.appendChild(fragment);
+      holder.appendChild(pre);
+    } else holder.appendChild(fragment);
+  }
   const text = fragmentText(holder);
   if (!text) return;
   e.clipboardData.setData("text/plain", text);
-  e.clipboardData.setData("text/html", holder.innerHTML);
   e.preventDefault();
 }

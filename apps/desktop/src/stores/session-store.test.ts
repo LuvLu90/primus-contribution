@@ -539,6 +539,30 @@ describe("会话 store：自动重试", () => {
     expect(s.lastError).toBeUndefined();
   });
 
+  it("重试成功、模型开始输出时立即收起重试提示，不等 auto_retry_end", () => {
+    const s1 = applyChunks(initialSessionState, [
+      chunk([
+        { type: "agent_start" },
+        { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: "x" },
+        {
+          type: "message_start",
+          message: { role: "assistant", content: [], stopReason: "stop" },
+        } as unknown as CoreRecord,
+      ]),
+    ]);
+    // 只是开始了新消息、还没有输出：提示保留（请求可能马上又失败）
+    expect(s1.retry?.attempt).toBe(1);
+    const s2 = applyChunks(s1, [chunk([update({ type: "text_start", contentIndex: 0 })])]);
+    expect(s2.retry).toBeUndefined();
+    // 输出中途又失败：新的 auto_retry_start 让提示重新出现
+    const s3 = applyChunks(s2, [
+      chunk([
+        { type: "auto_retry_start", attempt: 2, maxAttempts: 3, delayMs: 4000, errorMessage: "y" },
+      ]),
+    ]);
+    expect(s3.retry?.attempt).toBe(2);
+  });
+
   it("错过 auto_retry_end 时，一轮结束（agent_settled）也清除重试进度", () => {
     const s = applyChunks(initialSessionState, [
       chunk([

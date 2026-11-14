@@ -20,7 +20,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       </head>
       <body>
         <AppearanceController />
-        {/* 选中复制：只复制语义结构与文字，不带界面样式（lib/clean-copy.ts） */}
+        {/* 选中复制：只复制纯文本，不带格式、不加任何内容（lib/clean-copy.ts） */}
         <CleanCopy />
         {/* 主界面常驻在布局里，切换页面时不卸载（见 KeepAliveShell）；主页本身不再渲染内容 */}
         <KeepAliveShell />
