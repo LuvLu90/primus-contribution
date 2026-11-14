@@ -319,12 +319,15 @@ export interface Platform {
 
   /** 内置语音转文字是否可用（不可用时隐藏麦克风按钮） */
   speechAvailable(): Promise<boolean>;
-  /** 开始听写；事件经回调推送，最后一定有 `end`。再次调用先结束旧的会话 */
-  speechStart(onEvent: (event: SpeechEvent) => void): Promise<void>;
-  /** 麦克风音频：16 kHz、16 位、单声道、小端 PCM（以原始字节发送） */
-  speechAudio(pcm: Uint8Array): Promise<void>;
-  /** 停止录音（已录的音频识别完后推送 `end`） */
-  speechStop(): Promise<void>;
+  /**
+   * 开始听写；事件经回调推送，最后一定有 `end`。再次调用先结束旧的会话。
+   * 返回会话编号：音频与停止请求都要带上，旧会话（如另一个标签）的音频不会进入新会话，也停不掉新会话
+   */
+  speechStart(onEvent: (event: SpeechEvent) => void): Promise<number>;
+  /** 麦克风音频：16 kHz、16 位、单声道、小端 PCM（以原始字节发送）；不是当前会话的丢弃 */
+  speechAudio(session: number, pcm: Uint8Array): Promise<void>;
+  /** 停止录音（已录的音频识别完后推送 `end`）；只停这个编号的会话 */
+  speechStop(session: number): Promise<void>;
 
   terminalOpen(cwd: string, onData: (data: string) => void): Promise<{ terminalId: string }>;
   terminalWrite(terminalId: string, data: string): Promise<void>;

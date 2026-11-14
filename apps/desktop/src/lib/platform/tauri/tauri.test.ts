@@ -174,11 +174,13 @@ describe("Tauri 平台实现", () => {
     expect(name).toBe("speech_start");
     args.onEvent.onmessage({ type: "final", text: "你好" });
     expect(onEvent).toHaveBeenCalledWith({ type: "final", text: "你好" });
-    // 麦克风音频以原始字节作为请求体
     const pcm = new Uint8Array([1, 2, 3, 4]);
-    await p.speechAudio(pcm);
-    expect(invoke).toHaveBeenLastCalledWith("speech_audio", pcm);
-    await p.speechStop();
-    expect(invoke).toHaveBeenLastCalledWith("speech_stop", undefined);
+    // 麦克风音频以原始字节作为请求体，会话编号放在请求头
+    await p.speechAudio(7, pcm);
+    expect(invoke).toHaveBeenLastCalledWith("speech_audio", pcm, {
+      headers: { "x-speech-session": "7" },
+    });
+    await p.speechStop(7);
+    expect(invoke).toHaveBeenLastCalledWith("speech_stop", { session: 7 });
   });
 });

@@ -684,7 +684,7 @@ describe("mock 平台：输入框附件、分支与语音", () => {
     const p = createMockPlatform({ speechStepMs: 5 });
     await expect(p.speechAvailable()).resolves.toBe(true);
     const events: { type: string; text?: string }[] = [];
-    await p.speechStart((e) => events.push(e));
+    const session = await p.speechStart((e) => events.push(e));
     await vi.advanceTimersByTimeAsync(5 * 2 * 20);
     expect(events.some((e) => e.type === "level")).toBe(true);
     const interims = events.filter((e) => e.type === "interim").map((e) => e.text ?? "");
@@ -692,7 +692,10 @@ describe("mock 平台：输入框附件、分支与语音", () => {
     expect(interims[1]).toBe("帮我");
     const final = events.find((e) => e.type === "final");
     expect(final?.text).toBe("帮我看下这张截图里的布局问题，");
-    await p.speechStop();
+    // 旧编号停不掉当前会话
+    await p.speechStop(session - 1);
+    expect(events.at(-1)).not.toEqual({ type: "end" });
+    await p.speechStop(session);
     expect(events.at(-1)).toEqual({ type: "end" });
     const count = events.length;
     await vi.advanceTimersByTimeAsync(100);

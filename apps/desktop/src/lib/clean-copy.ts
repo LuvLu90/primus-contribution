@@ -67,6 +67,10 @@ const BLOCK = new Set([
   ...BLOCK_WRAPPERS,
 ]);
 const SAFE_HREF = /^(https?:|mailto:)/i;
+/** 干净片段里按原样复制的文字（文件引用路径） */
+const RAW_TEXT = "data-raw-text";
+/** 干净片段里来自 Markdown 渲染的代码块（末尾换行是渲染器加的） */
+const RENDERED_PRE = "data-rendered-pre";
 
 /** 把选区克隆出的片段转换成干净的 HTML 片段（新文档中的节点） */
 export function cleanFragment(src: DocumentFragment | Node, doc: Document): DocumentFragment {
@@ -98,6 +102,8 @@ function appendClean(node: Node, parent: Node, doc: Document): void {
   if (fileRef !== null) {
     const code = doc.createElement("code");
     code.textContent = fileRef;
+    // 路径原样复制：连续空格不能像普通段落那样合并
+    code.setAttribute(RAW_TEXT, "");
     parent.appendChild(code);
     return;
   }
@@ -125,6 +131,8 @@ function appendClean(node: Node, parent: Node, doc: Document): void {
         if (v && /^\d+$/.test(v)) copy.setAttribute(a, v);
       }
     }
+    // Markdown 渲染的代码块，源码末尾自带一个换行（不是用户选中的内容）
+    if (tag === "pre") copy.setAttribute(RENDERED_PRE, "");
     parent.appendChild(copy);
     target = copy;
   } else if (BLOCK_WRAPPERS.has(tag)) {
@@ -161,6 +169,10 @@ export function fragmentText(root: Node): string {
     }
     if (node.nodeType !== 1 && node.nodeType !== 11) return;
     const tag = node.nodeType === 1 ? (node as Element).tagName.toLowerCase() : "";
+    if (tag && (node as Element).hasAttribute(RAW_TEXT)) {
+      line += node.textContent ?? "";
+      return;
+    }
     const kids = Array.from(node.childNodes);
     switch (tag) {
       case "br":
@@ -179,8 +191,9 @@ export function fragmentText(root: Node): string {
       }
       case "pre": {
         breakBlock();
-        // 原样保留；源码末尾的换行不算一行
-        const raw = (node.textContent ?? "").replace(/\r\n?/g, "\n").replace(/\n$/, "");
+        // 原样保留，选中的末尾换行也保留；只去掉 Markdown 渲染器在代码块末尾加的那个换行
+        let raw = (node.textContent ?? "").replace(/\r\n?/g, "\n");
+        if ((node as Element).hasAttribute(RENDERED_PRE)) raw = raw.replace(/\n$/, "");
         for (const l of raw.split("\n")) lines.push({ text: l, pre: true });
         return;
       }

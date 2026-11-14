@@ -90,7 +90,7 @@ describe("用户消息的复制按钮", () => {
     expect(screen.getByRole("article", { name: t.you }).className).toContain("group/user");
   });
 
-  it("显示随消息发送的图片；有路径的图片不再重复显示成文件标签", () => {
+  it("显示随消息发送的图片；文件标签全部保留（缩略图对不上是哪个文件）", () => {
     const image = { type: "image" as const, data: "AAAA", mimeType: "image/png" };
     const text = appendFileTags("看图", [{ path: "C:\\work\\a.png" }, { path: "C:\\work\\b.md" }]);
     render(
@@ -107,10 +107,24 @@ describe("用户消息的复制按钮", () => {
     const files = within(screen.getByRole("list", { name: t.attachments.sent })).getAllByRole(
       "listitem",
     );
-    expect(files.map((f) => f.textContent)).toEqual(["b.md"]);
+    expect(files.map((f) => f.textContent)).toEqual(["a.png", "b.md"]);
     // 说明行不进气泡
     expect(screen.getByText("看图")).toBeTruthy();
     expect(screen.queryByText(/Image converted/)).toBeNull();
+  });
+
+  it("读取失败的图片与粘贴的图片同时发送：失败文件的标签不被缩略图顶掉", () => {
+    const image = { type: "image" as const, data: "AAAA", mimeType: "image/png" };
+    render(
+      <UserBubble
+        index={0}
+        text={appendFileTags("看图", [{ path: "C:\\work\\broken.png" }])}
+        images={[image]}
+      />,
+    );
+    expect(screen.getByRole("list", { name: t.attachments.sent }).textContent).toContain(
+      "broken.png",
+    );
   });
 
   it("图片没有发给模型时（不看图、读取失败）保留文件标签", () => {

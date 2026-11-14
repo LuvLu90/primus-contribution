@@ -58,19 +58,20 @@ impl Speech {
         self.0.available()
     }
 
-    /// 开始听写（已有会话时先结束旧的）
-    pub(crate) fn start(&self, sink: SpeechSink) {
-        self.0.start(Arc::new(move |e| sink(e.into())));
+    /// 开始听写（已有会话时先结束旧的），返回会话编号：音频与停止请求都要带上，
+    /// 旧会话（如另一个标签）迟到的音频不会写进新会话，也停不掉新会话
+    pub(crate) fn start(&self, sink: SpeechSink) -> u64 {
+        self.0.start(Arc::new(move |e| sink(e.into())))
     }
 
-    /// 麦克风音频：16 kHz、16 位、单声道、小端 PCM
-    pub(crate) fn audio(&self, pcm: &[u8]) {
-        self.0.push(pcm);
+    /// 麦克风音频：16 kHz、16 位、单声道、小端 PCM；不是当前会话的丢弃
+    pub(crate) fn audio(&self, session: u64, pcm: &[u8]) {
+        self.0.push(session, pcm);
     }
 
-    /// 停止录音：已录的音频识别完后推送 `end`
-    pub(crate) fn stop(&self) {
-        self.0.stop();
+    /// 停止录音：已录的音频识别完后推送 `end`（只停这个编号的会话）
+    pub(crate) fn stop(&self, session: u64) {
+        self.0.stop(session);
     }
 }
 

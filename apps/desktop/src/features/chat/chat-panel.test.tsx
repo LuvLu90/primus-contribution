@@ -21,7 +21,7 @@ import { createMockPlatform } from "@/lib/platform/mock";
 import { WRITE_TAG } from "@/lib/platform/mock/scenario";
 import { strings } from "@/lib/strings";
 import { initialAppState, useAppStore } from "@/stores/app-store";
-import { ChatPanel } from "./chat-panel";
+import { ChatPanel, indexText } from "./chat-panel";
 import { useChatSession } from "./use-chat-session";
 
 /**
@@ -1337,5 +1337,16 @@ describe("对话区（mock 事件流）", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("消息索引文本", () => {
+  it("只有图片的用户消息显示“图片”，不留空", () => {
+    expect(indexText("", true)).toBe(strings.chat.attachments.sentImage);
+    expect(indexText("[Image converted from image/bmp to image/png.]", true)).toBe(
+      strings.chat.attachments.sentImage,
+    );
+    expect(indexText("看图", true)).toBe("看图");
+    expect(indexText("", false)).toBe("");
   });
 });

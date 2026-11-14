@@ -7,7 +7,6 @@ import { FileIcon } from "@/components/icons";
 import { Tooltip } from "@/components/ui/tooltip";
 import { strings } from "@/lib/strings";
 import { fileIconForName } from "../file-ref";
-import { attachmentKind } from "./attachment-kind";
 
 const t = strings.chat.attachments;
 
@@ -45,7 +44,8 @@ export function SentFiles({ files }: { files: FileTag[] }) {
 
 /**
  * 随消息发给模型的图片（Core 存进用户消息的 image 块）。粘贴或拖入的图片没有路径，只有这里能显示；
- * 有路径的图片同时带 `<file>` 标签，由 visibleFileTags 去掉，避免同一张图显示两次
+ * 有路径的图片同时保留 `<file>` 标签：image 块不带路径，无法确认哪张缩略图对应哪个标签
+ * （如读取失败的图片与粘贴的图片同时发送），按数量推断会把失败文件的引用藏掉
  */
 export function SentImages({ images }: { images: readonly ImageContent[] }) {
   if (images.length === 0) return null;
@@ -65,15 +65,4 @@ export function SentImages({ images }: { images: readonly ImageContent[] }) {
       ))}
     </ul>
   );
-}
-
-/**
- * 气泡上方要显示的文件标签：模型收到了图片时，图片路径的标签由缩略图代替；
- * 图片块少于图片标签（读取失败、模型不看图）时保留全部标签
- */
-export function visibleFileTags(files: FileTag[], imageCount: number): FileTag[] {
-  if (imageCount === 0) return files;
-  const isImage = (f: FileTag) => attachmentKind(f.path) === "image";
-  const imageTags = files.filter(isImage).length;
-  return imageCount >= imageTags ? files.filter((f) => !isImage(f)) : files;
 }

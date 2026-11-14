@@ -82,10 +82,11 @@ function textOf(content: unknown): string {
     .join("");
 }
 
-/** 消息索引里的一行：正文；只有附件时列出文件名 */
-function indexText(text: string, hasImages: boolean): string {
+/** 消息索引里的一行：正文；只有附件时列出文件名；只有图片时显示“图片” */
+export function indexText(text: string, hasImages: boolean): string {
   const { message, files } = splitFileTags(text, { imageHints: hasImages });
-  return message || files.map((f) => f.path.split(/[\\/]/).pop() ?? f.path).join("、");
+  const line = message || files.map((f) => f.path.split(/[\\/]/).pop() ?? f.path).join("、");
+  return line || (hasImages ? t.attachments.sentImage : "");
 }
 
 /** 一轮：一条用户消息 + 其后的助手消息与工具结果（会话开头若没有用户消息，user 为空） */

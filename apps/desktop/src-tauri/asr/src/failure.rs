@@ -9,12 +9,17 @@ pub enum Failure {
     Unusable(String),
     /// 网络中断、超时、服务端临时错误：不记账，换下一款继续
     Transient(String),
+    /// 这款模型接不了这段录音（如整段识别超过时长或大小上限），没有发出请求：不记账，也不算网络故障
+    Unsuited(String),
 }
 
 impl Failure {
     pub fn detail(&self) -> &str {
         match self {
-            Failure::Quota(d) | Failure::Unusable(d) | Failure::Transient(d) => d,
+            Failure::Quota(d)
+            | Failure::Unusable(d)
+            | Failure::Transient(d)
+            | Failure::Unsuited(d) => d,
         }
     }
 }

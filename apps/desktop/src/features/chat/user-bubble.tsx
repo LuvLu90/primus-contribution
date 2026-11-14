@@ -6,7 +6,7 @@ import { type ImageContent, splitFileTags } from "@primus/protocol";
 import { memo, useMemo } from "react";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
-import { SentFiles, SentImages, visibleFileTags } from "./attachments/sent-files";
+import { SentFiles, SentImages } from "./attachments/sent-files";
 import { CopyButton, revealOnUserHover } from "./copy-button";
 
 const t = strings.chat;
@@ -22,11 +22,12 @@ export const UserBubble = memo(function UserBubble({
   /** 随消息发给模型的图片（用户消息里的 image 块） */
   images?: readonly ImageContent[];
 }) {
-  // 末尾的 `<file>` 引用显示成文件标签（内联的文件内容不铺在气泡里）；图片显示成缩略图
-  const { message, files } = useMemo(() => {
-    const split = splitFileTags(text, { imageHints: images.length > 0 });
-    return { message: split.message, files: visibleFileTags(split.files, images.length) };
-  }, [text, images.length]);
+  // 末尾的 `<file>` 引用显示成文件标签（内联的文件内容不铺在气泡里）；图片另显示成缩略图。
+  // image 块不带路径，对不上是哪个文件，所以文件标签全部保留
+  const { message, files } = useMemo(
+    () => splitFileTags(text, { imageHints: images.length > 0 }),
+    [text, images.length],
+  );
   return (
     <article
       aria-label={t.you}

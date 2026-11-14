@@ -79,12 +79,12 @@ pub async fn run(
         return Ok(());
     }
     if pcm.len() > BATCH_MAX_SECONDS * 1000 * BYTES_PER_MS {
-        return Err(Failure::Transient("录音超过整段识别的时长上限".into()));
+        return Err(Failure::Unsuited("录音超过整段识别的时长上限".into()));
     }
     let audio = wav(&for_rate(&pcm, model.sample_rate), model.sample_rate);
     // 只有兼容接口（qwen3-asr-flash）限制编码后 10 MB；Multimodal 接口上限 2 GB、5 分钟，时长已在上面检查
     if too_large(model, audio.len()) {
-        return Err(Failure::Transient("录音超过整段识别的大小上限".into()));
+        return Err(Failure::Unsuited("录音超过整段识别的大小上限".into()));
     }
     let (path, body) = request(model, &audio);
     let res = net.post_json(path, &body).await?;

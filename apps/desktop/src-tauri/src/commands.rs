@@ -1030,34 +1030,43 @@ pub(crate) fn speech_available(speech: State<'_, crate::platform::speech::Speech
 }
 
 /// 开始语音转文字：识别事件（interim / final / error / end）经 Channel 推送；已有会话时先结束旧的。
-/// 出错只推 `error`（文案固定为“语音转文字暂不可用”），随后 `end`。
+/// 出错只推 `error`（文案固定为“语音转文字暂不可用”），随后 `end`。返回会话编号，音频与停止请求都要带上。
 #[tauri::command]
 pub(crate) fn speech_start(
     speech: State<'_, crate::platform::speech::Speech>,
     on_event: Channel<crate::platform::speech::SpeechEvent>,
-) {
+) -> u64 {
     speech.start(Arc::new(move |event| {
         let _ = on_event.send(event);
-    }));
+    }))
 }
 
-/// 麦克风音频：请求体为原始字节（16 kHz、16 位、单声道、小端 PCM）。
+/// 麦克风音频请求头里的会话编号
+const SPEECH_SESSION_HEADER: &str = "x-speech-session";
+
+/// 麦克风音频：请求体为原始字节（16 kHz、16 位、单声道、小端 PCM），请求头 `x-speech-session` 为会话编号。
 #[tauri::command]
 pub(crate) fn speech_audio(
     speech: State<'_, crate::platform::speech::Speech>,
     request: tauri::ipc::Request<'_>,
 ) -> Result<(), String> {
+    let session = request
+        .headers()
+        .get(SPEECH_SESSION_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .ok_or_else(|| "缺少语音会话编号".to_string())?;
     match request.body() {
         tauri::ipc::InvokeBody::Raw(pcm) => {
-            speech.audio(pcm);
+            speech.audio(session, pcm);
             Ok(())
         }
         _ => Err("音频必须以原始字节发送".to_string()),
     }
 }
 
-/// 停止录音（已录的音频识别完后推送 `end`）。
+/// 停止录音（已录的音频识别完后推送 `end`）；只停 `session` 这个会话。
 #[tauri::command]
-pub(crate) fn speech_stop(speech: State<'_, crate::platform::speech::Speech>) {
-    speech.stop();
+pub(crate) fn speech_stop(speech: State<'_, crate::platform::speech::Speech>, session: u64) {
+    speech.stop(session);
 }

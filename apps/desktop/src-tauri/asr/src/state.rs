@@ -3,7 +3,7 @@
 //! - 免费额度用完：每月重置的模型停到下个月 1 日 0 点（北京时间）；一次性额度停 30 天
 //!   （额度本该不再恢复，30 天后试一次，防止控制台又发了新额度）。
 //! - 模型用不了（未开通、无权限等）：停 24 小时。
-//! - 临时错误：不记账。
+//! - 临时错误、模型接不了这段录音：不记账。
 //!
 //! 百炼没有用 API Key 查询剩余额度的接口，只能按调用结果记账。
 
@@ -47,7 +47,7 @@ impl State {
                 Quota::OneOff => now + 30 * DAY,
             },
             Failure::Unusable(_) => now + DAY,
-            Failure::Transient(_) => return false,
+            Failure::Transient(_) | Failure::Unsuited(_) => return false,
         };
         self.until.insert(model.id.to_string(), until);
         self.save();

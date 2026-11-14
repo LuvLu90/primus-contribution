@@ -18,7 +18,7 @@ pub mod state;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -112,11 +112,16 @@ struct Shared {
     now: fn() -> u64,
 }
 
+/// 一次听写：会话编号与它的录音
+type Session = (u64, Arc<Feed>);
+
 pub struct Asr {
     shared: Option<Arc<Shared>>,
     runtime: Option<tokio::runtime::Runtime>,
-    /// 当前会话的录音；会话结束（识别完或全部失败）时清掉，录音随之释放
-    feed: Arc<Mutex<Option<Arc<Feed>>>>,
+    /// 当前会话（编号与录音）；会话结束（识别完或全部失败）时清掉，录音随之释放
+    feed: Arc<Mutex<Option<Session>>>,
+    /// 上一个会话的编号（从 1 开始递增）
+    last_session: AtomicU64,
 }
 
 fn unix_now() -> u64 {
@@ -142,6 +147,7 @@ impl Asr {
                 shared: None,
                 runtime: None,
                 feed: Arc::new(Mutex::new(None)),
+                last_session: AtomicU64::new(0),
             },
         }
     }
@@ -169,6 +175,7 @@ impl Asr {
             }),
             runtime,
             feed: Arc::new(Mutex::new(None)),
+            last_session: AtomicU64::new(0),
         }
     }
 
@@ -177,15 +184,17 @@ impl Asr {
         self.shared.is_some()
     }
 
-    /// 开始一次听写（已有会话时先结束它）
-    pub fn start(&self, sink: Sink) {
+    /// 开始一次听写（已有会话时先结束它），返回会话编号：之后的音频与停止都要带上它，
+    /// 旧会话迟到的音频或停止请求不会进入、也停不掉新会话
+    pub fn start(&self, sink: Sink) -> u64 {
+        let id = self.last_session.fetch_add(1, Ordering::SeqCst) + 1;
         let (Some(shared), Some(rt)) = (&self.shared, &self.runtime) else {
             sink(Event::Unavailable);
             sink(Event::End);
-            return;
+            return id;
         };
         let feed = Arc::new(Feed::default());
-        if let Some(old) = self.feed.lock().unwrap().replace(feed.clone()) {
+        if let Some((_, old)) = self.feed.lock().unwrap().replace((id, feed.clone())) {
             old.close();
         }
         let active = self.feed.clone();
@@ -194,22 +203,28 @@ impl Asr {
             run_session(shared, feed.clone(), sink).await;
             // 会话结束：释放录音（只清自己的，不动之后新开始的会话）
             let mut slot = active.lock().unwrap();
-            if slot.as_ref().is_some_and(|f| Arc::ptr_eq(f, &feed)) {
+            if slot.as_ref().is_some_and(|(s, _)| *s == id) {
                 *slot = None;
             }
         });
+        id
     }
 
-    /// 麦克风音频（16 kHz、16 位、单声道、小端 PCM）
-    pub fn push(&self, pcm: &[u8]) {
-        if let Some(feed) = self.feed.lock().unwrap().as_ref() {
+    /// 麦克风音频（16 kHz、16 位、单声道、小端 PCM）；不是当前会话的音频丢弃
+    pub fn push(&self, session: u64, pcm: &[u8]) {
+        if let Some((s, feed)) = self.feed.lock().unwrap().as_ref()
+            && *s == session
+        {
             feed.push(pcm);
         }
     }
 
-    /// 停止录音：已录的音频识别完后推送 End
-    pub fn stop(&self) {
-        if let Some(feed) = self.feed.lock().unwrap().take() {
+    /// 停止录音：已录的音频识别完后推送 End（只停这个编号的会话）
+    pub fn stop(&self, session: u64) {
+        let mut slot = self.feed.lock().unwrap();
+        if slot.as_ref().is_some_and(|(s, _)| *s == session)
+            && let Some((_, feed)) = slot.take()
+        {
             feed.close();
         }
     }
@@ -260,18 +275,21 @@ async fn run_session(shared: Arc<Shared>, feed: Arc<Feed>, sink: Sink) {
             Err(failure) => {
                 sink(Event::Interim(String::new()));
                 shared.state.lock().unwrap().record(model, &failure, now);
-                if matches!(failure, Failure::Transient(_)) {
-                    transient += 1;
-                    if transient >= MAX_TRANSIENT {
-                        if model.protocol.streaming() && !skip_streaming {
-                            skip_streaming = true;
-                            transient = 0;
-                            continue;
+                match failure {
+                    Failure::Transient(_) => {
+                        transient += 1;
+                        if transient >= MAX_TRANSIENT {
+                            if model.protocol.streaming() && !skip_streaming {
+                                skip_streaming = true;
+                                transient = 0;
+                                continue;
+                            }
+                            break;
                         }
-                        break;
                     }
-                } else {
-                    transient = 0;
+                    // 这款模型接不了这段录音（没发请求）：换下一款，不算网络故障
+                    Failure::Unsuited(_) => {}
+                    Failure::Quota(_) | Failure::Unusable(_) => transient = 0,
                 }
             }
         }
@@ -381,9 +399,9 @@ mod tests {
                 end_ms: Some(500),
             }),
         ]]);
-        asr.start(sink);
-        asr.push(&[0; 3200]);
-        asr.stop();
+        let id = asr.start(sink);
+        asr.push(id, &[0; 3200]);
+        asr.stop(id);
         let ev = wait_end(&events);
         assert_eq!(
             ev,
@@ -412,10 +430,10 @@ mod tests {
                 end_ms: Some(50),
             })],
         ]);
-        asr.push(&[0; 10]); // 没有会话时丢弃
-        asr.start(sink);
-        asr.push(&[0; 32 * 300]);
-        asr.stop();
+        asr.push(1, &[0; 10]); // 没有会话时丢弃
+        let id = asr.start(sink);
+        asr.push(id, &[0; 32 * 300]);
+        asr.stop(id);
         let ev = wait_end(&events);
         assert_eq!(
             ev,
@@ -484,9 +502,9 @@ mod tests {
         let events: Events = Arc::new(Mutex::new(Vec::new()));
         let ev = events.clone();
         let sink: Sink = Arc::new(move |e| ev.lock().unwrap().push(e));
-        asr.start(sink);
-        asr.push(&[0; 3200]);
-        asr.stop();
+        let id = asr.start(sink);
+        asr.push(id, &[0; 3200]);
+        asr.stop(id);
         let got = wait_end(&events);
         assert!(got.contains(&Event::Final("好。".into())));
         assert!(!got.contains(&Event::Unavailable));
@@ -508,7 +526,7 @@ mod tests {
             ],
             vec![Step::WaitClosed],
         ]);
-        asr.start(sink);
+        let id = asr.start(sink);
         // 定稿到达后再录的音频：换模型时要重放（先确认定稿已到达，不靠固定等待）
         let arrived = (0..200).any(|_| {
             if events
@@ -523,8 +541,8 @@ mod tests {
             false
         });
         assert!(arrived, "没有收到定稿");
-        asr.push(&[0; 3200]);
-        asr.stop();
+        asr.push(id, &[0; 3200]);
+        asr.stop(id);
         wait_end(&events);
         let c = calls.lock().unwrap();
         assert_eq!(c.len(), 2);
@@ -534,8 +552,8 @@ mod tests {
     #[test]
     fn session_end_releases_recording() {
         let (asr, _calls, events, sink) = setup(vec![vec![Step::Fail(quota())]; 3]);
-        asr.start(sink);
-        asr.push(&[0; 3200]);
+        let id = asr.start(sink);
+        asr.push(id, &[0; 3200]);
         wait_end(&events);
         for _ in 0..100 {
             if asr.feed.lock().unwrap().is_none() {
@@ -558,5 +576,94 @@ mod tests {
         // 临时错误不记账
         let shared = asr.shared.as_ref().unwrap();
         assert!(shared.state.lock().unwrap().usable(&shared.models[0], NOW));
+    }
+
+    #[test]
+    fn too_long_for_batch_moves_on_to_streaming() {
+        // 前几款额度已用完，整段识别的两款接不了超长录音，之后的实时模型识别成功
+        let too_long = || Failure::Unsuited("录音超过整段识别的时长上限".into());
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let fake = Fake {
+            script: Mutex::new(
+                vec![
+                    vec![Step::WaitClosed, Step::Fail(too_long())],
+                    vec![Step::WaitClosed, Step::Fail(too_long())],
+                    vec![
+                        Step::WaitClosed,
+                        Step::Emit(Out::Final {
+                            text: "好。".into(),
+                            end_ms: None,
+                        }),
+                    ],
+                ]
+                .into(),
+            ),
+            calls: calls.clone(),
+        };
+        let mut flash = model("flash", Quota::OneOff);
+        flash.protocol = Protocol::Compatible;
+        let mut multi = model("multi", Quota::OneOff);
+        multi.protocol = Protocol::Multimodal;
+        let models = vec![
+            model("a", Quota::OneOff),
+            model("b", Quota::OneOff),
+            flash,
+            multi,
+            model("paraformer", Quota::Monthly),
+        ];
+        let mut state = State::load(None);
+        state.record(&models[0], &quota(), NOW);
+        state.record(&models[1], &quota(), NOW);
+        let asr = Asr::with_backend(Box::new(fake), models, state, || NOW);
+        let events: Events = Arc::new(Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let sink: Sink = Arc::new(move |e| ev.lock().unwrap().push(e));
+        let id = asr.start(sink);
+        asr.push(id, &[0; 3200]);
+        asr.stop(id);
+        let got = wait_end(&events);
+        assert!(got.contains(&Event::Final("好。".into())));
+        assert!(!got.contains(&Event::Unavailable));
+        let ids: Vec<_> = calls.lock().unwrap().iter().map(|c| c.0).collect();
+        assert_eq!(ids, vec!["flash", "multi", "paraformer"]);
+        // 接不了录音不记账
+        let shared = asr.shared.as_ref().unwrap();
+        assert!(shared.state.lock().unwrap().usable(&shared.models[2], NOW));
+    }
+
+    #[test]
+    fn stale_session_cannot_feed_or_stop_new_one() {
+        let (asr, calls, events, sink) =
+            setup(vec![vec![Step::WaitClosed], vec![Step::WaitClosed]]);
+        let old = asr.start(sink.clone());
+        let new = asr.start(sink);
+        assert_ne!(old, new);
+        // 旧会话迟到的音频与停止请求：不进入、也停不掉新会话
+        asr.push(old, &[1; 3200]);
+        asr.stop(old);
+        {
+            let slot = asr.feed.lock().unwrap();
+            let (id, feed) = slot.as_ref().expect("新会话被旧的停止请求停掉了");
+            assert_eq!(*id, new);
+            assert_eq!(feed.len(), 0);
+        }
+        asr.push(new, &[0; 3200]);
+        asr.stop(new);
+        // 两个会话各推送一次 End
+        for _ in 0..200 {
+            if events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| **e == Event::End)
+                .count()
+                == 2
+            {
+                assert_eq!(calls.lock().unwrap().len(), 2);
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("会话没有结束");
     }
 }

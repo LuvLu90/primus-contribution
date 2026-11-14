@@ -25,7 +25,7 @@ describe("clean-copy", () => {
     const md = renderMarkdown("看 `src/lib/utils.ts:12` 这里");
     expect(md).toContain("data-file-ref");
     const { html, text } = clean(`${md}<button aria-label="复制">复制</button>`);
-    expect(html).toContain("<code>src/lib/utils.ts:12</code>");
+    expect(html).toContain(">src/lib/utils.ts:12</code>");
     // 界面上只显示文件名；复制的是回复原文里的完整路径与行号
     expect(html).not.toContain("button");
     expect(text).toBe("看 src/lib/utils.ts:12 这里");
@@ -37,6 +37,27 @@ describe("clean-copy", () => {
     );
     const { text } = clean(md);
     expect(text).toBe("第一\n第二\n子项\nconst a = 1;\n\n\n  b();\nA\tB\n1\t2");
+  });
+
+  it("文件引用路径里的连续空格原样复制", () => {
+    const { text } = clean(
+      '<p>看 <span data-file-ref="C:\\Primus  Work\\a.ts:12">a.ts</span>  这里</p>',
+    );
+    expect(text).toBe("看 C:\\Primus  Work\\a.ts:12 这里");
+  });
+
+  it("用户消息末尾选中的换行保留", async () => {
+    const { render } = await import("@testing-library/react");
+    const { UserBubble } = await import("@/features/chat/user-bubble");
+    document.body.innerHTML = "";
+    const { container } = render(<UserBubble text={"第一行\n"} index={0} />);
+    const p = container.querySelector("[data-copy-pre]") as HTMLElement;
+    const sel = document.getSelection() as Selection;
+    const range = document.createRange();
+    range.selectNodeContents(p);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    expect(copy(p)["text/plain"]).toBe("第一行\n");
   });
 
   it("列表项里的段落（li > p）不被拆开，也不加符号", () => {
@@ -97,7 +118,8 @@ describe("clean-copy", () => {
     const sel = document.getSelection() as Selection;
     sel.removeAllRanges();
     sel.addRange(range);
-    expect(copy(code)["text/plain"]).toBe("if a:\n    b()\n");
+    // 选区末尾的两个换行都是选中的内容，原样保留
+    expect(copy(code)["text/plain"]).toBe("if a:\n    b()\n\n");
   });
 
   it("用户消息正文：多行与缩进原样复制（整条或只选一部分）", async () => {
