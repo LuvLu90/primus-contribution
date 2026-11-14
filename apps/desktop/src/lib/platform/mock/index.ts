@@ -1345,6 +1345,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       }, speechStepMs);
       speech = { timer, onEvent };
     },
+    speechAudio: async () => {},
     speechStop: async () => endSpeech(),
 
     terminalOpen: async (_cwd, onData) => {

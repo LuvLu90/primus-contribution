@@ -114,6 +114,11 @@ export function createTauriPlatform(): Platform {
       channel.onmessage = onEvent;
       return call("speechStart", { onEvent: channel });
     },
+    // 原始字节作为请求体（不经 JSON），薄壳按 InvokeBody::Raw 读取
+    speechAudio: (pcm) =>
+      invoke<void>(COMMANDS.speechAudio, pcm).catch((e: unknown) => {
+        throw toPlatformError(e);
+      }),
     speechStop: () => call("speechStop"),
 
     terminalOpen: (cwd, onData) => {

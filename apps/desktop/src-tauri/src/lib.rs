@@ -93,6 +93,8 @@ pub fn run() {
 
     // 最近工作区与信任状态：users/<SID>/app/workspaces.json（第 15.1 节）
     let workspaces_dir = data_paths.app_dir();
+    // 内置语音转文字：各模型暂停记录放在 app 目录
+    let speech = platform::speech::Speech::new(data_paths.app_dir().join("asr-state.json"));
 
     // 自动更新（第 3.6 节、ADR 0007）：设置在 users/<SID>/app/update.json，待装包在 users/<SID>/updates/；
     // 公钥在构建时编译进来，没有公钥的构建整体禁用
@@ -261,7 +263,7 @@ pub fn run() {
         .manage(workspaces::Workspaces::new(&workspaces_dir))
         .manage(model_config)
         .manage(updater)
-        .manage(platform::speech::Speech::default())
+        .manage(speech)
         .invoke_handler(tauri::generate_handler![
             commands::window_set_bounds,
             commands::open_external,
@@ -307,6 +309,7 @@ pub fn run() {
             commands::attachment_image,
             commands::speech_available,
             commands::speech_start,
+            commands::speech_audio,
             commands::speech_stop,
         ])
         .build(tauri::generate_context!())

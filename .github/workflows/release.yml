@@ -26,6 +26,8 @@
 #   共用的 composite action 从工作流自身的提交另行取出。标签中须已有更新服务（apps/desktop/src-tauri/update-service），
 #   更早的标签（MSI + NSIS 双安装包时期）无法用本工作流构建；标签的 Primus.wxs 还须处理 PRIMUS_BUNDLE（ADR 0011），
 #   更早的标签同样不能构建（只能用 backfill_source 回填）；早于 RPC 契约测试的标签可以构建，但跳过契约测试一步
+# - 内置语音转文字（apps/desktop/src-tauri/asr）：每次发布都必须配置仓库 Secret PRIMUS_ASR_KEY（阿里云百炼 API Key），
+#   只在构建 MSI 一步注入，混淆后编译进 Primus.exe（asr/build.rs），缺失即失败
 # - 不做 Authenticode 代码签名（项目不购买证书）：安装包与程序不带签名，正文说明 SmartScreen 的提示
 name: Release
 
@@ -153,6 +155,14 @@ jobs:
             throw "缺少仓库 Secret：$($missing -join '、')。自动更新要求每次发布都配置 updater 密钥（pnpm tauri signer generate 生成）"
           }
 
+      # 内置语音转文字（asr/build.rs）：密钥编译进 Primus.exe，没有密钥的构建麦克风按钮不显示，不发布这样的版本
+      - name: 检查语音转文字密钥
+        shell: pwsh
+        env:
+          PRIMUS_ASR_KEY: ${{ secrets.PRIMUS_ASR_KEY }}
+        run: |
+          if (-not $env:PRIMUS_ASR_KEY) { throw "缺少仓库 Secret：PRIMUS_ASR_KEY（阿里云百炼 API Key，内置语音转文字使用）" }
+
       # 发布构建不启用 pnpm / Rust 缓存，产物只取决于标签内容与锁文件
       - name: 准备 Windows 构建环境（WiX ${{ steps.version.outputs.wix }}）
         uses: ./.release-ci/.github/actions/setup-windows-build
@@ -194,6 +204,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
           PRIMUS_REQUIRE_UPDATER_SIGNING: "1"
+          PRIMUS_ASR_KEY: ${{ secrets.PRIMUS_ASR_KEY }}
 
       - name: 检查安装包（文件名、大小、校验、MSI 平台、更新服务、两个 exe 的架构）
         shell: pwsh

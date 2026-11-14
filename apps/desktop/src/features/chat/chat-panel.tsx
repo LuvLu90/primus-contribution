@@ -28,7 +28,7 @@ import { lastWrittenFile } from "@/features/files/written-file";
 import { type ChatTab, useSessionsStore } from "@/features/sessions/sessions-store";
 import { useSessionDefaultWorkspace } from "@/features/sessions/use-default-workspace";
 import { getFileDrop, getPlatform, isTauriRuntime } from "@/lib/platform";
-import type { SpeechSettingsPage, WorkspaceInfo } from "@/lib/platform/types";
+import type { WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { useModelsInfo, useProviderNames } from "@/lib/use-models";
 import { cn } from "@/lib/utils";
@@ -59,7 +59,7 @@ import { ModelPicker, withCoreCaps } from "./model-picker";
 import { PlanApproval } from "./plan-card";
 import { DEFAULT_THINKING_LEVEL, useChatSession } from "./use-chat-session";
 import { UserBubble } from "./user-bubble";
-import { SETTINGS_URLS, useVoiceInput } from "./voice/use-voice-input";
+import { useVoiceInput } from "./voice/use-voice-input";
 import { VoiceButton } from "./voice/voice-button";
 
 // 中央对话区：实色"纸面"上的时间线 + 悬浮在其上的玻璃输入框（滚动内容从玻璃下方折射穿过）。
@@ -185,14 +185,6 @@ function useModelConfigGate() {
   const providerNames = useProviderNames(info);
   const unavailable = info !== null && info.error !== null && info.models.length === 0;
   return { info, providerNames, unavailable, reason: info?.error ?? null };
-}
-
-/** 语音输入被系统隐私设置拒绝时打开对应的 Windows 设置页 */
-function openVoiceSettings(page: SpeechSettingsPage | undefined) {
-  if (!page) return;
-  void getPlatform()
-    .then((p) => p.openExternal(SETTINGS_URLS[page]))
-    .catch(() => {});
 }
 
 /** 路径最后一段（工作区显示名） */
@@ -864,17 +856,8 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   </p>
                 ) : (
                   voice.error && (
-                    <p role="alert" className="flex items-center gap-2 text-xs text-danger">
-                      <span className="min-w-0">{voice.error.message}</span>
-                      {voice.error.settings && (
-                        <button
-                          type="button"
-                          onClick={() => openVoiceSettings(voice.error?.settings)}
-                          className="shrink-0 rounded-full px-2 py-0.5 font-medium text-danger underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-danger/40"
-                        >
-                          {t.voice.openSettings}
-                        </button>
-                      )}
+                    <p role="alert" className="text-xs text-danger">
+                      {voice.error.message}
                     </p>
                   )
                 )}

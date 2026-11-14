@@ -221,19 +221,16 @@ export interface AttachmentImage {
   height: number;
 }
 
-/** 语音输入被系统隐私设置拒绝时可以打开的设置页 */
-export type SpeechSettingsPage = "microphone" | "speech";
-
 /**
- * 语音输入事件（`speech_start` 的 Channel）。`interim` 为当前这一句的临时文本（随时替换），`final` 为定稿；
+ * 语音转文字事件（`speech_start` 的 Channel）。`interim` 为当前这一句的临时文本（随时替换，空串表示清掉），
+ * `final` 为定稿；`error` 的文案固定为“语音转文字暂不可用”。
  * `level`（0–1）只有浏览器预览的 mock 会推送，真实薄壳的音量由前端 getUserMedia 计算
  */
 export type SpeechEvent =
   | { type: "interim"; text: string }
   | { type: "final"; text: string }
   | { type: "level"; level: number }
-  /** settings：能解决这个错误的系统设置页（隐私 → 麦克风 / 语音），前端提供“打开设置” */
-  | { type: "error"; message: string; settings?: SpeechSettingsPage }
+  | { type: "error"; message: string }
   | { type: "end" };
 
 export interface Platform {
@@ -320,11 +317,13 @@ export interface Platform {
    */
   attachmentImage(path: string, maxEdge: number): Promise<AttachmentImage>;
 
-  /** 系统语音识别是否可用（不可用时隐藏麦克风按钮） */
+  /** 内置语音转文字是否可用（不可用时隐藏麦克风按钮） */
   speechAvailable(): Promise<boolean>;
   /** 开始听写；事件经回调推送，最后一定有 `end`。再次调用先结束旧的会话 */
   speechStart(onEvent: (event: SpeechEvent) => void): Promise<void>;
-  /** 停止听写（之后推送 `end`） */
+  /** 麦克风音频：16 kHz、16 位、单声道、小端 PCM（以原始字节发送） */
+  speechAudio(pcm: Uint8Array): Promise<void>;
+  /** 停止录音（已录的音频识别完后推送 `end`） */
   speechStop(): Promise<void>;
 
   terminalOpen(cwd: string, onData: (data: string) => void): Promise<{ terminalId: string }>;
@@ -483,6 +482,7 @@ export const COMMANDS = {
   attachmentImage: "attachment_image",
   speechAvailable: "speech_available",
   speechStart: "speech_start",
+  speechAudio: "speech_audio",
   speechStop: "speech_stop",
   terminalOpen: "terminal_open",
   terminalWrite: "terminal_write",

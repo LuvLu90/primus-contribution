@@ -995,7 +995,7 @@ mod windows_impl {
         Ok(exit_code == 0)
     }
 
-    /// 用系统默认浏览器打开 URL（调用方已校验只含 http/https 或白名单中的 ms-settings 设置页）。
+    /// 用系统默认浏览器打开 URL（调用方已校验只含 http/https）。
     pub(crate) fn open_url(url: &str) -> io::Result<()> {
         let verb = wide("open");
         let target = wide(url);
