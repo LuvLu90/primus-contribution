@@ -68,7 +68,7 @@
   <String Id="FailureRepairHeader" Value="修复失败" />
   <String Id="FailureUninstallHeader" Value="卸载失败" />
   <String Id="FailureUnsafeUninstallHeader" Value="卸载失败" />
-  <String Id="FailureHyperlinkLogText" Value="安装过程中出现错误，已撤销所有更改。可以重新运行安装程序；仍然失败时，请把&lt;a href=&quot;#&quot;&gt;安装日志&lt;/a&gt;发给我们。" />
+  <String Id="FailureHyperlinkLogText" Value="安装过程中出现错误，安装没有完成。可以重新运行安装程序；仍然失败时，请把&lt;a href=&quot;#&quot;&gt;安装日志&lt;/a&gt;发给我们。" />
   <String Id="FailureRestartText" Value="必须重新启动电脑才能完成回滚。" />
   <String Id="FailureRestartButton" Value="重新启动(&amp;R)" />
   <String Id="FailureCloseButton" Value="关闭(&amp;C)" />

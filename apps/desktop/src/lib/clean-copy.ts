@@ -103,6 +103,13 @@ function appendClean(node: Node, parent: Node, doc: Document): void {
   }
   // 其他按钮（复制、展开等操作）不进剪贴板
   if (tag === "button") return;
+  // 按原样显示空白的正文（用户消息，whitespace-pre-wrap）：换行与缩进原样保留，按代码块处理
+  if (el.hasAttribute("data-copy-pre")) {
+    const pre = doc.createElement("pre");
+    for (const c of Array.from(el.childNodes)) appendClean(c, pre, doc);
+    parent.appendChild(pre);
+    return;
+  }
   let target: Node = parent;
   if (KEEP.has(tag)) {
     const copy = doc.createElement(tag);
@@ -212,10 +219,10 @@ export function handleCopy(e: ClipboardEvent): void {
   for (let i = 0; i < selection.rangeCount; i++) {
     const range = selection.getRangeAt(i);
     const fragment = cleanFragment(range.cloneContents(), doc);
-    // 只选中代码块内部的文字时，克隆出的片段不含外层 pre：补上，保留换行与缩进
+    // 只选中代码块（或用户消息正文）内部的文字时，克隆出的片段不含外层元素：补上 pre，保留换行与缩进
     const anc = range.commonAncestorContainer;
     const ancEl = anc.nodeType === 1 ? (anc as Element) : anc.parentElement;
-    if (ancEl?.closest("pre")) {
+    if (ancEl?.closest("pre, [data-copy-pre]")) {
       const pre = doc.createElement("pre");
       pre.appendChild(fragment);
       holder.appendChild(pre);

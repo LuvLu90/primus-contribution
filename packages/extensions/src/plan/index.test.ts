@@ -353,6 +353,12 @@ describe("primus-plan", () => {
     handlers.session_compact?.({}, ctx);
     expect(batch("edit")).toBeDefined();
     expect(settle()?.continue).toBe(true);
+    // 同一次运行里（不再 agent_start）：提醒后更新了待办，又做了事，再次收尾仍提醒；没再做事则不提醒
+    batch(TODO_TOOL);
+    expect(settle()).toBeUndefined();
+    batch("edit");
+    expect(settle()?.continue).toBe(true);
+    expect(settle()).toBeUndefined();
   });
 
   it("ask_user：推 primus:ask 等回答，选项或自己写的想法都能回；关闭提问时停下", async () => {

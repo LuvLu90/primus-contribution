@@ -151,7 +151,7 @@
       <Control Id="Title" Type="Text" X="20" Y="8" Width="280" Height="17" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Title}已取消" />
       <Control Id="Version" Type="Text" X="20" Y="26" Width="280" Height="12" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Muted}版本 $(PrimusVersion)" />
       <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
-      <Control Id="Text" Type="Text" X="20" Y="60" Width="330" Height="26" NoPrefix="yes" Text="没有对这台电脑做任何更改。需要时可以再次运行安装程序。" />
+      <Control Id="Text" Type="Text" X="20" Y="60" Width="330" Height="26" NoPrefix="yes" Text="安装没有完成。需要时可以再次运行安装程序。" />
       <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
       <Control Id="Finish" Type="PushButton" X="304" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="完成(&amp;F)">
         <Publish Event="EndDialog" Value="Exit" />
@@ -164,7 +164,7 @@
       <Control Id="Title" Type="Text" X="20" Y="8" Width="280" Height="17" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Title}安装未完成" />
       <Control Id="Version" Type="Text" X="20" Y="26" Width="280" Height="12" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Muted}版本 $(PrimusVersion)" />
       <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
-      <Control Id="Text" Type="Text" X="20" Y="60" Width="330" Height="52" NoPrefix="yes" Text="安装过程中出现错误，已撤销所有更改。可以重新运行安装程序；仍然失败时，请用命令 msiexec /i 安装包 /l*v install.log 生成安装日志后发给我们。" />
+      <Control Id="Text" Type="Text" X="20" Y="60" Width="330" Height="52" NoPrefix="yes" Text="安装过程中出现错误，安装没有完成。可以重新运行安装程序；仍然失败时，请用命令 msiexec /i 安装包 /l*v install.log 生成安装日志后发给我们。" />
       <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
       <Control Id="Finish" Type="PushButton" X="304" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="完成(&amp;F)">
         <Publish Event="EndDialog" Value="Exit" />

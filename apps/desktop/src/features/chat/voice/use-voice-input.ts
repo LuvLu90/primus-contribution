@@ -72,17 +72,24 @@ export function useVoiceInput({
   const readMic = useMicLevel(capturing, isTauriRuntime(), {
     onError: () => {
       unavailable();
-      // 拿不到麦克风：结束这次听写
+      // 拿不到麦克风：结束这次听写；停止请求失败（平台不会推送 end）时直接结束界面上的录音状态
+      const token = session.current;
+      if (!token) return;
       void getPlatform()
         .then((p) => p.speechStop())
-        .catch(() => {});
+        .catch(() => finish(token));
     },
     onPcm: (pcm) => {
-      if (!session.current) return;
-      // 按顺序送达；停止时等最后一块送完再结束识别
+      const token = session.current;
+      if (!token) return;
+      // 按顺序送达；停止时等最后一块送完再结束识别。真正发送前再核对会话：
+      // 排在队列里的旧会话音频不能送进之后新开始的会话
       audioSent.current = audioSent.current
-        .then(() => getPlatform())
-        .then((p) => p.speechAudio(pcm))
+        .then(async () => {
+          if (session.current !== token) return;
+          const p = await getPlatform();
+          if (session.current === token) await p.speechAudio(pcm);
+        })
         .catch(() => {});
     },
   });
@@ -155,7 +162,10 @@ export function useVoiceInput({
       setCapturing(false);
       void audioSent.current
         .then(() => getPlatform())
-        .then((p) => p.speechStop())
+        .then((p) => {
+          // 等待期间这次会话可能已结束、又开始了新会话：不能把新会话停掉
+          if (session.current === token) return p.speechStop();
+        })
         // 停止失败（或平台没有推送 end）也要结束界面上的录音状态
         .catch(() => finish(token));
     }, TAIL_MS);

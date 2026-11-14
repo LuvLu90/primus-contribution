@@ -90,13 +90,20 @@ export function useMicLevel(
         };
       })
       .catch(() => {
+        // 取得麦克风后初始化失败（建音频上下文、节点出错）：先释放已取得的麦克风与上下文，再通知
+        release();
         if (!cancelled) callbacks.current.onError?.();
       });
-    return () => {
-      cancelled = true;
+    const release = () => {
       reader.current = null;
       for (const track of stream?.getTracks() ?? []) track.stop();
       void ctx?.close().catch(() => {});
+      stream = undefined;
+      ctx = undefined;
+    };
+    return () => {
+      cancelled = true;
+      release();
     };
   }, [active, enabled]);
   // 稳定的读取函数：调用方放进依赖也不会反复重建定时器

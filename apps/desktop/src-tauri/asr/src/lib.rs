@@ -509,8 +509,20 @@ mod tests {
             vec![Step::WaitClosed],
         ]);
         asr.start(sink);
-        // 定稿到达后再录的音频：换模型时要重放
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // 定稿到达后再录的音频：换模型时要重放（先确认定稿已到达，不靠固定等待）
+        let arrived = (0..200).any(|_| {
+            if events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e, Event::Final(_)))
+            {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            false
+        });
+        assert!(arrived, "没有收到定稿");
         asr.push(&[0; 3200]);
         asr.stop();
         wait_end(&events);

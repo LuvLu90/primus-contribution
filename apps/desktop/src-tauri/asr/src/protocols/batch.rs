@@ -38,8 +38,13 @@ pub fn request(model: &Model, wav_bytes: &[u8]) -> (&'static str, Value) {
     }
 }
 
-/// 整段识别请求里音频（Base64 data URL）的大小上限：接口要求编码后不超过 10 MB，留出余量
+/// 兼容接口请求里音频（Base64 data URL）的大小上限：接口要求编码后不超过 10 MB，留出余量
 pub const MAX_ENCODED_BYTES: usize = 9 * 1024 * 1024;
+
+/// 这款模型发不下这段 WAV
+pub fn too_large(model: &Model, wav_len: usize) -> bool {
+    model.protocol == Protocol::Compatible && encoded_len(wav_len) > MAX_ENCODED_BYTES
+}
 
 /// Base64 编码后的长度
 pub fn encoded_len(raw: usize) -> usize {
@@ -77,7 +82,8 @@ pub async fn run(
         return Err(Failure::Transient("录音超过整段识别的时长上限".into()));
     }
     let audio = wav(&for_rate(&pcm, model.sample_rate), model.sample_rate);
-    if encoded_len(audio.len()) > MAX_ENCODED_BYTES {
+    // 只有兼容接口（qwen3-asr-flash）限制编码后 10 MB；Multimodal 接口上限 2 GB、5 分钟，时长已在上面检查
+    if too_large(model, audio.len()) {
         return Err(Failure::Transient("录音超过整段识别的大小上限".into()));
     }
     let (path, body) = request(model, &audio);
@@ -104,6 +110,15 @@ mod tests {
         assert!(encoded_len(280 * 1000 * BYTES_PER_MS + 44) > MAX_ENCODED_BYTES);
         assert!(encoded_len(280 * 1000 * BYTES_PER_MS / 2 + 44) < MAX_ENCODED_BYTES);
         assert_eq!(encoded_len(3), 4);
+        // 只有兼容接口受这个限制
+        let long = 270 * 1000 * BYTES_PER_MS + 44;
+        for m in crate::models::MODELS.iter() {
+            match m.protocol {
+                Protocol::Compatible => assert!(too_large(m, long)),
+                Protocol::Multimodal => assert!(!too_large(m, long)),
+                _ => {}
+            }
+        }
         assert_eq!(encoded_len(4), 8);
     }
 

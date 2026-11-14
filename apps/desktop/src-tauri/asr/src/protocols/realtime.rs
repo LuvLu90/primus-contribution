@@ -56,11 +56,18 @@ pub fn finish() -> String {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Event {
     Interim(String),
-    Completed(String),
-    SpeechStopped(Option<u64>),
+    /// 一句定稿：(item_id, 文本)
+    Completed(Option<String>, String),
+    /// 一句话的语音结束：(item_id, 结束位置 ms)
+    SpeechStopped(Option<String>, Option<u64>),
     Finished,
     Failed(Failure),
     Ignore,
+}
+
+/// 事件所属的一句话（item_id）
+fn item(v: &Value) -> Option<String> {
+    v["item_id"].as_str().map(str::to_owned)
 }
 
 pub fn parse(text: &str) -> Event {
@@ -73,9 +80,11 @@ pub fn parse(text: &str) -> Event {
             Event::Interim(s("text") + &s("stash"))
         }
         "conversation.item.input_audio_transcription.completed" => {
-            Event::Completed(s("transcript"))
+            Event::Completed(item(&v), s("transcript"))
         }
-        "input_audio_buffer.speech_stopped" => Event::SpeechStopped(v["audio_end_ms"].as_u64()),
+        "input_audio_buffer.speech_stopped" => {
+            Event::SpeechStopped(item(&v), v["audio_end_ms"].as_u64())
+        }
         "session.finished" => Event::Finished,
         "error" | "conversation.item.input_audio_transcription.failed" => {
             let e = &v["error"];
@@ -107,6 +116,9 @@ pub async fn run(
 
     let mut pos = start;
     let mut finishing = false;
+    // 每句话的结束位置按 item_id 记录：跨句事件的先后没有保证，不能只用最近一次 speech_stopped
+    let mut stops: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    // 没有 item_id 的事件（兼容）：退回最近一次
     let mut last_stop: Option<u64> = None;
     let deadline = tokio::time::sleep(std::time::Duration::MAX / 4);
     tokio::pin!(deadline);
@@ -125,14 +137,24 @@ pub async fn run(
                 match msg.map_err(closed)? {
                     Message::Text(t) => match parse(&t) {
                         Event::Interim(text) => emit(Out::Interim(text)),
-                        Event::Completed(text) => {
+                        Event::Completed(id, text) => {
+                            let end_ms = match &id {
+                                Some(id) => stops.remove(id),
+                                None => last_stop,
+                            };
                             if text.is_empty() {
                                 emit(Out::Interim(String::new()));
                             } else {
-                                emit(Out::Final { text, end_ms: last_stop });
+                                emit(Out::Final { text, end_ms });
                             }
                         }
-                        Event::SpeechStopped(ms) => last_stop = ms,
+                        Event::SpeechStopped(id, ms) => match (id, ms) {
+                            (Some(id), Some(ms)) => {
+                                stops.insert(id, ms);
+                            }
+                            (None, ms) => last_stop = ms,
+                            (Some(_), None) => {}
+                        },
                         Event::Finished => {
                             net::close(&mut ws).await;
                             return Ok(());
@@ -193,13 +215,19 @@ mod tests {
         );
         assert_eq!(
             parse(
-                r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"你好世界。"}"#
+                r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"i1","transcript":"你好世界。"}"#
             ),
-            Event::Completed("你好世界。".into())
+            Event::Completed(Some("i1".into()), "你好世界。".into())
+        );
+        assert_eq!(
+            parse(
+                r#"{"type":"input_audio_buffer.speech_stopped","item_id":"i2","audio_end_ms":2400}"#
+            ),
+            Event::SpeechStopped(Some("i2".into()), Some(2400))
         );
         assert_eq!(
             parse(r#"{"type":"input_audio_buffer.speech_stopped","audio_end_ms":2400}"#),
-            Event::SpeechStopped(Some(2400))
+            Event::SpeechStopped(None, Some(2400))
         );
         assert!(matches!(
             parse(

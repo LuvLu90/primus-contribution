@@ -904,6 +904,8 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
         turnsWithoutTodo = 0;
         todoThisRun = true;
         workSinceTodo = workAfterTodo;
+        // 收尾提醒后模型更新了待办：之后又做事、待办又落后时，再次收尾还要能提醒
+        settleNudged = false;
         if (todoOpen() && execFull) return { entries: [executingEntry()] };
         return undefined;
       }

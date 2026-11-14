@@ -99,6 +99,28 @@ describe("clean-copy", () => {
     sel.addRange(range);
     expect(copy(code)["text/plain"]).toBe("if a:\n    b()\n");
   });
+
+  it("用户消息正文：多行与缩进原样复制（整条或只选一部分）", async () => {
+    const { render } = await import("@testing-library/react");
+    const { UserBubble } = await import("@/features/chat/user-bubble");
+    document.body.innerHTML = "";
+    const { container } = render(<UserBubble text={"第一行\n  第二行\n\n\n第三行"} index={0} />);
+    const p = container.querySelector("[data-copy-pre]") as HTMLElement;
+    const sel = document.getSelection() as Selection;
+    const range = document.createRange();
+    range.selectNodeContents(container);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    expect(copy(p)["text/plain"]).toBe("第一行\n  第二行\n\n\n第三行");
+    // 只选中正文中间的一段
+    const t = p.firstChild as Text;
+    const part = document.createRange();
+    part.setStart(t, 0);
+    part.setEnd(t, t.data.indexOf("\n\n"));
+    sel.removeAllRanges();
+    sel.addRange(part);
+    expect(copy(p)["text/plain"]).toBe("第一行\n  第二行");
+  });
 });
 
 function copy(target: HTMLElement) {
