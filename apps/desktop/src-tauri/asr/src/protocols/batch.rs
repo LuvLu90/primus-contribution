@@ -38,6 +38,14 @@ pub fn request(model: &Model, wav_bytes: &[u8]) -> (&'static str, Value) {
     }
 }
 
+/// 整段识别请求里音频（Base64 data URL）的大小上限：接口要求编码后不超过 10 MB，留出余量
+pub const MAX_ENCODED_BYTES: usize = 9 * 1024 * 1024;
+
+/// Base64 编码后的长度
+pub fn encoded_len(raw: usize) -> usize {
+    raw.div_ceil(3) * 4
+}
+
 /// 从响应里取识别文本
 pub fn text_of(res: &Value) -> Option<String> {
     let candidates = [
@@ -68,10 +76,11 @@ pub async fn run(
     if pcm.len() > BATCH_MAX_SECONDS * 1000 * BYTES_PER_MS {
         return Err(Failure::Transient("录音超过整段识别的时长上限".into()));
     }
-    let (path, body) = request(
-        model,
-        &wav(&for_rate(&pcm, model.sample_rate), model.sample_rate),
-    );
+    let audio = wav(&for_rate(&pcm, model.sample_rate), model.sample_rate);
+    if encoded_len(audio.len()) > MAX_ENCODED_BYTES {
+        return Err(Failure::Transient("录音超过整段识别的大小上限".into()));
+    }
+    let (path, body) = request(model, &audio);
     let res = net.post_json(path, &body).await?;
     match text_of(&res) {
         Some(text) => {
@@ -88,6 +97,15 @@ pub async fn run(
 mod tests {
     use super::*;
     use crate::models::MODELS;
+
+    #[test]
+    fn size_limit_is_after_encoding() {
+        // 280 秒 16 kHz 录音的 WAV 编码后超过上限；8 kHz 时在上限内
+        assert!(encoded_len(280 * 1000 * BYTES_PER_MS + 44) > MAX_ENCODED_BYTES);
+        assert!(encoded_len(280 * 1000 * BYTES_PER_MS / 2 + 44) < MAX_ENCODED_BYTES);
+        assert_eq!(encoded_len(3), 4);
+        assert_eq!(encoded_len(4), 8);
+    }
 
     #[test]
     fn request_shapes() {

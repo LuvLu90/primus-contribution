@@ -3,7 +3,7 @@
 //! 流程：run-task → 等 task-started → 发二进制 PCM → 录音结束发 finish-task → 等 task-finished。
 //! 结果在 result-generated 事件的 `payload.output.sentence`：`sentence_end` 为真时是定稿。
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -11,7 +11,7 @@ use super::{Emit, FINISH_TIMEOUT, Out, START_TIMEOUT};
 use crate::audio::{Feed, downsample_half};
 use crate::failure::{Failure, classify};
 use crate::models::Model;
-use crate::net::Net;
+use crate::net::{self, Net};
 
 pub const PATH: &str = "/api-ws/v1/inference";
 
@@ -136,9 +136,7 @@ pub async fn run(
 ) -> Result<(), Failure> {
     let mut ws = net.ws(PATH, &[]).await?;
     let id = task_id();
-    ws.send(Message::text(run_task(model, &id)))
-        .await
-        .map_err(closed)?;
+    net::send(&mut ws, Message::text(run_task(model, &id))).await?;
 
     // 等任务开始（额度用完、模型不可用多在这里返回 task-failed）
     let started = tokio::time::timeout(START_TIMEOUT, async {
@@ -170,11 +168,11 @@ pub async fn run(
                 Some(c) => {
                     let pcm = resampler.convert(&c);
                     if !pcm.is_empty() {
-                        ws.send(Message::binary(pcm)).await.map_err(closed)?;
+                        net::send(&mut ws, Message::binary(pcm)).await?;
                     }
                 }
                 None => {
-                    ws.send(Message::text(finish_task(&id))).await.map_err(closed)?;
+                    net::send(&mut ws, Message::text(finish_task(&id))).await?;
                     finishing = true;
                     deadline.as_mut().reset(tokio::time::Instant::now() + FINISH_TIMEOUT);
                 }
@@ -185,7 +183,7 @@ pub async fn run(
                     Message::Text(t) => match parse(&t) {
                         Event::Result(out) => emit(out),
                         Event::Finished => {
-                            let _ = ws.close(None).await;
+                            net::close(&mut ws).await;
                             return Ok(());
                         }
                         Event::Failed(f) => return Err(f),

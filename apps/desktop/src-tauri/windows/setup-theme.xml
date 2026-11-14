@@ -72,13 +72,8 @@
             <Button Name="ProgressCancelButton" X="-14" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">#(loc.ProgressCancelButton)</Button>
         </Page>
 
-        <!-- 静默 / 被动安装（/passive）时的进度窗口 -->
-        <Page Name="ProgressPassive">
-            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">#(loc.ProgressHeader)</Label>
-            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
-            <Progressbar Name="OverallCalculatedProgressbar" X="30" Y="138" Width="-30" Height="18" />
-            <Button Name="ProgressCancelButton" X="-14" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">#(loc.ProgressCancelButton)</Button>
-        </Page>
+        <!-- 被动安装（/passive）不另设 ProgressPassive 页：WixStdBA 只登记第一个同名进度条与取消按钮，
+             另设一页时被动窗口的进度条不会更新；没有该页时自动使用上面的 Progress 页 -->
 
         <!-- exe 不在“应用和功能”中登记自己（ADR 0011），正常不会出现修改页；保留以防万一 -->
         <Page Name="Modify">

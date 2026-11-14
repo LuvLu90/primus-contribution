@@ -82,7 +82,10 @@ function parseBlock(text: string, at: number, failed = new Set<number>()): FileT
  * 这些行只给模型看，解析与显示时先去掉
  */
 const HINT_LINE = String.raw`\[Image(?:: original | converted from |\s+omitted: )[^\n]*\]`;
-const IMAGE_HINTS = new RegExp(String.raw`(?:^|(?:\r?\n)+)(?:${HINT_LINE}(?:\r?\n)*)+$`);
+// 说明行之间必须换行：同一行里紧挨着的几条由一个 HINT_LINE 整体匹配，不给正则引擎留多种切分方式（避免指数级回溯）
+const IMAGE_HINTS = new RegExp(
+  String.raw`(?:^|(?:\r?\n)+)(?:${HINT_LINE}(?:\r?\n)+)*${HINT_LINE}(?:\r?\n)*$`,
+);
 
 /** 去掉 Core 追加在消息末尾的图片说明行 */
 export function stripImageHints(text: string): string {
@@ -91,10 +94,14 @@ export function stripImageHints(text: string): string {
 
 /**
  * 拆出消息末尾的附件标签（`appendFileTags` 的逆操作）。只认正文之后、一直到结尾都是标签的那一段：
- * 正文中间提到的 `<file …>` 不算附件。Core 追加的图片说明行先去掉
+ * 正文中间提到的 `<file …>` 不算附件。`imageHints`：消息带了图片（Core 可能追加了图片说明行）时先去掉说明行；
+ * 不带图片时正文原样解析（用户自己写的 `[Image omitted: …]` 不能被删）
  */
-export function splitFileTags(raw: string): { message: string; files: FileTag[] } {
-  const text = stripImageHints(raw);
+export function splitFileTags(
+  raw: string,
+  options: { imageHints?: boolean } = {},
+): { message: string; files: FileTag[] } {
+  const text = options.imageHints ? stripImageHints(raw) : raw;
   const candidates: number[] = [];
   if (text.startsWith(OPEN)) candidates.push(0);
   for (let i = text.indexOf(`\n\n${OPEN}`); i >= 0; i = text.indexOf(`\n\n${OPEN}`, i + 1))

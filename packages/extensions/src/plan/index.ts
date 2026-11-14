@@ -896,21 +896,25 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
     // 连续几个回合没调用 todo 就在下一次请求前插一条隐藏提醒（与 Claude Code 的待办提醒同理）
     pi.on("turn_end", (event: never) => {
       const e = event as { toolResults?: { toolName?: string }[] };
-      if ((e.toolResults ?? []).some((r) => r.toolName === TODO_TOOL)) {
+      const results = e.toolResults ?? [];
+      const lastTodo = results.findLastIndex((r) => r.toolName === TODO_TOOL);
+      // 最后一次更新待办之后（同一批里排在它后面的工具，或没有更新待办的回合）还做了事：待办可能落后
+      const workAfterTodo = results.length > lastTodo + 1;
+      if (lastTodo >= 0) {
         turnsWithoutTodo = 0;
         todoThisRun = true;
-        workSinceTodo = false;
+        workSinceTodo = workAfterTodo;
         if (todoOpen() && execFull) return { entries: [executingEntry()] };
         return undefined;
       }
+      if (workAfterTodo && todoOpen()) workSinceTodo = true;
       if (!todoOpen()) return undefined;
       // 这一轮中途发生了压缩：计划所在的工具结果已被总结掉，下一次请求前重新放进完整计划与进度
       if (execFull) {
         turnsWithoutTodo = 0;
         return { entries: [executingEntry()] };
       }
-      if (!(e.toolResults ?? []).length) return undefined;
-      workSinceTodo = true;
+      if (!results.length) return undefined;
       turnsWithoutTodo++;
       if (turnsWithoutTodo < TURNS_BETWEEN_TODO_REMINDERS) return undefined;
       turnsWithoutTodo = 0;

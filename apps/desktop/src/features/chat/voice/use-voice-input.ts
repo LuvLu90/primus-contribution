@@ -13,6 +13,8 @@ import { useMicLevel } from "./use-mic-level";
 
 export const WAVE_BARS = 18;
 const WAVE_STEP_MS = 80;
+/** 点停止后再采集的时长：大于一块采集缓冲（128ms），保证最后一块音频交出 */
+const TAIL_MS = 160;
 
 /** 语音转文字的错误（文案固定） */
 export interface VoiceError {
@@ -58,6 +60,8 @@ export function useVoiceInput({
   callbacks.current = { onStart, onFinal, onEnd };
   const interimRef = useRef("");
   const pushedLevel = useRef(0);
+  /** 已交给薄壳的音频（按顺序串起来的发送） */
+  const audioSent = useRef<Promise<void>>(Promise.resolve());
   // 每次开始一个会话一个令牌：旧会话迟到的事件不影响新会话
   const session = useRef<symbol | null>(null);
   const unavailable = useCallback(
@@ -75,7 +79,9 @@ export function useVoiceInput({
     },
     onPcm: (pcm) => {
       if (!session.current) return;
-      void getPlatform()
+      // 按顺序送达；停止时等最后一块送完再结束识别
+      audioSent.current = audioSent.current
+        .then(() => getPlatform())
         .then((p) => p.speechAudio(pcm))
         .catch(() => {});
     },
@@ -137,14 +143,22 @@ export function useVoiceInput({
       });
   }, [finish, unavailable]);
 
+  const stopping = useRef<symbol | null>(null);
   const stop = useCallback(() => {
     const token = session.current;
-    if (!token) return;
-    setCapturing(false);
-    getPlatform()
-      .then((p) => p.speechStop())
-      // 停止失败（或平台没有推送 end）也要结束界面上的录音状态
-      .catch(() => finish(token));
+    if (!token || stopping.current === token) return;
+    stopping.current = token;
+    // 采集按整块（2048 帧，16 kHz 下 128ms）交出音频：再采一块，让点停止前说的最后几个字也送进去，
+    // 然后关麦克风，等已采的音频全部送达后再结束识别
+    setTimeout(() => {
+      if (session.current !== token) return;
+      setCapturing(false);
+      void audioSent.current
+        .then(() => getPlatform())
+        .then((p) => p.speechStop())
+        // 停止失败（或平台没有推送 end）也要结束界面上的录音状态
+        .catch(() => finish(token));
+    }, TAIL_MS);
   }, [finish]);
 
   // 录音中：波形与计时

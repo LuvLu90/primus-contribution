@@ -18,7 +18,7 @@ pub mod state;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -101,7 +101,8 @@ impl Backend for Bailian {
     }
 }
 
-/// 连续几次临时错误（网络不通）就不再往下试，直接提示不可用
+/// 连续几次临时错误（网络不通）就不再往下试，直接提示不可用。实时模型（WebSocket）连续出错时
+/// 先跳到整段识别的模型（HTTPS）再试，两种连接方式都不通才提示不可用
 const MAX_TRANSIENT: usize = 2;
 
 struct Shared {
@@ -114,7 +115,8 @@ struct Shared {
 pub struct Asr {
     shared: Option<Arc<Shared>>,
     runtime: Option<tokio::runtime::Runtime>,
-    feed: Mutex<Option<Arc<Feed>>>,
+    /// 当前会话的录音；会话结束（识别完或全部失败）时清掉，录音随之释放
+    feed: Arc<Mutex<Option<Arc<Feed>>>>,
 }
 
 fn unix_now() -> u64 {
@@ -139,7 +141,7 @@ impl Asr {
             None => Self {
                 shared: None,
                 runtime: None,
-                feed: Mutex::new(None),
+                feed: Arc::new(Mutex::new(None)),
             },
         }
     }
@@ -166,7 +168,7 @@ impl Asr {
                 })
             }),
             runtime,
-            feed: Mutex::new(None),
+            feed: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -186,7 +188,16 @@ impl Asr {
         if let Some(old) = self.feed.lock().unwrap().replace(feed.clone()) {
             old.close();
         }
-        rt.spawn(run_session(shared.clone(), feed, sink));
+        let active = self.feed.clone();
+        let shared = shared.clone();
+        rt.spawn(async move {
+            run_session(shared, feed.clone(), sink).await;
+            // 会话结束：释放录音（只清自己的，不动之后新开始的会话）
+            let mut slot = active.lock().unwrap();
+            if slot.as_ref().is_some_and(|f| Arc::ptr_eq(f, &feed)) {
+                *slot = None;
+            }
+        });
     }
 
     /// 麦克风音频（16 kHz、16 位、单声道、小端 PCM）
@@ -208,35 +219,33 @@ async fn run_session(shared: Arc<Shared>, feed: Arc<Feed>, sink: Sink) {
     let committed = Arc::new(AtomicUsize::new(0));
     let mut transient = 0;
     let mut next = 0;
+    // 实时模型（WebSocket）连不上时改用整段识别的模型（HTTPS，连接方式不同）
+    let mut skip_streaming = false;
     loop {
         let now = (shared.now)();
         let pick = {
             let state = shared.state.lock().unwrap();
-            (next..shared.models.len()).find(|&i| state.usable(&shared.models[i], now))
+            (next..shared.models.len()).find(|&i| {
+                let m = &shared.models[i];
+                state.usable(m, now) && !(skip_streaming && m.protocol.streaming())
+            })
         };
         let Some(i) = pick else { break };
         next = i + 1;
         let model = &shared.models[i];
         let start = committed.load(Ordering::SeqCst);
-        // 定稿的一句没有结束时间（无法定位重放位置）：换模型时从当时已录到的位置继续
-        let lost_position = Arc::new(AtomicBool::new(false));
         let emit = {
-            let (sink, committed, lost, feed) = (
-                sink.clone(),
-                committed.clone(),
-                lost_position.clone(),
-                feed.clone(),
-            );
+            let (sink, committed, feed) = (sink.clone(), committed.clone(), feed.clone());
             move |out: Out| match out {
                 Out::Interim(text) => sink(Event::Interim(text)),
                 Out::Final { text, end_ms } => {
-                    match end_ms {
-                        Some(ms) => {
-                            let pos = (start + ms as usize * BYTES_PER_MS).min(feed.len());
-                            committed.fetch_max(pos & !1, Ordering::SeqCst);
-                        }
-                        None => lost.store(true, Ordering::SeqCst),
-                    }
+                    // 定稿的一句没有结束时间：以定稿到达时已录到的位置为检查点（已录长度不小于句末），
+                    // 换模型时从这里重放，不会跳过定稿之后才录的音频
+                    let pos = match end_ms {
+                        Some(ms) => (start + ms as usize * BYTES_PER_MS).min(feed.len()),
+                        None => feed.len(),
+                    };
+                    committed.fetch_max(pos & !1, Ordering::SeqCst);
                     sink(Event::Final(text));
                 }
             }
@@ -251,12 +260,14 @@ async fn run_session(shared: Arc<Shared>, feed: Arc<Feed>, sink: Sink) {
             Err(failure) => {
                 sink(Event::Interim(String::new()));
                 shared.state.lock().unwrap().record(model, &failure, now);
-                if lost_position.load(Ordering::SeqCst) {
-                    committed.fetch_max(feed.len() & !1, Ordering::SeqCst);
-                }
                 if matches!(failure, Failure::Transient(_)) {
                     transient += 1;
                     if transient >= MAX_TRANSIENT {
+                        if model.protocol.streaming() && !skip_streaming {
+                            skip_streaming = true;
+                            transient = 0;
+                            continue;
+                        }
                         break;
                     }
                 } else {
@@ -438,6 +449,89 @@ mod tests {
         asr.start(sink);
         assert_eq!(wait_end(&events), vec![Event::Unavailable, Event::End]);
         assert_eq!(calls.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn websocket_down_falls_back_to_https() {
+        let net = || Failure::Transient("连接失败".into());
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let fake = Fake {
+            script: Mutex::new(
+                vec![
+                    vec![Step::Fail(net())],
+                    vec![Step::Fail(net())],
+                    vec![
+                        Step::WaitClosed,
+                        Step::Emit(Out::Final {
+                            text: "好。".into(),
+                            end_ms: None,
+                        }),
+                    ],
+                ]
+                .into(),
+            ),
+            calls: calls.clone(),
+        };
+        let mut batch = model("batch", Quota::OneOff);
+        batch.protocol = Protocol::Compatible;
+        let models = vec![
+            model("a", Quota::OneOff),
+            model("b", Quota::OneOff),
+            model("c", Quota::OneOff),
+            batch,
+        ];
+        let asr = Asr::with_backend(Box::new(fake), models, State::load(None), || NOW);
+        let events: Events = Arc::new(Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let sink: Sink = Arc::new(move |e| ev.lock().unwrap().push(e));
+        asr.start(sink);
+        asr.push(&[0; 3200]);
+        asr.stop();
+        let got = wait_end(&events);
+        assert!(got.contains(&Event::Final("好。".into())));
+        assert!(!got.contains(&Event::Unavailable));
+        // 第三款实时模型被跳过
+        let ids: Vec<_> = calls.lock().unwrap().iter().map(|c| c.0).collect();
+        assert_eq!(ids, vec!["a", "b", "batch"]);
+    }
+
+    #[test]
+    fn final_without_timestamp_replays_from_arrival() {
+        let (asr, calls, events, sink) = setup(vec![
+            vec![
+                Step::Emit(Out::Final {
+                    text: "一。".into(),
+                    end_ms: None,
+                }),
+                Step::WaitClosed,
+                Step::Fail(quota()),
+            ],
+            vec![Step::WaitClosed],
+        ]);
+        asr.start(sink);
+        // 定稿到达后再录的音频：换模型时要重放
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        asr.push(&[0; 3200]);
+        asr.stop();
+        wait_end(&events);
+        let c = calls.lock().unwrap();
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[1].1, 0);
+    }
+
+    #[test]
+    fn session_end_releases_recording() {
+        let (asr, _calls, events, sink) = setup(vec![vec![Step::Fail(quota())]; 3]);
+        asr.start(sink);
+        asr.push(&[0; 3200]);
+        wait_end(&events);
+        for _ in 0..100 {
+            if asr.feed.lock().unwrap().is_none() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("会话结束后录音没有释放");
     }
 
     #[test]

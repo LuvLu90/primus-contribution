@@ -95,14 +95,31 @@ describe("附件标签（Core @file 格式）", () => {
       "[Image converted from image/bmp to image/png.]",
     ].join("\n");
     const text = appendFileTags("看看这张图", [{ path: "C:\\a.png" }, { path: "C:\\b.md" }]);
-    expect(splitFileTags(`${text}\n\n${hints}`)).toEqual({
+    expect(splitFileTags(`${text}\n\n${hints}`, { imageHints: true })).toEqual({
       message: "看看这张图",
       files: [{ path: "C:\\a.png" }, { path: "C:\\b.md" }],
     });
     // 粘贴的图片没有标签：只去掉说明行；只有图片时正文为空
-    expect(splitFileTags(`问\n\n${hints}`)).toEqual({ message: "问", files: [] });
+    expect(splitFileTags(`问\n\n${hints}`, { imageHints: true })).toEqual({
+      message: "问",
+      files: [],
+    });
     expect(stripImageHints(`\n\n${hints}`)).toBe("");
     // 用户自己写的方括号文字保留
     expect(stripImageHints("[Image] 这是标题")).toBe("[Image] 这是标题");
+  });
+
+  it("没有图片的消息：正文恰好是说明行的格式也原样保留", () => {
+    const text = "解释以下错误\n[Image omitted: unsupported format.]";
+    expect(splitFileTags(text)).toEqual({ message: text, files: [] });
+  });
+
+  it("同一行紧挨着的许多说明行加不匹配的结尾：不出现指数级回溯", () => {
+    const line = "[Image: original x]".repeat(40);
+    const started = performance.now();
+    expect(stripImageHints(`问\n${line}!`)).toBe(`问\n${line}!`);
+    // 同一行的多条仍整体去掉
+    expect(stripImageHints(`问\n${line}`)).toBe("问");
+    expect(performance.now() - started).toBeLessThan(200);
   });
 });

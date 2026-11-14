@@ -60,4 +60,19 @@ describe("语音转文字", () => {
     expect(onFinal.mock.calls).toEqual([["第一句。"], ["第二句。"]]);
     expect(result.current.error).toBeNull();
   });
+
+  it("停止：先多采一小段尾音，再结束识别；连按两次只停一次", async () => {
+    const base = createMockPlatform();
+    const speechStop = vi.fn(async () => {});
+    setPlatformForTesting({ ...base, speechStart: async () => {}, speechStop });
+    const { result } = renderHook(() => useVoiceInput({ onFinal: () => {} }));
+    act(() => result.current.start());
+    await waitFor(() => expect(result.current.recording).toBe(true));
+    act(() => {
+      result.current.stop();
+      result.current.stop();
+    });
+    expect(speechStop).not.toHaveBeenCalled();
+    await waitFor(() => expect(speechStop).toHaveBeenCalledTimes(1));
+  });
 });

@@ -83,8 +83,8 @@ function textOf(content: unknown): string {
 }
 
 /** 消息索引里的一行：正文；只有附件时列出文件名 */
-function indexText(text: string): string {
-  const { message, files } = splitFileTags(text);
+function indexText(text: string, hasImages: boolean): string {
+  const { message, files } = splitFileTags(text, { imageHints: hasImages });
   return message || files.map((f) => f.path.split(/[\\/]/).pop() ?? f.path).join("、");
 }
 
@@ -531,12 +531,14 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     if (busy || modelConfig.unavailable || submittingRef.current) return;
     const lastUser = state.messages.findLast((m) => m.role === "user");
     if (lastUser?.role !== "user") return;
-    const { message: body, files } = splitFileTags(textOf(lastUser.content));
+    const images = imagesOf(lastUser.content);
+    const { message: body, files } = splitFileTags(textOf(lastUser.content), {
+      imageHints: images.length > 0,
+    });
     const message = withAttachments(
       body,
       files.map((f) => f.path),
     );
-    const images = imagesOf(lastUser.content);
     submittingRef.current = true;
     setSubmitting(true);
     stickToBottom.current = true;
@@ -642,7 +644,15 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     () =>
       turns.flatMap((turn) =>
         turn.user
-          ? [{ index: turn.user.index, text: indexText(textOf(turn.user.message.content)) }]
+          ? [
+              {
+                index: turn.user.index,
+                text: indexText(
+                  textOf(turn.user.message.content),
+                  imagesOf(turn.user.message.content).length > 0,
+                ),
+              },
+            ]
           : [],
       ),
     [turns],

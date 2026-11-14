@@ -180,6 +180,9 @@ describe("setup-theme.xml 与 MSI 界面（ADR 0012）", () => {
       expect(theme).toContain(`Name="${name}"`);
     // 进度页不显示随时变化的动作文字（闪烁来源）
     expect(theme).not.toContain("OverallProgressPackageText");
+    // 同名进度条只能声明一次（WixStdBA 只登记第一个），被动安装沿用 Progress 页
+    expect(theme).not.toContain('Page Name="ProgressPassive"');
+    expect(theme.match(/Name="OverallCalculatedProgressbar"/g)).toHaveLength(1);
     expect(theme).not.toContain("ExecuteProgressActionDataText");
   });
 

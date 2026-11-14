@@ -24,7 +24,7 @@ export const UserBubble = memo(function UserBubble({
 }) {
   // 末尾的 `<file>` 引用显示成文件标签（内联的文件内容不铺在气泡里）；图片显示成缩略图
   const { message, files } = useMemo(() => {
-    const split = splitFileTags(text);
+    const split = splitFileTags(text, { imageHints: images.length > 0 });
     return { message: split.message, files: visibleFileTags(split.files, images.length) };
   }, [text, images.length]);
   return (

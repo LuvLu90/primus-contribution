@@ -7,7 +7,7 @@
 //! 一句的结束时间取前一个 `input_audio_buffer.speech_stopped` 的 audio_end_ms。
 
 use base64::Engine as _;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -15,7 +15,7 @@ use super::{Emit, FINISH_TIMEOUT, Out};
 use crate::audio::Feed;
 use crate::failure::{Failure, classify};
 use crate::models::Model;
-use crate::net::Net;
+use crate::net::{self, Net};
 
 pub fn path(model: &Model) -> String {
     format!("/api-ws/v1/realtime?model={}", model.id)
@@ -35,8 +35,14 @@ pub fn session_update(model: &Model) -> String {
     .to_string()
 }
 
+/// 每条客户端消息都要带唯一的 event_id
+fn event_id() -> String {
+    format!("event_{}", super::duplex::task_id())
+}
+
 pub fn append(pcm: &[u8]) -> String {
     json!({
+        "event_id": event_id(),
         "type": "input_audio_buffer.append",
         "audio": base64::engine::general_purpose::STANDARD.encode(pcm)
     })
@@ -44,7 +50,7 @@ pub fn append(pcm: &[u8]) -> String {
 }
 
 pub fn finish() -> String {
-    json!({"type": "session.finish"}).to_string()
+    json!({"event_id": event_id(), "type": "session.finish"}).to_string()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -97,9 +103,7 @@ pub async fn run(
     let mut ws = net
         .ws(&path(model), &[("OpenAI-Beta", "realtime=v1")])
         .await?;
-    ws.send(Message::text(session_update(model)))
-        .await
-        .map_err(closed)?;
+    net::send(&mut ws, Message::text(session_update(model))).await?;
 
     let mut pos = start;
     let mut finishing = false;
@@ -109,9 +113,9 @@ pub async fn run(
     loop {
         tokio::select! {
             chunk = feed.next(&mut pos), if !finishing => match chunk {
-                Some(c) => ws.send(Message::text(append(&c))).await.map_err(closed)?,
+                Some(c) => net::send(&mut ws, Message::text(append(&c))).await?,
                 None => {
-                    ws.send(Message::text(finish())).await.map_err(closed)?;
+                    net::send(&mut ws, Message::text(finish())).await?;
                     finishing = true;
                     deadline.as_mut().reset(tokio::time::Instant::now() + FINISH_TIMEOUT);
                 }
@@ -130,7 +134,7 @@ pub async fn run(
                         }
                         Event::SpeechStopped(ms) => last_stop = ms,
                         Event::Finished => {
-                            let _ = ws.close(None).await;
+                            net::close(&mut ws).await;
                             return Ok(());
                         }
                         Event::Failed(f) => return Err(f),
@@ -165,6 +169,18 @@ mod tests {
         assert_eq!(v["session"]["sample_rate"], 16000);
         let a: Value = serde_json::from_str(&append(&[1, 2, 3])).unwrap();
         assert_eq!(a["audio"], "AQID");
+        // append 与 finish 都带唯一的 event_id
+        let b: Value = serde_json::from_str(&append(&[1])).unwrap();
+        let f: Value = serde_json::from_str(&finish()).unwrap();
+        for v in [&a, &b, &f] {
+            assert!(
+                v["event_id"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("event_"))
+            );
+        }
+        assert_ne!(a["event_id"], b["event_id"]);
+        assert_eq!(f["type"], "session.finish");
     }
 
     #[test]
