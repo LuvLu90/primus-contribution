@@ -476,6 +476,11 @@ describe("BAFunctions（ADR 0014）", () => {
   it("vswhere 按 UTF-8 输出，批处理先切到 UTF-8 代码页（非 ASCII 路径）", () => {
     const script = readFileSync(new URL("./build-bafunctions.mjs", import.meta.url), "utf8");
     expect(script).toContain('"-utf8"');
+    // 只选带 C++ 工具链的 VS 实例；批处理按相对文件名在输出目录执行（目录含 & 也不出错）
+    expect(script).toMatch(
+      /"-requiresAny",\s*"-requires",\s*"Microsoft\.VisualStudio\.Component\.VC\.Tools\.x86\.x64"/,
+    );
+    expect(script).toMatch(/"\/c", BAFUNCTIONS_CMD\],\s*\{\s*cwd: outDir/);
     expect(script).toMatch(/"@echo off",[\s\S]*?"chcp 65001 >nul",[\s\S]*?call \$\{q\(vcvars\)\}/);
   });
 

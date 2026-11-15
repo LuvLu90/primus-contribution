@@ -26,6 +26,8 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 export const BAFUNCTIONS_DIR = join(root, "apps/desktop/src-tauri/windows/bafunctions");
 export const BAFUNCTIONS_SOURCES = ["bafunctions.cpp", "PrimusBAFunctions.cpp"];
 export const BAFUNCTIONS_DEF = "bafunctions.def";
+/** 编译用的批处理文件名（在输出目录里按这个相对名执行） */
+export const BAFUNCTIONS_CMD = "build-bafunctions.cmd";
 export const BAFUNCTIONS_DLL = "bafunctions.dll";
 /** 与 build-setup-exe.mjs 的 BUNDLE_ARCH（Burn 引擎 / WixStdBA 进程架构）一致 */
 export const BAFUNCTIONS_ARCH = "x86";
@@ -243,6 +245,11 @@ function main() {
       "-utf8",
       "-products",
       "*",
+      // 只选装了 C++ 工具链的实例（x64 或 ARM64 主机），否则 -latest 可能选中只有托管组件的新版
+      "-requiresAny",
+      "-requires",
+      "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+      "Microsoft.VisualStudio.Component.VC.Tools.ARM64",
       "-property",
       "installationPath",
     ]).trim();
@@ -272,9 +279,13 @@ function main() {
       built = true;
       break;
     }
-    const cmd = join(outDir, "build-bafunctions.cmd");
+    const cmd = join(outDir, BAFUNCTIONS_CMD);
     writeFileSync(cmd, `${script}\r\n`);
-    const r = spawnSync("cmd.exe", ["/d", "/c", cmd], { cwd: outDir, stdio: "inherit" });
+    // 在 outDir 里按固定文件名执行：输出目录含 & 等字符时，完整路径会被 cmd 当成命令分隔符
+    const r = spawnSync("cmd.exe", ["/d", "/c", BAFUNCTIONS_CMD], {
+      cwd: outDir,
+      stdio: "inherit",
+    });
     if (r.status === 0) {
       built = true;
       break;
