@@ -5,7 +5,8 @@
 # （安装包是 MSI，ADR 0007：按机器安装在 Program Files，附带按需启动的更新服务 PrimusUpdate，应用内静默升级）
 # - 每个架构另发一个 exe 安装程序 PrimusSetup_<ver>_<x64|arm64>_zh-CN.exe（ADR 0011）：WiX Burn 引导程序，内嵌同架构的 MSI，
 #   不经 .msi 文件关联（给双击 MSI 打不开的电脑用），下错架构时用中文提示；装好的就是 MSI 本身，update-feed 仍只引用 MSI。
-#   构建作业在 MSI 冒烟之后，用工作流自身提交中的 Bundle.wxs 与构建脚本打包本架构的 MSI，并在同一运行器上做静默安装 / 卸载冒烟
+#   构建作业在 MSI 冒烟之后，用工作流自身提交中的 Bundle.wxs 与构建脚本打包本架构的 MSI，并在同一运行器上做静默安装 / 卸载冒烟；
+#   安装向导的 BAFunctions 原生 DLL（ADR 0014）先在同一运行器上用 MSVC 编译（scripts/build-bafunctions.mjs）
 # - 推送 v* 标签时自动运行；Release 不存在则创建。版本含预发布标识（含 '-'，如 1.2.0-beta.1）时标为 prerelease，
 #   否则为正式版并设为 Latest
 # - workflow_dispatch 输入已有标签（例如 v0.0.9），重新构建该标签并更新对应 Release：同名附件覆盖上传
@@ -215,6 +216,19 @@ jobs:
         shell: pwsh
         run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
 
+      # ADR 0014：exe 安装向导（欢迎 → 隐私政策 → 选择安装位置）的 BAFunctions 原生 DLL。x86（与 -arch x86 的 WixStdBA
+      # 进程一致，两个架构的 exe 共用），运行器自带的 Visual Studio（MSVC）编译；WiX 原生 SDK 包按锁定的 SHA-512 下载。
+      # 源码与脚本取自工作流自身的提交（与 Bundle.wxs 相同）。不做 Authenticode 签名（与 exe、MSI 相同）
+      - name: 编译 BAFunctions（MSVC，x86）
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'bafunctions'
+          node .release-ci/scripts/build-bafunctions.mjs --out-dir $dir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dll = Join-Path $dir 'bafunctions.dll'
+          if (-not (Test-Path -LiteralPath $dll)) { throw "没有生成 $dll" }
+          "PRIMUS_BAFUNCTIONS=$dll" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       # ADR 0011：exe 安装程序，内嵌刚冒烟过的本架构 MSI（Bundle.wxs、界面文案与构建脚本取自工作流自身的提交）
       - name: 构建 exe 安装程序 PrimusSetup_${{ steps.version.outputs.version }}_${{ matrix.arch }}_zh-CN.exe
         shell: pwsh
@@ -223,7 +237,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           $dir = Join-Path $env:RUNNER_TEMP 'setup-out'
-          node .release-ci/scripts/build-setup-exe.mjs --arch $env:ARCH --msi $env:PRIMUS_MSI --version $env:VERSION --out-dir $dir
+          node .release-ci/scripts/build-setup-exe.mjs --arch $env:ARCH --msi $env:PRIMUS_MSI --version $env:VERSION --out-dir $dir --bafunctions $env:PRIMUS_BAFUNCTIONS
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "PRIMUS_SETUP_EXE=$(Join-Path $dir "PrimusSetup_${env:VERSION}_${env:ARCH}_zh-CN.exe")" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 

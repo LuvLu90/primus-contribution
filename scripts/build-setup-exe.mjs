@@ -6,26 +6,31 @@
 //
 //   wix build Bundle.wxs -arch x86 -acceptEula wix7 -ext WixToolset.BootstrapperApplications.wixext
 //     -ext WixToolset.Util.wixext -d ProductVersion=<与 MSI 相同> -d PrimusVersion=<SemVer> -d ShellDir=<src-tauri>
-//     -d Arch=<x64|arm64> -d Msi=<msi> -o <exe>
+//     -d Arch=<x64|arm64> -d Msi=<msi> -d BAFunctionsDll=<bafunctions.dll> -o <exe>
 //
-// 界面是 exe 自己的自定义主题（windows/setup-theme.xml、bundle-zh-CN.wxl，ADR 0012），与 MSI 的 PrimusUI 一一对应；
-// MSI 在 exe 下不显示内部界面。
+// 界面是 exe 自己的自定义主题（windows/setup-theme.xml、bundle-zh-CN.wxl，ADR 0012 / 0014），与 MSI 的 PrimusUI 一一对应；
+// MSI 在 exe 下不显示内部界面。安装向导前三步（欢迎 → 隐私政策 → 选择安装位置）由 BAFunctions 原生 DLL
+// （windows/bafunctions，x86，MSVC 编译，ADR 0014）在 WixStdBA 的同一页里切换；没有传 --bafunctions 时先调用
+// scripts/build-bafunctions.mjs 编译它（需要带 C++ 工具的 Visual Studio）。
 //
 // 前提：MSI 已由 scripts/build-msi.mjs 构建；已安装 WiX 7 .NET 工具与 BootstrapperApplications 扩展
 // （版本见 scripts/version-baseline.json，CI 中 `wix extension add -g`）。WiX 只能在 Windows 上运行；
 // 其他平台只能用 --dry-run 查看将要执行的命令。不做 Authenticode 签名（与 MSI 相同，ADR 0007）。
 //
-// 用法：node scripts/build-setup-exe.mjs --arch <x64|arm64> --msi <msi> [--version <SemVer>] [--out-dir <目录>] [--dry-run]
+// 用法：node scripts/build-setup-exe.mjs --arch <x64|arm64> --msi <msi> [--version <SemVer>] [--out-dir <目录>]
+//                                        [--bafunctions <dll>] [--dry-run]
 //   --arch      目标架构，默认 x64
 //   --msi       同架构的 MSI，文件名须为 Primus_<ver>_<arch>_zh-CN.msi；默认取输出目录下的同名文件
 //   --version   默认取 apps/desktop/src-tauri/tauri.conf.json 的 version（发布工作流显式传标签版本）
 //   --out-dir   输出目录，默认仓库根下 out/；同时写 <exe>.sha256
+//   --bafunctions  已编译好的 bafunctions.dll（发布工作流单独编译后传入）；默认在 <out-dir>/bafunctions 下现编
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { BAFUNCTIONS_ARCH, BAFUNCTIONS_DLL } from "./build-bafunctions.mjs";
 import { CULTURE, msiFileName, msiProductVersion } from "./build-msi.mjs";
 
 export const ARCHES = ["x64", "arm64"];
@@ -44,6 +49,8 @@ export const BUNDLE_THEME = join(tauriDir, "windows/setup-theme.xml");
  * 下错架构时由 Bundle.wxs 的 bal:Condition 给出中文说明
  */
 export const BUNDLE_ARCH = "x86";
+if (BUNDLE_ARCH !== BAFUNCTIONS_ARCH)
+  throw new Error("BAFunctions 与 Burn 引擎（WixStdBA 进程）的架构必须相同");
 
 function checkArch(arch) {
   if (!ARCHES.includes(arch)) throw new Error(`架构只能是 ${ARCHES.join(" 或 ")}，实际为 ${arch}`);
@@ -64,10 +71,11 @@ export function wixBundleArgs({
   primusVersion,
   arch,
   msi,
+  bafunctions,
   out,
 }) {
-  if (!productVersion || !primusVersion || !msi || !out)
-    throw new Error("缺少 productVersion、primusVersion、msi 或 out");
+  if (!productVersion || !primusVersion || !msi || !bafunctions || !out)
+    throw new Error("缺少 productVersion、primusVersion、msi、bafunctions 或 out");
   checkArch(arch);
   return [
     "build",
@@ -90,6 +98,8 @@ export function wixBundleArgs({
     `Arch=${arch}`,
     "-d",
     `Msi=${msi}`,
+    "-d",
+    `BAFunctionsDll=${bafunctions}`,
     "-o",
     out,
   ];
@@ -114,6 +124,7 @@ function main() {
       msi: { type: "string" },
       version: { type: "string" },
       "out-dir": { type: "string" },
+      bafunctions: { type: "string" },
       "dry-run": { type: "boolean", default: false },
     },
   });
@@ -139,7 +150,8 @@ function main() {
   if (msiProblem) fail(msiProblem);
 
   const exe = join(outDir, setupExeFileName(version, arch));
-  const wixArgs = wixBundleArgs({ productVersion, primusVersion: version, arch, msi, out: exe });
+  let bafunctions = args.bafunctions ? resolve(args.bafunctions) : null;
+  if (bafunctions && !exists(bafunctions)) fail(`未找到 ${bafunctions}`);
 
   const run = (command, commandArgs, { capture = false } = {}) => {
     console.log(`\n> ${[command, ...commandArgs].join(" ")}`);
@@ -153,6 +165,27 @@ function main() {
     if (r.status !== 0) fail(`命令失败（退出码 ${r.status}）：${command} ${commandArgs.join(" ")}`);
     return capture ? r.stdout : "";
   };
+
+  // BAFunctions（ADR 0014）：未传入时先用 MSVC 编译
+  if (!bafunctions) {
+    const bafDir = join(outDir, "bafunctions");
+    run(process.execPath, [
+      join(root, "scripts/build-bafunctions.mjs"),
+      "--out-dir",
+      bafDir,
+      ...(dryRun ? ["--dry-run"] : []),
+    ]);
+    bafunctions = join(bafDir, BAFUNCTIONS_DLL);
+    if (!dryRun && !existsSync(bafunctions)) fail(`没有生成 ${bafunctions}`);
+  }
+  const wixArgs = wixBundleArgs({
+    productVersion,
+    primusVersion: version,
+    arch,
+    msi,
+    bafunctions,
+    out: exe,
+  });
 
   if (!dryRun) {
     const baseline = JSON.parse(readFileSync(join(root, "scripts/version-baseline.json"), "utf8"));

@@ -248,9 +248,10 @@
       <Custom Action="InstallWebView2" Before="InstallFinalize" Condition="WEBVIEW2_MISSING AND NOT REMOVE" />
     </InstallExecuteSequence>
 
-    <!-- 安装界面 PrimusUI（windows/PrimusUI.wxi，ADR 0012）：与 exe 安装程序同一套页面——准备安装（隐私政策、同意、
-         选择安装目录，约束 C2）→ 正在安装 → 完成（立即启动 / 完成）。中文公共对话框（浏览、取消确认、磁盘空间、文件占用）
-         沿用 WixUI，由 -culture zh-CN 提供文案。页眉图 windows/art/wix-banner.bmp（由应用图标生成）。 -->
+    <!-- 安装界面 PrimusUI（windows/PrimusUI.wxi，ADR 0012、0014）：与 exe 安装程序同一套 6 步——欢迎 → 隐私政策 →
+         选择安装位置（约束 C2；“安装”）→ UAC → 正在安装 → 完成（立即启动 / 完成）；前三步是同一个对话框。
+         中文公共对话框（浏览、取消确认、磁盘空间、文件占用）沿用 WixUI，由 -culture zh-CN 提供文案，
+         页眉图 windows/art/wix-banner.bmp / wix-dialog.bmp 只给这些公共对话框用。 -->
     <WixVariable Id="WixUIBannerBmp" Value="$(ShellDir)\windows\art\wix-banner.bmp" />
     <WixVariable Id="WixUIDialogBmp" Value="$(ShellDir)\windows\art\wix-dialog.bmp" />
     <?include PrimusUI.wxi ?>

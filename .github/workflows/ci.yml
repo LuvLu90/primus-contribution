@@ -328,6 +328,7 @@ jobs:
 
       # ADR 0011：exe 安装程序 PrimusSetup_<ver>_x64_zh-CN.exe（Burn，内嵌本作业的 x64 MSI）。静默安装后“应用和功能”里
       # 只有 MSI 本身、没有 bundle 登记，Primus.exe 的架构与本机一致，再按产品代码卸载
+      # 构建脚本先用运行器自带的 MSVC 编译安装向导的 BAFunctions（x86，ADR 0014；scripts/build-bafunctions.mjs）
       - name: 构建 exe 安装程序（x64）
         run: node scripts/build-setup-exe.mjs --arch x64 --msi "${{ env.PRIMUS_MSI }}" --out-dir out/setup
       - name: exe 安装程序静默安装 / 卸载冒烟
@@ -512,6 +513,7 @@ jobs:
         run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
 
       # ADR 0011：exe 安装程序 PrimusSetup_<ver>_arm64_zh-CN.exe（x86 Burn 引擎经仿真运行，内嵌本作业的 ARM64 MSI）
+      # 构建脚本先用运行器自带的 MSVC 编译安装向导的 BAFunctions（x86，ADR 0014；scripts/build-bafunctions.mjs）
       - name: 构建 exe 安装程序（arm64）
         run: node scripts/build-setup-exe.mjs --arch arm64 --msi "${{ env.PRIMUS_MSI }}" --out-dir out/setup
       - name: exe 安装程序静默安装 / 卸载冒烟

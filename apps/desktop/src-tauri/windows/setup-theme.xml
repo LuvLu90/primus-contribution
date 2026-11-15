@@ -1,75 +1,151 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  exe 安装程序 PrimusSetup 的界面（WixStandardBootstrapperApplication 自定义主题，ADR 0011 / 0012）。
-  与 MSI 自己的界面（Primus.wxs 的 PrimusUI）是同一套设计，页面、文案、按钮位置一一对应：
+  exe 安装程序 PrimusSetup 的界面（WixStandardBootstrapperApplication 自定义主题，ADR 0011 / 0012 / 0014）。
+  与 MSI 自己的界面（PrimusUI.wxi）是同一套设计，页面、文案、按钮位置一一对应，共 6 步：
 
-    准备安装（隐私政策 + 同意 + 安装位置） → 正在安装（进度条） → 安装完成（立即启动 / 完成） | 安装未完成
+    1 欢迎 → 2 隐私政策 → 3 选择安装位置（“安装”）→ 4 UAC → 5 正在安装 → 6 安装完成 | 安装未完成
 
-  - 顶部白色页眉：左侧页标题与版本，右侧标志，下方分隔线；底部分隔线 + 右下角按钮。
-  - 进度页只有一条进度条与一行固定说明，不显示随时变化的“正在处理：<动作>”文字（频繁重绘是闪烁的主要来源）。
-  - 文字控件不叠在图片上：标志单独一块，标题在白底上，避免透明控件重绘时闪烁。
-  - 尺寸按 MSI 对话框 370×270 安装单位（约 555×405 像素）对齐，两种安装方式看起来是同一个程序。
-  控件名（EulaRichedit、EulaAcceptCheckbox、InstallFolder、InstallButton…）是 WixStdBA 认识的固定名字，不能改。
+  - 前三步都在 WixStdBA 的 "Install" 页里（WixStdBA 只按引擎状态换页，InstallFolder 编辑框也只在隐藏所在页时回写变量），
+    三组控件各带 VisibleCondition="PrimusStep = N"；windows/bafunctions 的 BAFunctions 改 PrimusStep 并让 thmutil
+    重新求值（经隐藏的 PrimusRefresh 复选框），同一个窗口里显隐，WM_SETREDRAW 包住、整页只重画一次，不闪烁。
+    “上一步 / 下一步”只在 BAFunctions 里处理；“下一步”在第 2 步的启用条件是 PrimusAgree（自定义复选框，不用
+    EulaAcceptCheckbox：那样 WixStdBA 会按复选框禁用 InstallButton，与分步冲突）。
+  - InstallButton、EulaRichedit 是 WixStdBA 管的控件：忽略 VisibleCondition，由 BAFunctions 在第 3 / 第 2 步之外隐藏
+    （不能带 ChangePageAction）。InstallButton 只在第 3 步出现；Burn 在 Install 页上自动给它加 UAC 盾牌
+    （ThemeControlElevates，按机器安装且未提权时），点“安装”后才提权。
+  - 进度页只有一条进度条与一行固定说明，不显示随时变化的动作文字（频繁重绘是闪烁的主要来源）。
+  - 样式对齐 Primus 全局：白底，正文 #1d1d1f，次要文字 #6e6e73，分割线 / 边框 #e1e1e3（setup-line.png 拉伸），
+    Microsoft YaHei UI；底部按钮栏上方一条细分割线。字体颜色是 BGR 十六进制（thmutil Font）。按钮、复选框、
+    进度条、滚动条用系统样式（MSI 做不到黑底白字主按钮，两边都用系统按钮，见 ADR 0014）。
+  - 尺寸按效果图（windows 客户区 555×405 像素，按钮 88×30，左右边距 30），thmutil 按 DPI 缩放；图片用
+    AlternateResolution 给出 125% / 150% / 200% 版本。
+  控件名 InstallButton、EulaRichedit、InstallFolder、OverallCalculatedProgressbar、LaunchButton 等是 WixStdBA 认识的
+  固定名字；PrimusNextButton、PrimusBackButton、PrimusAgree、PrimusRefresh 是 BAFunctions 认识的名字，都不能改。
 -->
 <Theme xmlns="http://wixtoolset.org/schemas/v4/thmutil">
-    <Font Id="Normal" Height="-12" Weight="400" Foreground="windowtext" Background="window">Microsoft YaHei UI</Font>
-    <Font Id="Title" Height="-16" Weight="700" Foreground="windowtext" Background="window">Microsoft YaHei UI</Font>
-    <Font Id="Muted" Height="-12" Weight="400" Foreground="graytext" Background="window">Microsoft YaHei UI</Font>
-    <Font Id="Button" Height="-12" Weight="400" Foreground="btntext" Background="btnface">Microsoft YaHei UI</Font>
+    <Font Id="Normal" Height="-13" Weight="400" Foreground="1f1d1d" Background="ffffff">Microsoft YaHei UI</Font>
+    <Font Id="Title" Height="-16" Weight="700" Foreground="1f1d1d" Background="ffffff">Microsoft YaHei UI</Font>
+    <Font Id="Hero" Height="-18" Weight="700" Foreground="1f1d1d" Background="ffffff">Microsoft YaHei UI</Font>
+    <Font Id="Muted" Height="-12" Weight="400" Foreground="736e6e" Background="ffffff">Microsoft YaHei UI</Font>
+    <Font Id="Small" Height="-11" Weight="400" Foreground="736e6e" Background="ffffff">Microsoft YaHei UI</Font>
+    <Font Id="Button" Height="-13" Weight="400" Foreground="btntext" Background="ffffff">Microsoft YaHei UI</Font>
+
+    <Image Id="Icon40" ImageFile="setup-icon-40.png">
+        <AlternateResolution ImageFile="setup-icon-40@125.png" />
+        <AlternateResolution ImageFile="setup-icon-40@150.png" />
+        <AlternateResolution ImageFile="setup-icon-40@200.png" />
+    </Image>
+    <Image Id="Icon72" ImageFile="setup-icon-72.png">
+        <AlternateResolution ImageFile="setup-icon-72@125.png" />
+        <AlternateResolution ImageFile="setup-icon-72@150.png" />
+        <AlternateResolution ImageFile="setup-icon-72@200.png" />
+    </Image>
+    <Image Id="Check44" ImageFile="setup-check-44.png">
+        <AlternateResolution ImageFile="setup-check-44@125.png" />
+        <AlternateResolution ImageFile="setup-check-44@150.png" />
+        <AlternateResolution ImageFile="setup-check-44@200.png" />
+    </Image>
+    <Image Id="Steps1" ImageFile="setup-steps-1.png">
+        <AlternateResolution ImageFile="setup-steps-1@125.png" />
+        <AlternateResolution ImageFile="setup-steps-1@150.png" />
+        <AlternateResolution ImageFile="setup-steps-1@200.png" />
+    </Image>
+    <Image Id="Steps2" ImageFile="setup-steps-2.png">
+        <AlternateResolution ImageFile="setup-steps-2@125.png" />
+        <AlternateResolution ImageFile="setup-steps-2@150.png" />
+        <AlternateResolution ImageFile="setup-steps-2@200.png" />
+    </Image>
+    <Image Id="Steps3" ImageFile="setup-steps-3.png">
+        <AlternateResolution ImageFile="setup-steps-3@125.png" />
+        <AlternateResolution ImageFile="setup-steps-3@150.png" />
+        <AlternateResolution ImageFile="setup-steps-3@200.png" />
+    </Image>
+    <Image Id="Line" ImageFile="setup-line.png" />
 
     <Window Width="555" Height="405" HexStyle="100a0000" FontId="Normal" Caption="#(loc.Caption)">
-        <!-- 页眉：标志在右，下方一条分隔线（各页的标题在页里） -->
-        <ImageControl X="-20" Y="11" Width="44" Height="44" ImageFile="logo.png" Visible="yes" />
-        <Label X="0" Y="66" Width="555" Height="2" HexStyle="10" Visible="yes" />
-        <!-- 底部按钮区上方的分隔线 -->
-        <Label X="0" Y="-52" Width="555" Height="2" HexStyle="10" Visible="yes" />
+        <!-- 底部按钮栏上方的细分割线（效果图 .foot：高 56，上边框 #e1e1e3） -->
+        <ImageControl X="0" Y="349" Width="555" Height="1" ImageId="Line" Visible="yes" />
 
         <Page Name="Loading">
-            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">#(loc.InstallTitle)</Label>
-            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
-            <Label Name="CheckingForUpdatesLabel" X="30" Y="90" Width="-30" Height="20" FontId="Muted" DisablePrefix="yes" Visible="no" />
+            <ImageControl X="30" Y="22" Width="40" Height="40" ImageId="Icon40" />
+            <Label X="84" Y="21" Width="360" Height="24" FontId="Title" DisablePrefix="yes">#(loc.InstallTitle)</Label>
+            <Label X="84" Y="45" Width="360" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
+            <Label Name="CheckingForUpdatesLabel" X="30" Y="92" Width="-30" Height="20" FontId="Muted" DisablePrefix="yes" Visible="no" />
         </Page>
 
         <Page Name="Help">
-            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">#(loc.HelpHeader)</Label>
-            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
-            <Label X="30" Y="86" Width="-30" Height="-66" FontId="Normal" DisablePrefix="yes">#(loc.HelpText)</Label>
-            <Button Name="HelpCloseButton" X="-14" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">
+            <ImageControl X="30" Y="22" Width="40" Height="40" ImageId="Icon40" />
+            <Label X="84" Y="21" Width="360" Height="24" FontId="Title" DisablePrefix="yes">#(loc.HelpHeader)</Label>
+            <Label X="84" Y="45" Width="360" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
+            <Label X="30" Y="86" Width="-30" Height="250" FontId="Normal" DisablePrefix="yes">#(loc.HelpText)</Label>
+            <Button Name="HelpCloseButton" X="-14" Y="-13" Width="88" Height="30" TabStop="yes" FontId="Button">
                 <Text>#(loc.HelpCloseButton)</Text>
                 <CloseWindowAction />
             </Button>
         </Page>
 
-        <!-- 准备安装：与 MSI 的 PrimusInstallDlg 相同 -->
+        <!-- 安装向导前三步：同一页里的三组控件（PrimusStep = 1 / 2 / 3），由 BAFunctions 切换 -->
         <Page Name="Install">
-            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">#(loc.InstallTitle)</Label>
-            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
-            <Label X="30" Y="80" Width="-30" Height="20" FontId="Normal" DisablePrefix="yes">#(loc.InstallPrivacyLabel)</Label>
-            <!-- 带边框的隐私政策（Privacy.rtf，与 MSI 同一个文件） -->
-            <Label X="30" Y="102" Width="-30" Height="146" TabStop="no" FontId="Normal" HexStyle="800000" DisablePrefix="yes" />
-            <Richedit Name="EulaRichedit" X="31" Y="103" Width="-31" Height="144" TabStop="yes" FontId="Normal" />
-            <Checkbox Name="EulaAcceptCheckbox" X="30" Y="254" Width="-30" Height="22" TabStop="yes" FontId="Normal">#(loc.InstallAcceptCheckbox)</Checkbox>
-            <Label X="30" Y="286" Width="90" Height="20" FontId="Normal" DisablePrefix="yes">#(loc.InstallFolderLabel)</Label>
-            <Label X="120" Y="286" Width="-30" Height="20" FontId="Muted" DisablePrefix="yes" VisibleCondition="PrimusFolderLocked">#(loc.InstallFolderLockedText)</Label>
-            <Editbox Name="InstallFolder" X="30" Y="308" Width="-124" Height="26" TabStop="yes" FontId="Normal" FileSystemAutoComplete="yes" EnableCondition="NOT PrimusFolderLocked" />
-            <Button Name="BrowseButton" X="-30" Y="307" Width="88" Height="28" TabStop="yes" FontId="Button" EnableCondition="NOT PrimusFolderLocked">
+            <!-- 右上角步骤指示：圆点 + n/3（效果图 .steps：right 30、top 30） -->
+            <ImageControl X="459" Y="33" Width="40" Height="6" ImageId="Steps1" VisibleCondition="PrimusStep = 1" />
+            <ImageControl X="459" Y="33" Width="40" Height="6" ImageId="Steps2" VisibleCondition="PrimusStep = 2" />
+            <ImageControl X="459" Y="33" Width="40" Height="6" ImageId="Steps3" VisibleCondition="PrimusStep = 3" />
+            <Label X="503" Y="27" Width="24" Height="16" FontId="Small" DisablePrefix="yes" VisibleCondition="PrimusStep = 1">#(loc.Step1Of3)</Label>
+            <Label X="503" Y="27" Width="24" Height="16" FontId="Small" DisablePrefix="yes" VisibleCondition="PrimusStep = 2">#(loc.Step2Of3)</Label>
+            <Label X="503" Y="27" Width="24" Height="16" FontId="Small" DisablePrefix="yes" VisibleCondition="PrimusStep = 3">#(loc.Step3Of3)</Label>
+
+            <!-- 1 欢迎：居中大图标、标题、版本、说明 -->
+            <ImageControl X="241" Y="56" Width="72" Height="72" ImageId="Icon72" VisibleCondition="PrimusStep = 1" />
+            <Label X="30" Y="144" Width="-30" Height="26" FontId="Hero" Center="yes" DisablePrefix="yes" VisibleCondition="PrimusStep = 1">#(loc.WelcomeTitle)</Label>
+            <Label X="30" Y="174" Width="-30" Height="18" FontId="Muted" Center="yes" DisablePrefix="yes" VisibleCondition="PrimusStep = 1">#(loc.VersionText)</Label>
+            <Label X="30" Y="214" Width="-30" Height="44" FontId="Normal" Center="yes" DisablePrefix="yes" VisibleCondition="PrimusStep = 1">#(loc.WelcomeText)</Label>
+
+            <!-- 2、3 的页眉：标志 + 标题 + 副标题 -->
+            <ImageControl X="30" Y="22" Width="40" Height="40" ImageId="Icon40" VisibleCondition="PrimusStep = 2 OR PrimusStep = 3" />
+
+            <!-- 2 隐私政策：带 #e1e1e3 边框的 Privacy.rtf（四条线 + 无边框的 EulaRichedit）与同意复选框 -->
+            <Label X="84" Y="21" Width="360" Height="24" FontId="Title" DisablePrefix="yes" VisibleCondition="PrimusStep = 2">#(loc.PrivacyTitle)</Label>
+            <Label X="84" Y="45" Width="360" Height="18" FontId="Muted" DisablePrefix="yes" VisibleCondition="PrimusStep = 2">#(loc.PrivacySubtitle)</Label>
+            <ImageControl X="30" Y="76" Width="495" Height="1" ImageId="Line" VisibleCondition="PrimusStep = 2" />
+            <ImageControl X="30" Y="255" Width="495" Height="1" ImageId="Line" VisibleCondition="PrimusStep = 2" />
+            <ImageControl X="30" Y="76" Width="1" Height="180" ImageId="Line" VisibleCondition="PrimusStep = 2" />
+            <ImageControl X="524" Y="76" Width="1" Height="180" ImageId="Line" VisibleCondition="PrimusStep = 2" />
+            <Richedit Name="EulaRichedit" X="31" Y="77" Width="493" Height="178" TabStop="yes" FontId="Normal" />
+            <Checkbox Name="PrimusAgree" X="30" Y="268" Width="495" Height="20" TabStop="yes" FontId="Normal" VisibleCondition="PrimusStep = 2">#(loc.InstallAcceptCheckbox)</Checkbox>
+
+            <!-- 3 选择安装位置：已安装 / 从 NSIS 迁移时目录锁定并显示说明 -->
+            <Label X="84" Y="21" Width="360" Height="24" FontId="Title" DisablePrefix="yes" VisibleCondition="PrimusStep = 3">#(loc.FolderTitle)</Label>
+            <Label X="84" Y="45" Width="360" Height="18" FontId="Muted" DisablePrefix="yes" VisibleCondition="PrimusStep = 3">#(loc.FolderSubtitle)</Label>
+            <Label X="30" Y="92" Width="64" Height="20" FontId="Normal" DisablePrefix="yes" VisibleCondition="PrimusStep = 3">#(loc.FolderLabel)</Label>
+            <Label X="96" Y="94" Width="429" Height="18" FontId="Muted" DisablePrefix="yes" VisibleCondition="PrimusStep = 3 AND PrimusFolderLocked">#(loc.InstallFolderLockedText)</Label>
+            <Editbox Name="InstallFolder" X="30" Y="122" Width="399" Height="26" TabStop="yes" FontId="Normal" FileSystemAutoComplete="yes" VisibleCondition="PrimusStep = 3" EnableCondition="NOT PrimusFolderLocked" />
+            <Button Name="BrowseButton" X="437" Y="120" Width="88" Height="30" TabStop="yes" FontId="Button" VisibleCondition="PrimusStep = 3" EnableCondition="NOT PrimusFolderLocked">
                 <Text>#(loc.InstallBrowseButton)</Text>
                 <BrowseDirectoryAction VariableName="InstallFolder" />
             </Button>
-            <Button Name="InstallButton" X="-112" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">#(loc.InstallInstallButton)</Button>
-            <Button Name="InstallCancelButton" X="-14" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">
+            <Label X="30" Y="160" Width="495" Height="40" FontId="Muted" DisablePrefix="yes" VisibleCondition="PrimusStep = 3">#(loc.FolderNote)</Label>
+
+            <!-- 底部按钮：上一步（2、3）· 下一步（1、2）/ 安装（3，只在这一步）· 取消 -->
+            <Button Name="PrimusBackButton" X="-206" Y="-13" Width="88" Height="30" TabStop="yes" FontId="Button" VisibleCondition="PrimusStep = 2 OR PrimusStep = 3">#(loc.BackButton)</Button>
+            <Button Name="PrimusNextButton" X="-110" Y="-13" Width="88" Height="30" TabStop="yes" FontId="Button" VisibleCondition="PrimusStep = 1 OR PrimusStep = 2" EnableCondition="PrimusStep = 1 OR PrimusAgree">#(loc.NextButton)</Button>
+            <Button Name="InstallButton" X="-110" Y="-13" Width="88" Height="30" TabStop="yes" FontId="Button">#(loc.InstallInstallButton)</Button>
+            <Button Name="InstallCancelButton" X="-14" Y="-13" Width="88" Height="30" TabStop="yes" FontId="Button">
                 <Text>#(loc.InstallCancelButton)</Text>
                 <CloseWindowAction />
             </Button>
+
+            <!-- BAFunctions 切换步骤时“点”它一下，让 thmutil 按 PrimusStep 刷新本页（永不显示） -->
+            <Checkbox Name="PrimusRefresh" X="0" Y="0" Width="1" Height="1" TabStop="no" FontId="Normal" VisibleCondition="PrimusRefreshVisible" />
         </Page>
 
-        <!-- 正在安装：与 MSI 的 PrimusProgressDlg 相同（只有进度条，不显示逐个动作的文字） -->
+        <!-- 5 正在安装：与 MSI 的 PrimusProgressDlg 相同（只有进度条，不显示逐个动作的文字） -->
         <Page Name="Progress">
-            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">#(loc.ProgressHeader)</Label>
-            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
-            <Label X="30" Y="90" Width="-30" Height="40" FontId="Normal" DisablePrefix="yes">#(loc.ProgressText)</Label>
-            <Progressbar Name="OverallCalculatedProgressbar" X="30" Y="138" Width="-30" Height="18" />
-            <Button Name="ProgressCancelButton" X="-14" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">#(loc.ProgressCancelButton)</Button>
+            <ImageControl X="30" Y="22" Width="40" Height="40" ImageId="Icon40" />
+            <Label X="84" Y="21" Width="360" Height="24" FontId="Title" DisablePrefix="yes">#(loc.ProgressHeader)</Label>
+            <Label X="84" Y="45" Width="360" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
+            <Label X="30" Y="108" Width="-30" Height="20" FontId="Normal" DisablePrefix="yes">#(loc.ProgressText)</Label>
+            <Progressbar Name="OverallCalculatedProgressbar" X="30" Y="142" Width="-30" Height="14" />
+            <Button Name="ProgressCancelButton" X="-14" Y="-13" Width="88" Height="30" TabStop="yes" FontId="Button">#(loc.ProgressCancelButton)</Button>
         </Page>
 
         <!-- 被动安装（/passive）不另设 ProgressPassive 页：WixStdBA 只登记第一个同名进度条与取消按钮，
@@ -77,38 +153,40 @@
 
         <!-- exe 不在“应用和功能”中登记自己（ADR 0011），正常不会出现修改页；保留以防万一 -->
         <Page Name="Modify">
-            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">#(loc.ModifyHeader)</Label>
-            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
-            <Button Name="RepairButton" X="-210" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button" HideWhenDisabled="yes">#(loc.ModifyRepairButton)</Button>
-            <Button Name="UninstallButton" X="-112" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">#(loc.ModifyUninstallButton)</Button>
-            <Button Name="ModifyCancelButton" X="-14" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">
+            <ImageControl X="30" Y="22" Width="40" Height="40" ImageId="Icon40" />
+            <Label X="84" Y="21" Width="360" Height="24" FontId="Title" DisablePrefix="yes">#(loc.ModifyHeader)</Label>
+            <Label X="84" Y="45" Width="360" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
+            <Button Name="RepairButton" X="-206" Y="-13" Width="88" Height="30" TabStop="yes" FontId="Button" HideWhenDisabled="yes">#(loc.ModifyRepairButton)</Button>
+            <Button Name="UninstallButton" X="-110" Y="-13" Width="88" Height="30" TabStop="yes" FontId="Button">#(loc.ModifyUninstallButton)</Button>
+            <Button Name="ModifyCancelButton" X="-14" Y="-13" Width="88" Height="30" TabStop="yes" FontId="Button">
                 <Text>#(loc.ModifyCancelButton)</Text>
                 <CloseWindowAction />
             </Button>
         </Page>
 
-        <!-- 安装完成：与 MSI 的 PrimusExitDlg 相同（立即启动 / 完成）。启动在 exe 自己的非提权进程中进行 -->
+        <!-- 6 安装完成：与 MSI 的 PrimusExitDlg 相同（立即启动 / 完成）。启动在 exe 自己的非提权进程中进行 -->
         <Page Name="Success">
-            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">
+            <ImageControl X="255" Y="56" Width="44" Height="44" ImageId="Check44" />
+            <Label X="30" Y="116" Width="-30" Height="26" FontId="Hero" Center="yes" DisablePrefix="yes">
                 <Text>#(loc.SuccessHeader)</Text>
                 <Text Condition="WixBundleAction = 3 OR WixBundleAction = 4">#(loc.SuccessUninstallHeader)</Text>
                 <Text Condition="WixBundleAction = 8">#(loc.SuccessRepairHeader)</Text>
                 <!-- /layout（BOOTSTRAPPER_ACTION_LAYOUT = 2）：只创建本地副本，没有安装 -->
                 <Text Condition="WixBundleAction = 2">#(loc.SuccessLayoutHeader)</Text>
             </Label>
-            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
-            <Label X="30" Y="90" Width="-30" Height="40" FontId="Normal" DisablePrefix="yes">
+            <Label X="30" Y="146" Width="-30" Height="18" FontId="Muted" Center="yes" DisablePrefix="yes">#(loc.VersionText)</Label>
+            <Label X="30" Y="186" Width="-30" Height="44" FontId="Normal" Center="yes" DisablePrefix="yes">
                 <Text>#(loc.SuccessText)</Text>
                 <Text Condition="WixBundleAction = 3 OR WixBundleAction = 4">#(loc.SuccessUninstallText)</Text>
                 <Text Condition="WixBundleAction = 2">#(loc.SuccessLayoutText)</Text>
             </Label>
-            <Label X="30" Y="140" Width="-30" Height="40" FontId="Normal" DisablePrefix="yes" VisibleCondition="WixStdBARestartRequired">
+            <Label X="30" Y="236" Width="-30" Height="40" FontId="Normal" Center="yes" DisablePrefix="yes" VisibleCondition="WixStdBARestartRequired">
                 <Text>#(loc.SuccessRestartText)</Text>
                 <Text Condition="WixBundleAction = 3">#(loc.SuccessUninstallRestartText)</Text>
             </Label>
-            <Button Name="SuccessRestartButton" X="-210" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button" HideWhenDisabled="yes">#(loc.SuccessRestartButton)</Button>
-            <Button Name="LaunchButton" X="-112" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button" HideWhenDisabled="yes">#(loc.SuccessLaunchButton)</Button>
-            <Button Name="SuccessCloseButton" X="-14" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">
+            <Button Name="SuccessRestartButton" X="-206" Y="-13" Width="88" Height="30" TabStop="yes" FontId="Button" HideWhenDisabled="yes">#(loc.SuccessRestartButton)</Button>
+            <Button Name="LaunchButton" X="-110" Y="-13" Width="88" Height="30" TabStop="yes" FontId="Button" HideWhenDisabled="yes">#(loc.SuccessLaunchButton)</Button>
+            <Button Name="SuccessCloseButton" X="-14" Y="-13" Width="88" Height="30" TabStop="yes" FontId="Button">
                 <Text>#(loc.SuccessCloseButton)</Text>
                 <CloseWindowAction />
             </Button>
@@ -116,17 +194,18 @@
 
         <!-- 安装未完成：与 MSI 的 PrimusFatalDlg 相同，另带日志链接 -->
         <Page Name="Failure">
-            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">
+            <ImageControl X="30" Y="22" Width="40" Height="40" ImageId="Icon40" />
+            <Label X="84" Y="21" Width="360" Height="24" FontId="Title" DisablePrefix="yes">
                 <Text>#(loc.FailureHeader)</Text>
                 <Text Condition="WixBundleAction = 3 OR WixBundleAction = 4">#(loc.FailureUninstallHeader)</Text>
                 <Text Condition="WixBundleAction = 8">#(loc.FailureRepairHeader)</Text>
             </Label>
-            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
-            <Hypertext Name="FailureLogFileLink" X="30" Y="90" Width="-30" Height="44" FontId="Normal" TabStop="yes" HideWhenDisabled="yes">#(loc.FailureHyperlinkLogText)</Hypertext>
-            <Hypertext Name="FailureMessageText" X="30" Y="140" Width="-30" Height="100" FontId="Normal" TabStop="yes" HideWhenDisabled="yes" />
+            <Label X="84" Y="45" Width="360" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
+            <Hypertext Name="FailureLogFileLink" X="30" Y="92" Width="-30" Height="44" FontId="Normal" TabStop="yes" HideWhenDisabled="yes">#(loc.FailureHyperlinkLogText)</Hypertext>
+            <Hypertext Name="FailureMessageText" X="30" Y="142" Width="-30" Height="100" FontId="Normal" TabStop="yes" HideWhenDisabled="yes" />
             <Label X="30" Y="250" Width="-30" Height="40" FontId="Normal" DisablePrefix="yes" VisibleCondition="WixStdBARestartRequired">#(loc.FailureRestartText)</Label>
-            <Button Name="FailureRestartButton" X="-112" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button" HideWhenDisabled="yes">#(loc.FailureRestartButton)</Button>
-            <Button Name="FailureCloseButton" X="-14" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">
+            <Button Name="FailureRestartButton" X="-110" Y="-13" Width="88" Height="30" TabStop="yes" FontId="Button" HideWhenDisabled="yes">#(loc.FailureRestartButton)</Button>
+            <Button Name="FailureCloseButton" X="-14" Y="-13" Width="88" Height="30" TabStop="yes" FontId="Button">
                 <Text>#(loc.FailureCloseButton)</Text>
                 <CloseWindowAction />
             </Button>
