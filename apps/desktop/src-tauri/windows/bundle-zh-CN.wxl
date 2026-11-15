@@ -18,6 +18,7 @@
   <String Id="InstallBrowseButton" Value="更改(&amp;C)..." />
   <String Id="ProgressText" Value="正在安装 乾元 Primus，请稍候。这通常不到一分钟。" />
   <String Id="SuccessText" Value="乾元 Primus 已安装完成，可以从开始菜单或桌面打开。" />
+  <String Id="SuccessLayoutText" Value="已在指定目录中创建 乾元 Primus 安装程序的完整本地副本，这台电脑上没有安装。" />
   <String Id="SuccessUninstallText" Value="乾元 Primus 已从这台电脑卸载，原有数据保留在安装目录的 data 中。" />
   <String Id="InstallMessage" Value="安装程序将在这台电脑上安装 [WixBundleName]。单击“安装”继续，或单击“取消”退出。" />
   <String Id="InstallMessageOptions" Value="安装程序将在这台电脑上安装 [WixBundleName]。单击“安装”继续，单击“选项”设置安装选项，或单击“取消”退出。" />

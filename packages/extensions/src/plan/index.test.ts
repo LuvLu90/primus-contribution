@@ -359,6 +359,12 @@ describe("primus-plan", () => {
     batch("edit");
     expect(settle()?.continue).toBe(true);
     expect(settle()).toBeUndefined();
+    // 待办 → 改文件 → 待办被拒（清单没变）：不算跟上进度，收尾仍提醒
+    handlers.agent_start?.({}, ctx);
+    batch(TODO_TOOL);
+    batch("edit");
+    handlers.turn_end?.({ toolResults: [{ toolName: TODO_TOOL, isError: true }] }, ctx);
+    expect(settle()?.continue).toBe(true);
   });
 
   it("ask_user：推 primus:ask 等回答，选项或自己写的想法都能回；关闭提问时停下", async () => {

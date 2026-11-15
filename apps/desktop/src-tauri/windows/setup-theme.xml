@@ -93,11 +93,14 @@
                 <Text>#(loc.SuccessHeader)</Text>
                 <Text Condition="WixBundleAction = 3 OR WixBundleAction = 4">#(loc.SuccessUninstallHeader)</Text>
                 <Text Condition="WixBundleAction = 8">#(loc.SuccessRepairHeader)</Text>
+                <!-- /layout（BOOTSTRAPPER_ACTION_LAYOUT = 2）：只创建本地副本，没有安装 -->
+                <Text Condition="WixBundleAction = 2">#(loc.SuccessLayoutHeader)</Text>
             </Label>
             <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
             <Label X="30" Y="90" Width="-30" Height="40" FontId="Normal" DisablePrefix="yes">
                 <Text>#(loc.SuccessText)</Text>
                 <Text Condition="WixBundleAction = 3 OR WixBundleAction = 4">#(loc.SuccessUninstallText)</Text>
+                <Text Condition="WixBundleAction = 2">#(loc.SuccessLayoutText)</Text>
             </Label>
             <Label X="30" Y="140" Width="-30" Height="40" FontId="Normal" DisablePrefix="yes" VisibleCondition="WixStdBARestartRequired">
                 <Text>#(loc.SuccessRestartText)</Text>

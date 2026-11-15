@@ -1045,6 +1045,7 @@ pub(crate) fn speech_start(
 const SPEECH_SESSION_HEADER: &str = "x-speech-session";
 
 /// 麦克风音频：请求体为原始字节（16 kHz、16 位、单声道、小端 PCM），请求头 `x-speech-session` 为会话编号。
+/// 自定义协议不可用、Tauri 回退到 postMessage 时请求体是字节数组的 JSON（`[0, 255, …]`），严格校验后照收。
 #[tauri::command]
 pub(crate) fn speech_audio(
     speech: State<'_, crate::platform::speech::Speech>,
@@ -1061,7 +1062,12 @@ pub(crate) fn speech_audio(
             speech.audio(session, pcm);
             Ok(())
         }
-        _ => Err("音频必须以原始字节发送".to_string()),
+        tauri::ipc::InvokeBody::Json(value) => {
+            let pcm = primus_asr::audio::pcm_from_json(value)
+                .ok_or_else(|| "音频必须是字节数组".to_string())?;
+            speech.audio(session, &pcm);
+            Ok(())
+        }
     }
 }
 

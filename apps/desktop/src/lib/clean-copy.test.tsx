@@ -122,6 +122,34 @@ describe("clean-copy", () => {
     expect(copy(code)["text/plain"]).toBe("if a:\n    b()\n\n");
   });
 
+  it("只选中文件引用胶囊内部的文件名：复制完整路径与行号", () => {
+    document.body.innerHTML = `<div class="md">${renderMarkdown("看 `src/lib/utils.ts:12` 这里")}</div>`;
+    const name = document.querySelector(".md [data-file-ref] .md-file-name") as HTMLElement;
+    const t = name.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(t, 0);
+    range.setEnd(t, t.data.length);
+    const sel = document.getSelection() as Selection;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    expect(copy(name)["text/plain"]).toBe("src/lib/utils.ts:12");
+  });
+
+  it("同一行内跨多个单元格选择：单元格之间用制表符", () => {
+    document.body.innerHTML = `<div class="md">${renderMarkdown("| H1 | H2 |\n|---|---|\n| A | B |")}</div>`;
+    const cells = document.querySelectorAll(".md tbody td");
+    const a = (cells[0] as HTMLElement).firstChild as Text;
+    const b = (cells[1] as HTMLElement).firstChild as Text;
+    const range = document.createRange();
+    range.setStart(a, 0);
+    range.setEnd(b, b.data.length);
+    const sel = document.getSelection() as Selection;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    expect(range.commonAncestorContainer.nodeName).toBe("TR");
+    expect(copy(cells[0] as HTMLElement)["text/plain"]).toBe("A\tB");
+  });
+
   it("用户消息正文：多行与缩进原样复制（整条或只选一部分）", async () => {
     const { render } = await import("@testing-library/react");
     const { UserBubble } = await import("@/features/chat/user-bubble");

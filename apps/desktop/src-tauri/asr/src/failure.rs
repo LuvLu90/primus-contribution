@@ -33,6 +33,11 @@ pub fn classify(code: &str, status: Option<u16>, message: &str) -> Failure {
     };
     let lower = code.to_ascii_lowercase();
     let text = format!("{lower} {}", message.to_ascii_lowercase());
+    // 免费额度耗尽（`Throttling.AllocationQuota`，消息 `Free allocated quota exceeded.`）虽以限流码返回，
+    // 但不会自行恢复：先于普通限流判断，按额度用完记账
+    if lower.contains("allocationquota") || text.contains("free allocated quota exceeded") {
+        return Failure::Quota(detail);
+    }
     // 限流（含 Throttling.RateQuota）是临时的，不算额度用完
     if lower.starts_with("throttling") || status == Some(429) {
         return Failure::Transient(detail);
@@ -86,6 +91,31 @@ mod tests {
         assert!(matches!(
             classify("Arrearage", None, "Access denied"),
             Failure::Quota(_)
+        ));
+    }
+
+    #[test]
+    fn allocation_quota_throttling_is_quota() {
+        assert!(matches!(
+            classify(
+                "Throttling.AllocationQuota",
+                Some(429),
+                "Free allocated quota exceeded."
+            ),
+            Failure::Quota(_)
+        ));
+        // 只看消息也能认出（如 WebSocket 任务失败时错误码不全）
+        assert!(matches!(
+            classify("Throttling", None, "Free allocated quota exceeded."),
+            Failure::Quota(_)
+        ));
+        assert!(matches!(
+            classify(
+                "Throttling.RateQuota",
+                Some(429),
+                "Requests rate limit exceeded"
+            ),
+            Failure::Transient(_)
         ));
     }
 

@@ -232,6 +232,8 @@ impl Asr {
 
 async fn run_session(shared: Arc<Shared>, feed: Arc<Feed>, sink: Sink) {
     let committed = Arc::new(AtomicUsize::new(0));
+    // 最后一段还没定稿的临时文本：换模型时界面上先清掉，全部模型都失败时恢复，免得丢字
+    let pending = Arc::new(Mutex::new(String::new()));
     let mut transient = 0;
     let mut next = 0;
     // 实时模型（WebSocket）连不上时改用整段识别的模型（HTTPS，连接方式不同）
@@ -250,9 +252,19 @@ async fn run_session(shared: Arc<Shared>, feed: Arc<Feed>, sink: Sink) {
         let model = &shared.models[i];
         let start = committed.load(Ordering::SeqCst);
         let emit = {
-            let (sink, committed, feed) = (sink.clone(), committed.clone(), feed.clone());
+            let (sink, committed, feed, pending) = (
+                sink.clone(),
+                committed.clone(),
+                feed.clone(),
+                pending.clone(),
+            );
             move |out: Out| match out {
-                Out::Interim(text) => sink(Event::Interim(text)),
+                Out::Interim(text) => {
+                    if !text.is_empty() {
+                        pending.lock().unwrap().clone_from(&text);
+                    }
+                    sink(Event::Interim(text))
+                }
                 Out::Final { text, end_ms } => {
                     // 定稿的一句没有结束时间：以定稿到达时已录到的位置为检查点（已录长度不小于句末），
                     // 换模型时从这里重放，不会跳过定稿之后才录的音频
@@ -261,6 +273,7 @@ async fn run_session(shared: Arc<Shared>, feed: Arc<Feed>, sink: Sink) {
                         None => feed.len(),
                     };
                     committed.fetch_max(pos & !1, Ordering::SeqCst);
+                    pending.lock().unwrap().clear();
                     sink(Event::Final(text));
                 }
             }
@@ -293,6 +306,11 @@ async fn run_session(shared: Arc<Shared>, feed: Arc<Feed>, sink: Sink) {
                 }
             }
         }
+    }
+    // 全部模型都失败：把最后一段临时文本推回界面，结束时界面按未定稿文本保留下来
+    let rest = std::mem::take(&mut *pending.lock().unwrap());
+    if !rest.is_empty() {
+        sink(Event::Interim(rest));
     }
     sink(Event::Unavailable);
     sink(Event::End);
@@ -467,6 +485,59 @@ mod tests {
         asr.start(sink);
         assert_eq!(wait_end(&events), vec![Event::Unavailable, Event::End]);
         assert_eq!(calls.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn all_failed_restores_last_interim() {
+        // 第一款推送临时文本后失败，之后的模型也都失败：结束前把临时文本推回界面
+        let (asr, calls, events, sink) = setup(vec![
+            vec![
+                Step::Emit(Out::Interim("你好".into())),
+                Step::WaitClosed,
+                Step::Fail(quota()),
+            ],
+            vec![Step::Fail(quota())],
+            vec![Step::Fail(Failure::Unusable("Model.AccessDenied".into()))],
+        ]);
+        let id = asr.start(sink);
+        asr.push(id, &[0; 3200]);
+        asr.stop(id);
+        let ev = wait_end(&events);
+        assert_eq!(calls.lock().unwrap().len(), 3);
+        assert_eq!(
+            ev[ev.len() - 3..],
+            [
+                Event::Interim("你好".into()),
+                Event::Unavailable,
+                Event::End
+            ]
+        );
+    }
+
+    #[test]
+    fn finalized_interim_is_not_restored() {
+        let (asr, _calls, events, sink) = setup(vec![
+            vec![
+                Step::Emit(Out::Interim("你好".into())),
+                Step::Emit(Out::Final {
+                    text: "你好。".into(),
+                    end_ms: None,
+                }),
+                Step::Fail(quota()),
+            ],
+            vec![Step::Fail(quota())],
+            vec![Step::Fail(quota())],
+        ]);
+        asr.start(sink);
+        let ev = wait_end(&events);
+        assert_eq!(
+            ev[ev.len() - 3..],
+            [
+                Event::Interim(String::new()),
+                Event::Unavailable,
+                Event::End
+            ]
+        );
     }
 
     #[test]

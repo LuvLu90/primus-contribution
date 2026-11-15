@@ -231,14 +231,26 @@ export function handleCopy(e: ClipboardEvent): void {
   const holder = doc.createElement("div");
   for (let i = 0; i < selection.rangeCount; i++) {
     const range = selection.getRangeAt(i);
-    const fragment = cleanFragment(range.cloneContents(), doc);
-    // 只选中代码块（或用户消息正文）内部的文字时，克隆出的片段不含外层元素：补上 pre，保留换行与缩进
     const anc = range.commonAncestorContainer;
     const ancEl = anc.nodeType === 1 ? (anc as Element) : anc.parentElement;
+    // 只选中文件引用胶囊内部的文字时，克隆出的片段不含胶囊本身（及其 data-file-ref）：按整个胶囊复制完整路径
+    const fileRef = ancEl?.closest("[data-file-ref]");
+    let contents: DocumentFragment;
+    if (fileRef) {
+      contents = doc.createDocumentFragment();
+      contents.appendChild(fileRef.cloneNode(false));
+    } else contents = range.cloneContents();
+    const fragment = cleanFragment(contents, doc);
+    // 只选中代码块（或用户消息正文）内部的文字时，克隆出的片段不含外层元素：补上 pre，保留换行与缩进
     if (ancEl?.closest("pre, [data-copy-pre]")) {
       const pre = doc.createElement("pre");
       pre.appendChild(fragment);
       holder.appendChild(pre);
+    } else if (ancEl?.tagName.toLowerCase() === "tr") {
+      // 选区在同一行内跨多个单元格时，片段只有几个单元格、不含行：补上行，单元格之间仍用制表符
+      const tr = doc.createElement("tr");
+      tr.appendChild(fragment);
+      holder.appendChild(tr);
     } else holder.appendChild(fragment);
   }
   const text = fragmentText(holder);

@@ -2,7 +2,7 @@
 //! 用法：PRIMUS_ASR_KEY=sk-… cargo run -p primus-asr --example live -- 录音.wav [模型 ID…]
 use std::sync::Arc;
 
-use primus_asr::audio::Feed;
+use primus_asr::audio::{BYTES_PER_MS, Feed};
 use primus_asr::models::{MODELS, Protocol};
 use primus_asr::protocols::{Out, batch, duplex, realtime};
 
@@ -26,7 +26,9 @@ async fn main() {
         tokio::spawn(async move {
             for c in pcm.chunks(3200) {
                 f.push(c);
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                // 每块按其时长等待（3200 字节 = 100 ms）
+                let ms = (c.len() / BYTES_PER_MS) as u64;
+                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
             }
             f.close();
         });

@@ -895,9 +895,10 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
     // 执行计划时模型常常埋头做事、忘了更新待办（唇条一直停在第一步）：
     // 连续几个回合没调用 todo 就在下一次请求前插一条隐藏提醒（与 Claude Code 的待办提醒同理）
     pi.on("turn_end", (event: never) => {
-      const e = event as { toolResults?: { toolName?: string }[] };
+      const e = event as { toolResults?: { toolName?: string; isError?: boolean }[] };
       const results = e.toolResults ?? [];
-      const lastTodo = results.findLastIndex((r) => r.toolName === TODO_TOOL);
+      // 只算成功更新了清单的 todo：被拒的调用（如两项 in_progress）清单没变，不能当作已跟上进度
+      const lastTodo = results.findLastIndex((r) => r.toolName === TODO_TOOL && !r.isError);
       // 最后一次更新待办之后（同一批里排在它后面的工具，或没有更新待办的回合）还做了事：待办可能落后
       const workAfterTodo = results.length > lastTodo + 1;
       if (lastTodo >= 0) {

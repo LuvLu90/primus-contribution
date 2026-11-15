@@ -204,6 +204,18 @@ describe("setup-theme.xml 与 MSI 界面（ADR 0012）", () => {
     }
   });
 
+  it("/layout 完成页不说“已安装完成”", () => {
+    const success = /<Page Name="Success">[\s\S]*?<\/Page>/.exec(theme)?.[0] ?? "";
+    // WixBundleAction 取 BOOTSTRAPPER_ACTION 的值：Layout = 2
+    expect(success).toContain(
+      '<Text Condition="WixBundleAction = 2">#(loc.SuccessLayoutHeader)</Text>',
+    );
+    expect(success).toContain(
+      '<Text Condition="WixBundleAction = 2">#(loc.SuccessLayoutText)</Text>',
+    );
+    expect(loc("SuccessLayoutText")).not.toContain("安装完成");
+  });
+
   it("MSI 的进度页不订阅 ActionText / ActionData，页面只有准备、进度、完成三步", () => {
     const progress = /<Dialog Id="PrimusProgressDlg"[\s\S]*?<\/Dialog>/.exec(ui)?.[0] ?? "";
     expect(progress).toContain('Event="SetProgress"');

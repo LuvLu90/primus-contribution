@@ -16,6 +16,23 @@ struct Inner {
     closed: bool,
 }
 
+/// 以 JSON 送来的一块音频最多多少字节（约 2 秒；前端每块约 128 ms）
+pub const MAX_JSON_PCM: usize = 64 * 1024;
+
+/// 薄壳的自定义协议不可用、改走 postMessage 时，WebView 把 `Uint8Array` 序列化成数字数组
+/// （Tauri 2 `process-ipc-message-fn.js`：`Array.from(val)`）。只接受这种格式：
+/// 数组、不超过 [`MAX_JSON_PCM`] 个元素、每个都是 0–255 的整数；否则返回 None。
+pub fn pcm_from_json(value: &serde_json::Value) -> Option<Vec<u8>> {
+    let items = value.as_array()?;
+    if items.len() > MAX_JSON_PCM {
+        return None;
+    }
+    items
+        .iter()
+        .map(|v| v.as_u64().and_then(|n| u8::try_from(n).ok()))
+        .collect()
+}
+
 /// 一次录音的音频：写入端是薄壳命令，读取端是正在识别的模型。
 #[derive(Default)]
 pub struct Feed {
@@ -137,6 +154,24 @@ pub fn wav(pcm: &[u8], rate: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pcm_from_json_accepts_only_byte_arrays() {
+        use serde_json::json;
+        assert_eq!(pcm_from_json(&json!([0, 1, 255])), Some(vec![0, 1, 255]));
+        assert_eq!(pcm_from_json(&json!([])), Some(vec![]));
+        assert_eq!(pcm_from_json(&json!([256])), None);
+        assert_eq!(pcm_from_json(&json!([-1])), None);
+        assert_eq!(pcm_from_json(&json!([1.5])), None);
+        assert_eq!(pcm_from_json(&json!(["1"])), None);
+        assert_eq!(pcm_from_json(&json!({"0": 1})), None);
+        assert_eq!(pcm_from_json(&json!("AAE=")), None);
+        assert_eq!(
+            pcm_from_json(&json!(vec![0; MAX_JSON_PCM])).map(|v| v.len()),
+            Some(MAX_JSON_PCM)
+        );
+        assert_eq!(pcm_from_json(&json!(vec![0; MAX_JSON_PCM + 1])), None);
+    }
 
     #[test]
     fn downsample_averages_pairs() {
