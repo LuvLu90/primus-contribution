@@ -260,9 +260,8 @@ async fn run_session(shared: Arc<Shared>, feed: Arc<Feed>, sink: Sink) {
             );
             move |out: Out| match out {
                 Out::Interim(text) => {
-                    if !text.is_empty() {
-                        pending.lock().unwrap().clone_from(&text);
-                    }
+                    // 模型自己发的空串表示撤回临时文字，恢复缓存也跟着清空
+                    pending.lock().unwrap().clone_from(&text);
                     sink(Event::Interim(text))
                 }
                 Out::Final { text, end_ms } => {
@@ -508,6 +507,32 @@ mod tests {
             ev[ev.len() - 3..],
             [
                 Event::Interim("你好".into()),
+                Event::Unavailable,
+                Event::End
+            ]
+        );
+    }
+
+    #[test]
+    fn retracted_interim_is_not_restored() {
+        // 模型先推送临时文本，又用空串撤回，之后全部失败：不恢复已撤回的文字
+        let (asr, _calls, events, sink) = setup(vec![
+            vec![
+                Step::Emit(Out::Interim("错误文本".into())),
+                Step::Emit(Out::Interim(String::new())),
+                Step::Fail(quota()),
+            ],
+            vec![Step::Fail(quota())],
+            vec![Step::Fail(quota())],
+        ]);
+        asr.start(sink);
+        let ev = wait_end(&events);
+        let shown = Event::Interim("错误文本".into());
+        assert_eq!(ev.iter().filter(|e| **e == shown).count(), 1);
+        assert_eq!(
+            ev[ev.len() - 3..],
+            [
+                Event::Interim(String::new()),
                 Event::Unavailable,
                 Event::End
             ]
