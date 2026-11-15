@@ -411,12 +411,22 @@ describe("setup-theme.xml 与 MSI 界面（ADR 0012 / 0014）", () => {
     );
     // 同意复选框写 PRIMUS_AGREE；目录锁定时禁用目录与“更改”
     expect(control("Agree")).toContain('Property="PRIMUS_AGREE" CheckBoxValue="1"');
-    expect(control("ChangeFolder")).toContain('DisableCondition="PRIMUS_FOLDER_LOCKED"');
-    // 每个对话框白底在最下层
-    for (const m of ui.matchAll(
-      /<Dialog Id="(Primus\w+)"[^>]*>\s*<Control Id="(\w+)"[^>]*Text="(\w+)"/g,
-    )) {
-      expect(m[3], m[1]).toBe("PrimusBmpWhite");
+    // 隐藏控件的快捷键不能越过步骤：同意只在第 2 步可用，“更改”只在第 3 步且目录未锁定时可用
+    expect(control("Agree")).toContain(
+      'EnableCondition="PRIMUS_STEP = &quot;2&quot;" DisableCondition="PRIMUS_STEP &lt;&gt; &quot;2&quot;"',
+    );
+    expect(control("ChangeFolder")).toContain(
+      'EnableCondition="PRIMUS_STEP = &quot;3&quot; AND NOT PRIMUS_FOLDER_LOCKED" DisableCondition="PRIMUS_STEP &lt;&gt; &quot;3&quot; OR PRIMUS_FOLDER_LOCKED"',
+    );
+    // 每个对话框白底在最下层；高对比度模式下隐藏白底
+    const dialogs = [
+      ...ui.matchAll(/<Dialog Id="(Primus\w+)"[^>]*>\s*<Control Id="(\w+)"([^>]*)\/>/g),
+    ];
+    expect(dialogs.length).toBe((ui.match(/<Dialog Id="Primus\w+"/g) ?? []).length);
+    for (const m of dialogs) {
+      expect(m[2], m[1]).toBe("Background");
+      expect(m[3], m[1]).toContain('Text="PrimusBmpWhite"');
+      expect(m[3], m[1]).toContain('HideCondition="HighContrast"');
     }
     // 对话框尺寸与 exe 窗口一致（416×304 安装单位 ≈ 555×405 像素）
     for (const m of ui.matchAll(/<Dialog Id="Primus\w+" Width="(\d+)" Height="(\d+)"/g))
@@ -456,6 +466,17 @@ describe("BAFunctions（ADR 0014）", () => {
     expect(cpp).toContain("WIXSTDBA_CONTROL_EULA_RICHEDIT_ID = 0x8001");
     // 批量显隐用 WM_SETREDRAW 包住，整页只重画一次
     expect(cpp).toMatch(/WM_SETREDRAW, FALSE[\s\S]*WM_SETREDRAW, TRUE[\s\S]*RedrawWindow/);
+    // 离开 Install 页后隐藏的“上一步 / 下一步”不能经快捷键切换步骤：入口检查 + 隐藏即禁用
+    expect(cpp).toMatch(/\(hWnd == m_hwndNext \|\| hWnd == m_hwndBack\) && !CanNavigate\(hWnd\)/);
+    expect(cpp).toMatch(/SWP_HIDEWINDOW[\s\S]*EnableWindow\(hWnd, FALSE\)/);
+    for (const h of ["m_hwndNext", "m_hwndBack", "m_hwndAgree"])
+      expect(cpp).toContain(`Subclass(${h}, ALL_STEPS)`);
+  });
+
+  it("vswhere 按 UTF-8 输出，批处理先切到 UTF-8 代码页（非 ASCII 路径）", () => {
+    const script = readFileSync(new URL("./build-bafunctions.mjs", import.meta.url), "utf8");
+    expect(script).toContain('"-utf8"');
+    expect(script).toMatch(/"@echo off",[\s\S]*?"chcp 65001 >nul",[\s\S]*?call \$\{q\(vcvars\)\}/);
   });
 
   it("WiX 原生 SDK 包与 WiX 工具同版本，按锁定的 SHA-512 下载", () => {

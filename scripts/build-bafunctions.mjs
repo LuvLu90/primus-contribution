@@ -240,6 +240,7 @@ function main() {
       fail(`未找到 vswhere：${vswhere}（需要安装带 C++ 工具的 Visual Studio）`);
     const vsPath = run(vswhere, [
       "-latest",
+      "-utf8",
       "-products",
       "*",
       "-property",
@@ -260,6 +261,8 @@ function main() {
   for (const target of vcvarsTargets()) {
     const script = [
       "@echo off",
+      // .cmd 按 UTF-8 写出；先切到 UTF-8 代码页，否则中文等路径会按 936 等本地代码页被误读
+      "chcp 65001 >nul",
       `call ${q(vcvars)} ${target} >nul || exit /b 1`,
       `cl ${cl.map(q).join(" ")} || exit /b 2`,
       `link ${link.map(q).join(" ")} || exit /b 3`,

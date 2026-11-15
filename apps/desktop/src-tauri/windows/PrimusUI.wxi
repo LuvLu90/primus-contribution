@@ -76,8 +76,9 @@
     <Publish Dialog="BrowseDlg" Control="OK" Event="EndDialog" Value="Return" Order="4" />
 
     <!-- 安装向导 1～3 步：与 exe 的 Install 页相同（同一个对话框里按 PRIMUS_STEP 显隐） -->
+    <!-- 每个对话框的白色底图只在普通配色下显示；高对比度模式（HighContrast）下隐藏，文字与底色都用系统高对比度颜色 -->
     <Dialog Id="PrimusInstallDlg" Width="416" Height="304" Title="乾元 Primus 安装程序" TrackDiskSpace="yes">
-      <Control Id="Background" Type="Bitmap" X="0" Y="0" Width="416" Height="304" TabSkip="no" Disabled="yes" Text="PrimusBmpWhite" />
+      <Control Id="Background" Type="Bitmap" X="0" Y="0" Width="416" Height="304" TabSkip="no" Disabled="yes" Text="PrimusBmpWhite" ShowCondition="NOT HighContrast" HideCondition="HighContrast" />
 
       <!-- 右上角步骤指示：圆点 + n/3 -->
       <Control Id="Steps1" Type="Bitmap" X="344" Y="25" Width="30" Height="5" TabSkip="no" Disabled="yes" Hidden="yes" Text="PrimusBmpSteps1" ShowCondition="PRIMUS_STEP = &quot;1&quot;" HideCondition="PRIMUS_STEP &lt;&gt; &quot;1&quot;" />
@@ -106,7 +107,7 @@
       <Control Id="Privacy" Type="ScrollableText" X="23" Y="58" Width="370" Height="133" TabSkip="no" Hidden="yes" ShowCondition="PRIMUS_STEP = &quot;2&quot;" HideCondition="PRIMUS_STEP &lt;&gt; &quot;2&quot;">
         <Text SourceFile="$(ShellDir)\windows\Privacy.rtf" />
       </Control>
-      <Control Id="Agree" Type="CheckBox" X="22" Y="202" Width="11" Height="11" Property="PRIMUS_AGREE" CheckBoxValue="1" Hidden="yes" Text="我已阅读并同意隐私政策(&amp;A)" ShowCondition="PRIMUS_STEP = &quot;2&quot;" HideCondition="PRIMUS_STEP &lt;&gt; &quot;2&quot;" />
+      <Control Id="Agree" Type="CheckBox" X="22" Y="202" Width="11" Height="11" Property="PRIMUS_AGREE" CheckBoxValue="1" Hidden="yes" Text="我已阅读并同意隐私政策(&amp;A)" ShowCondition="PRIMUS_STEP = &quot;2&quot;" HideCondition="PRIMUS_STEP &lt;&gt; &quot;2&quot;" EnableCondition="PRIMUS_STEP = &quot;2&quot;" DisableCondition="PRIMUS_STEP &lt;&gt; &quot;2&quot;" />
       <Control Id="AgreeLabel" Type="Text" X="37" Y="201" Width="350" Height="15" Transparent="yes" Hidden="yes" Text="我已阅读并同意隐私政策(&amp;A)" ShowCondition="PRIMUS_STEP = &quot;2&quot;" HideCondition="PRIMUS_STEP &lt;&gt; &quot;2&quot;" />
 
       <!-- 3 选择安装位置：已安装 / 从 NSIS 迁移时目录锁定并显示说明 -->
@@ -115,7 +116,7 @@
       <Control Id="FolderLabel" Type="Text" X="22" Y="69" Width="50" Height="15" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="安装位置" ShowCondition="PRIMUS_STEP = &quot;3&quot;" HideCondition="PRIMUS_STEP &lt;&gt; &quot;3&quot;" />
       <Control Id="FolderLocked" Type="Text" X="72" Y="70" Width="322" Height="14" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\Primus_Font_Muted}已安装过：将升级到此版本，沿用原安装位置与数据" ShowCondition="PRIMUS_STEP = &quot;3&quot; AND PRIMUS_FOLDER_LOCKED" HideCondition="PRIMUS_STEP &lt;&gt; &quot;3&quot; OR NOT PRIMUS_FOLDER_LOCKED" />
       <Control Id="Folder" Type="PathEdit" X="22" Y="91" Width="300" Height="20" Property="WIXUI_INSTALLDIR" Indirect="yes" Hidden="yes" ShowCondition="PRIMUS_STEP = &quot;3&quot;" HideCondition="PRIMUS_STEP &lt;&gt; &quot;3&quot;" DisableCondition="PRIMUS_FOLDER_LOCKED" />
-      <Control Id="ChangeFolder" Type="PushButton" X="328" Y="90" Width="66" Height="22" Hidden="yes" Text="更改(&amp;C)..." ShowCondition="PRIMUS_STEP = &quot;3&quot;" HideCondition="PRIMUS_STEP &lt;&gt; &quot;3&quot;" DisableCondition="PRIMUS_FOLDER_LOCKED">
+      <Control Id="ChangeFolder" Type="PushButton" X="328" Y="90" Width="66" Height="22" Hidden="yes" Text="更改(&amp;C)..." ShowCondition="PRIMUS_STEP = &quot;3&quot;" HideCondition="PRIMUS_STEP &lt;&gt; &quot;3&quot;" EnableCondition="PRIMUS_STEP = &quot;3&quot; AND NOT PRIMUS_FOLDER_LOCKED" DisableCondition="PRIMUS_STEP &lt;&gt; &quot;3&quot; OR PRIMUS_FOLDER_LOCKED">
         <Publish Property="_BrowseProperty" Value="[WIXUI_INSTALLDIR]" Order="1" />
         <Publish Event="SpawnDialog" Value="BrowseDlg" Order="2" />
       </Control>
@@ -148,7 +149,7 @@
 
     <!-- 已安装时再次运行这个 MSI：修复或卸载（从“应用和功能”卸载走 Windows 自己的简易界面，不经这里） -->
     <Dialog Id="PrimusMaintenanceDlg" Width="416" Height="304" Title="乾元 Primus 安装程序">
-      <Control Id="Background" Type="Bitmap" X="0" Y="0" Width="416" Height="304" TabSkip="no" Disabled="yes" Text="PrimusBmpWhite" />
+      <Control Id="Background" Type="Bitmap" X="0" Y="0" Width="416" Height="304" TabSkip="no" Disabled="yes" Text="PrimusBmpWhite" ShowCondition="NOT HighContrast" HideCondition="HighContrast" />
       <Control Id="HeaderIcon" Type="Bitmap" X="22" Y="16" Width="30" Height="30" TabSkip="no" Disabled="yes" Text="PrimusBmpIcon40" />
       <Control Id="Title" Type="Text" X="63" Y="16" Width="270" Height="18" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Title}乾元 Primus 已安装" />
       <Control Id="Version" Type="Text" X="63" Y="34" Width="270" Height="14" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Muted}版本 $(PrimusVersion)" />
@@ -172,7 +173,7 @@
 
     <!-- 5 正在安装：与 exe 的 Progress 页相同。不订阅 ActionText / ActionData，避免安装中整行文字反复重绘 -->
     <Dialog Id="PrimusProgressDlg" Width="416" Height="304" Title="乾元 Primus 安装程序" Modeless="yes">
-      <Control Id="Background" Type="Bitmap" X="0" Y="0" Width="416" Height="304" TabSkip="no" Disabled="yes" Text="PrimusBmpWhite" />
+      <Control Id="Background" Type="Bitmap" X="0" Y="0" Width="416" Height="304" TabSkip="no" Disabled="yes" Text="PrimusBmpWhite" ShowCondition="NOT HighContrast" HideCondition="HighContrast" />
       <Control Id="HeaderIcon" Type="Bitmap" X="22" Y="16" Width="30" Height="30" TabSkip="no" Disabled="yes" Text="PrimusBmpIcon40" />
       <Control Id="TitleInstalling" Type="Text" X="63" Y="16" Width="270" Height="18" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\Primus_Font_Title}正在安装 乾元 Primus" ShowCondition="NOT PRIMUS_MODE" />
       <Control Id="TitleRepairing" Type="Text" X="63" Y="16" Width="270" Height="18" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\Primus_Font_Title}正在修复 乾元 Primus" ShowCondition="PRIMUS_MODE = &quot;Repair&quot;" />
@@ -190,7 +191,7 @@
 
     <!-- 6 安装完成：与 exe 的 Success 页相同（立即启动 / 完成）。立即启动用 WixShellExec 在界面进程（安装者本人、未提权）中运行 -->
     <Dialog Id="PrimusExitDlg" Width="416" Height="304" Title="乾元 Primus 安装程序">
-      <Control Id="Background" Type="Bitmap" X="0" Y="0" Width="416" Height="304" TabSkip="no" Disabled="yes" Text="PrimusBmpWhite" />
+      <Control Id="Background" Type="Bitmap" X="0" Y="0" Width="416" Height="304" TabSkip="no" Disabled="yes" Text="PrimusBmpWhite" ShowCondition="NOT HighContrast" HideCondition="HighContrast" />
       <Control Id="SuccessIcon" Type="Bitmap" X="192" Y="42" Width="33" Height="33" TabSkip="no" Disabled="yes" Text="PrimusBmpCheck" />
       <Control Id="TitleInstalled" Type="Text" X="181" Y="87" Width="100" Height="20" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\Primus_Font_Hero}安装完成" ShowCondition="NOT PRIMUS_MODE" />
       <Control Id="TitleRepaired" Type="Text" X="181" Y="87" Width="100" Height="20" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\Primus_Font_Hero}修复完成" ShowCondition="PRIMUS_MODE = &quot;Repair&quot;" />
@@ -210,7 +211,7 @@
 
     <!-- 用户取消 -->
     <Dialog Id="PrimusUserExitDlg" Width="416" Height="304" Title="乾元 Primus 安装程序">
-      <Control Id="Background" Type="Bitmap" X="0" Y="0" Width="416" Height="304" TabSkip="no" Disabled="yes" Text="PrimusBmpWhite" />
+      <Control Id="Background" Type="Bitmap" X="0" Y="0" Width="416" Height="304" TabSkip="no" Disabled="yes" Text="PrimusBmpWhite" ShowCondition="NOT HighContrast" HideCondition="HighContrast" />
       <Control Id="HeaderIcon" Type="Bitmap" X="22" Y="16" Width="30" Height="30" TabSkip="no" Disabled="yes" Text="PrimusBmpIcon40" />
       <Control Id="Title" Type="Text" X="63" Y="16" Width="270" Height="18" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Title}已取消" />
       <Control Id="Version" Type="Text" X="63" Y="34" Width="270" Height="14" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Muted}版本 $(PrimusVersion)" />
@@ -223,7 +224,7 @@
 
     <!-- 安装未完成：与 exe 的 Failure 页相同 -->
     <Dialog Id="PrimusFatalDlg" Width="416" Height="304" Title="乾元 Primus 安装程序">
-      <Control Id="Background" Type="Bitmap" X="0" Y="0" Width="416" Height="304" TabSkip="no" Disabled="yes" Text="PrimusBmpWhite" />
+      <Control Id="Background" Type="Bitmap" X="0" Y="0" Width="416" Height="304" TabSkip="no" Disabled="yes" Text="PrimusBmpWhite" ShowCondition="NOT HighContrast" HideCondition="HighContrast" />
       <Control Id="HeaderIcon" Type="Bitmap" X="22" Y="16" Width="30" Height="30" TabSkip="no" Disabled="yes" Text="PrimusBmpIcon40" />
       <Control Id="Title" Type="Text" X="63" Y="16" Width="270" Height="18" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Title}安装未完成" />
       <Control Id="Version" Type="Text" X="63" Y="34" Width="270" Height="14" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Muted}版本 $(PrimusVersion)" />

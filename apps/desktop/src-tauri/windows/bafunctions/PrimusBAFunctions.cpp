@@ -56,6 +56,9 @@ namespace
         return 1u << dwStep;
     }
 
+    // 第 1～3 步都允许（向导自己的导航控件，显隐交给 thmutil 的 VisibleCondition）
+    const DWORD ALL_STEPS = (1u << 1) | (1u << 2) | (1u << 3);
+
     BOOL IsWindowClass(HWND hWnd, LPCWSTR wzPrefix)
     {
         WCHAR wzClass[64] = { };
@@ -105,6 +108,11 @@ public: // IBAFunctions
 
         Subclass(m_hwndInstall, StepBit(3));
         Subclass(m_hwndEula, StepBit(2));
+
+        // 向导自己的导航控件：thmutil 换页（离开 Install 页）时只隐藏不禁用，隐藏时顺手禁用，快捷键就不再触发它们
+        Subclass(m_hwndNext, ALL_STEPS);
+        Subclass(m_hwndBack, ALL_STEPS);
+        Subclass(m_hwndAgree, ALL_STEPS);
 
         if (m_hwndEula)
         {
@@ -209,7 +217,14 @@ public: // IBAFunctions
             return S_OK;
         }
 
-        if (hWnd == m_hwndNext)
+        if ((hWnd == m_hwndNext || hWnd == m_hwndBack) && !CanNavigate(hWnd))
+        {
+            // 已离开 Install 页（进度、完成等）或按钮本身不可用：隐藏按钮的快捷键（Alt+B / Alt+N）不能再切换步骤
+            BalLog(BOOTSTRAPPER_LOG_LEVEL_STANDARD, "PRIMUSBAF: ignored navigation outside the wizard at step %u.", m_dwStep);
+            *pfProcessed = TRUE;
+            *plResult = 0;
+        }
+        else if (hWnd == m_hwndNext)
         {
             if (FIRST_STEP == m_dwStep)
             {
@@ -293,8 +308,19 @@ private:
         return (m_hwndNext && ::IsWindowVisible(m_hwndNext)) || (m_hwndBack && ::IsWindowVisible(m_hwndBack));
     }
 
+    // 只有向导在屏幕上、且按钮本身可见可用时才允许“上一步 / 下一步”
+    BOOL CanNavigate(HWND hWnd)
+    {
+        return IsWizardShown() && ::IsWindowVisible(hWnd) && ::IsWindowEnabled(hWnd);
+    }
+
     void GoToStep(DWORD dwStep)
     {
+        if (!IsWizardShown())
+        {
+            return;
+        }
+
         if (dwStep < FIRST_STEP || dwStep > LAST_STEP || dwStep == m_dwStep)
         {
             return;
@@ -443,6 +469,16 @@ private:
                 // 不属于当前步骤：不让它显示出来（thmutil 换页 / 刷新时会显示 WixStdBA 管理的控件）
                 pwp->flags &= ~SWP_SHOWWINDOW;
                 vpThis->PostFixup();
+            }
+            break;
+        }
+
+        case WM_WINDOWPOSCHANGED:
+        {
+            const WINDOWPOS* pwp = reinterpret_cast<const WINDOWPOS*>(lParam);
+            if (pwp && (pwp->flags & SWP_HIDEWINDOW) && ::IsWindowEnabled(hWnd))
+            {
+                ::EnableWindow(hWnd, FALSE);
             }
             break;
         }
