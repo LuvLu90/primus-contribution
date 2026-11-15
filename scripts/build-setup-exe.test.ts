@@ -426,8 +426,14 @@ describe("setup-theme.xml 与 MSI 界面（ADR 0012 / 0014）", () => {
     for (const m of dialogs) {
       expect(m[2], m[1]).toBe("Background");
       expect(m[3], m[1]).toContain('Text="PrimusBmpWhite"');
-      expect(m[3], m[1]).toContain('HideCondition="HighContrast"');
+      expect(m[3], m[1]).toContain('HideCondition="PRIMUS_HIGH_CONTRAST"');
     }
+    // HighContrast 不是 MSI 内置属性：必须从注册表的 HIGHCONTRAST 标志推出来
+    expect(ui).toMatch(/Key="Control Panel\\Accessibility\\HighContrast"\s+Name="Flags"/);
+    expect(ui).toMatch(
+      /<SetProperty Id="PRIMUS_HIGH_CONTRAST"[^>]*Condition="PRIMUS_HC_FLAGS &gt;&lt; 1"/,
+    );
+    expect(ui).not.toMatch(/Condition="(NOT )?HighContrast"/);
     // 对话框尺寸与 exe 窗口一致（416×304 安装单位 ≈ 555×405 像素）
     for (const m of ui.matchAll(/<Dialog Id="Primus\w+" Width="(\d+)" Height="(\d+)"/g))
       expect([m[1], m[2]]).toEqual(["416", "304"]);

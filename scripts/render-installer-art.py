@@ -130,6 +130,8 @@ def main() -> None:
     p.add_argument("--cjk")
     p.add_argument("--latin")
     a = p.parse_args()
+    if bool(a.cjk) != bool(a.latin):
+        p.error("--cjk 与 --latin 要么都给（同时重绘 WixUI 图片），要么都不给（只重绘向导图片）")
     wizard_art()
     if not (a.cjk and a.latin):
         return
