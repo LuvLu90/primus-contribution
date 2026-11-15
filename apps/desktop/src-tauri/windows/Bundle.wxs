@@ -6,12 +6,14 @@
     wix build Bundle.wxs -arch x86 -acceptEula wix7 -ext WixToolset.BootstrapperApplications.wixext
       -ext WixToolset.Util.wixext -d ProductVersion=<与 MSI 相同的 主.次.修订.构建> -d PrimusVersion=<SemVer>
       -d ShellDir=<apps/desktop/src-tauri> -d Arch=<x64|arm64> -d Msi=<Primus_<ver>_<arch>_zh-CN.msi>
+      -d BAFunctionsDll=<scripts/build-bafunctions.mjs 编译的 bafunctions.dll>
 
   为什么要有它：部分电脑的 .msi 文件关联被改坏（双击提示“Windows 无法识别此类型的文件”或打不开）。exe 由 Burn 直接调用
   Windows Installer API 安装内嵌的 MSI，不经文件关联。
 
-  界面（ADR 0012）：exe 自己画全部界面（setup-theme.xml + bundle-zh-CN.wxl），MSI 不显示内部界面、只由 Burn 汇报进度。
-  页面与 MSI 直接安装时的界面（Primus.wxs 的 PrimusUI）一一对应：准备安装（隐私政策、同意、安装位置）→ 正在安装 → 完成。
+  界面（ADR 0012、0014）：exe 自己画全部界面（setup-theme.xml + bundle-zh-CN.wxl），MSI 不显示内部界面、只由 Burn 汇报进度。
+  页面与 MSI 直接安装时的界面（Primus.wxs 的 PrimusUI）一一对应，共 6 步：欢迎 → 隐私政策 → 选择安装位置（“安装”）
+  → Windows 请求管理员权限（UAC）→ 正在安装 → 安装完成。前三步是同一个窗口里的三组控件，由 BAFunctions 切换。
   以前 exe 先显示自己的“欢迎 / 安装”页，再在另一个窗口里弹出 MSI 的整套向导，两个窗口来回切换、进度页在后面重绘，
   看起来一直闪；现在始终只有一个窗口。
   - 安装位置：默认 C:\Program Files\Primus；已装过 MSI 版（HKLM\Software\Primus\InstallDir）或要从旧 NSIS 版迁移时
@@ -37,19 +39,53 @@
           IconSourceFile="$(ShellDir)\icons\icon.ico"
           DisableModify="yes" DisableRemove="yes">
     <BootstrapperApplication>
-      <!-- 自定义主题（与 MSI 界面同一套设计）；隐私政策与 MSI 用同一个 Privacy.rtf，logo.png 是页眉右侧的标志 -->
+      <!-- 自定义主题（与 MSI 界面同一套设计，ADR 0012 / 0014）；隐私政策与 MSI 用同一个 Privacy.rtf -->
       <bal:WixStandardBootstrapperApplication Theme="rtfLargeLicense"
                                               ThemeFile="$(ShellDir)\windows\setup-theme.xml"
                                               LocalizationFile="$(ShellDir)\windows\bundle-zh-CN.wxl"
                                               LicenseFile="$(ShellDir)\windows\Privacy.rtf"
-                                              LogoFile="$(ShellDir)\windows\art\setup-logo.png"
                                               LaunchTarget="[InstallFolder]\Primus.exe"
                                               LaunchWorkingFolder="[InstallFolder]"
                                               SuppressOptionsUI="yes" SuppressRepair="yes" />
+      <!-- 安装向导前三步在 WixStdBA 的同一个 Install 页里切换（欢迎 → 隐私政策 → 选择安装位置），由 BAFunctions 原生 DLL
+           完成（windows/bafunctions，x86，与 -arch x86 的 WixStdBA 进程一致；scripts/build-bafunctions.mjs 用 MSVC 编译） -->
+      <Payload SourceFile="$(BAFunctionsDll)" bal:BAFunctions="yes" />
+      <!-- 主题图片（scripts/render-installer-art.py 生成）：每种按 100%/125%/150%/200% DPI 各一张，setup-theme.xml 的
+           <Image> 用 AlternateResolution 列出，thmutil 按控件实际尺寸挑选，高 DPI 下不模糊 -->
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-icon-40.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-icon-40@125.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-icon-40@150.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-icon-40@200.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-icon-72.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-icon-72@125.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-icon-72@150.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-icon-72@200.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-check-44.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-check-44@125.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-check-44@150.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-check-44@200.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-steps-1.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-steps-1@125.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-steps-1@150.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-steps-1@200.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-steps-2.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-steps-2@125.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-steps-2@150.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-steps-2@200.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-steps-3.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-steps-3@125.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-steps-3@150.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-steps-3@200.png" />
+      <Payload SourceFile="$(ShellDir)\windows\art\setup-line.png" />
     </BootstrapperApplication>
 
     <!-- 页眉显示的版本（SemVer，与 MSI 界面一致；Burn 的版本是四段数字） -->
     <Variable Name="PrimusVersion" Value="$(PrimusVersion)" />
+
+    <!-- 安装向导（ADR 0014）：当前步骤 1～3 与“我已阅读并同意隐私政策”。由 BAFunctions 与主题的 VisibleCondition /
+         EnableCondition 使用；不可从命令行覆盖，静默安装（/quiet、/passive）不经过向导 -->
+    <Variable Name="PrimusStep" Type="numeric" Value="1" />
+    <Variable Name="PrimusAgree" Type="numeric" Value="0" />
 
     <!-- 安装位置：默认 Program Files\Primus；沿用已安装的 MSI 版或旧 NSIS 版的目录（与 Primus.wxs 的 AppSearch 相同） -->
     <Variable Name="InstallFolder" Type="formatted" Value="[ProgramFiles64Folder]Primus" bal:Overridable="yes" />

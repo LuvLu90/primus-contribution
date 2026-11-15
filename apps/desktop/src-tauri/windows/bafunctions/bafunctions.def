@@ -1,0 +1,4 @@
+; 乾元 Primus BAFunctions（WixStdBA 按名字取这两个入口）
+EXPORTS
+    BAFunctionsCreate
+    BAFunctionsDestroy

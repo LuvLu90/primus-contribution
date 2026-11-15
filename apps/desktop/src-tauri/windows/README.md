@@ -1,11 +1,12 @@
 # windows
 
 - `Primus.wxs`：WiX 7 安装包定义（第 3.3 节；只发 MSI，ADR 0007）。`UpgradeCode` 固定为 `5B4199DD-C352-459A-AEB0-7119A884608F`，**永不改变**（MajorUpgrade 靠它识别旧版本）；`data` 目录组件的 GUID 同样固定。
-- `Bundle.wxs`、`bundle-zh-CN.wxl`：exe 安装程序 `PrimusSetup_<ver>_<arch>_zh-CN.exe`（WiX 7 Burn，ADR 0011），x64 与 ARM64 各一个，各内嵌同架构的 MSI（`-d Arch=<x64|arm64> -d Msi=<msi>`）。两个都用 x86 引擎，下错架构时按 `NativeMachine` 用中文提示改用另一个，32 位系统同样拦下；界面就是 MSI 自己的界面。MSI 包是 `Permanent`，exe 不在“应用和功能”中登记自己，装好的就是 MSI。经 exe 安装时传 `PRIMUS_BUNDLE=1`，MSI 完成页不显示“立即启动”（界面在 Burn 的提权进程里，不能从那里启动 Primus）。`UpgradeCode` 两个架构共用，固定为 `FD216D87-9A80-4208-A28D-FA4B80241F96`，**永不改变**。`bundle-zh-CN.wxl` 是 WixStdBA hyperlinkLicense 主题的中文文案（WiX 只自带英文），升级 WiX 时对照上游 `HyperlinkTheme.wxl` 补齐。构建：先构建 MSI，再 `node scripts/build-setup-exe.mjs --arch <x64|arm64>`（默认取 `out/Primus_<ver>_<arch>_zh-CN.msi`），输出 `out/PrimusSetup_<ver>_<arch>_zh-CN.exe`；冒烟 `scripts/setup-exe-smoke.ps1`。
+- `Bundle.wxs`、`setup-theme.xml`、`bundle-zh-CN.wxl`：exe 安装程序 `PrimusSetup_<ver>_<arch>_zh-CN.exe`（WiX 7 Burn，ADR 0011），x64 与 ARM64 各一个，各内嵌同架构的 MSI（`-d Arch=<x64|arm64> -d Msi=<msi>`）。两个都用 x86 引擎，下错架构时按 `NativeMachine` 用中文提示改用另一个，32 位系统同样拦下。界面是 exe 自己画的（WixStdBA 自定义主题 `setup-theme.xml` + 中文文案 `bundle-zh-CN.wxl`，ADR 0012 / 0014），与 MSI 的 `PrimusUI.wxi` 一一对应、文案逐字一致；MSI 在 exe 下不显示内部界面，全程只有一个窗口。MSI 包是 `Permanent`，exe 不在“应用和功能”中登记自己，装好的就是 MSI。完成页的“立即启动”由 exe 的非提权界面进程启动；仍给 MSI 传 `PRIMUS_BUNDLE=1`（兼容发布工作流的检查）。`UpgradeCode` 两个架构共用，固定为 `FD216D87-9A80-4208-A28D-FA4B80241F96`，**永不改变**。`bundle-zh-CN.wxl` 里 WixStdBA 代码用到的字符串沿用上游 `HyperlinkTheme.wxl` 的 Id，升级 WiX 时对照补齐。构建：先构建 MSI，再 `node scripts/build-setup-exe.mjs --arch <x64|arm64>`（默认取 `out/Primus_<ver>_<arch>_zh-CN.msi`；未传 `--bafunctions` 时先编译下面的 BAFunctions），输出 `out/PrimusSetup_<ver>_<arch>_zh-CN.exe`；冒烟 `scripts/setup-exe-smoke.ps1`。
+- `bafunctions/`：exe 安装向导的 BAFunctions 原生 DLL（C++，x86，ADR 0014）。WixStdBA 加载它，在同一个 Install 页里切换前三步（欢迎 → 隐私政策 → 选择安装位置）：改 Burn 变量 `PrimusStep` 后让 thmutil 按 `VisibleCondition` 刷新本页，`WM_SETREDRAW` 包住、整页只重画一次；纠正 WixStdBA 自己管的 `InstallButton` / `EulaRichedit` 的显隐，非第 3 步拦下“安装”。`node scripts/build-bafunctions.mjs`：下载与 WiX 同版本的 NuGet 原生包（按锁定的 SHA-512 校验），用 MSVC（vswhere + vcvarsall，x86 目标）编译到 `out/bafunctions/bafunctions.dll`；需要带 C++ 工具的 Visual Studio。
 - `remove-nsis.ps1`：从旧 NSIS 版迁移时由 `Primus.wxs` 的 `RemoveNsis`（SYSTEM、`CheckInstallDir` 之前）运行：确认 NSIS 卸载程序与其目录可信后 `/S _?=<目录>` 静默卸载，`data` 保留，再删除 `uninstall.exe` 与 NSIS 记录安装目录的注册表项；MSI 沿用 NSIS 版的安装目录。与 `install-acl.ps1` 一样去掉注释后以 Base64 嵌入（`build-msi.mjs` 生成的 `primus-scripts.wxi`，两段脚本超过命令行长度上限，不能用 `-d`）。
 - `webview2/`：WebView2 Evergreen 引导程序 `MicrosoftEdgeWebview2Setup.exe`（约 1.8MB）。不入库：`build-msi.mjs` 缺失时从微软官方地址下载，校验 Authenticode 签名有效且签名者为 Microsoft Corporation 后作为 `Binary` 打进 MSI；安装时注册表中查不到按机器安装的 WebView2（HKLM 32 位视图的 `pv` 为空或 `0.0.0.0`；MSI 面向所有用户，安装者 HKCU 下的按用户运行时不算）才以 SYSTEM 身份静默运行，失败则回滚安装。
 - `Privacy.rtf`：安装界面的隐私政策页（MSI 的 `WixUILicenseRtf`），中文以 RTF `\uN\'3f` 转义（Unicode 码点 + `?` 回退字符的十六进制形式，各解析器一致）；改文案时保持 RTF 有效（可用写字板打开另存）。
-- `art/`：安装界面图片（24 位 BMP，由 `assets/logo.png` 经 `scripts/render-installer-art.py` 4 倍超采样生成（先 `python3 -m pip install -r scripts/requirements.txt` 安装锁定版本的 Pillow），白底 / 浅灰侧栏 + 标志与“乾元 Primus”字样）：`wix-banner.bmp`（493×58）、`wix-dialog.bmp`（493×312，左 164 像素为侧栏）给 MSI。
+- `art/`：安装界面图片，由 `scripts/render-installer-art.py` 从 `assets/logo.png` 4 倍超采样生成（先 `python3 -m pip install -r scripts/requirements.txt` 安装锁定版本的 Pillow）。安装向导（ADR 0014，不需要字体，每次运行都生成）：exe 用 `setup-icon-40*.png`（页眉标志）、`setup-icon-72*.png`（欢迎页）、`setup-check-44*.png`（完成页对勾）、`setup-steps-<1|2|3>*.png`（步骤圆点）、`setup-line.png`（#e1e1e3 分割线 / 边框），每种 100%/125%/150%/200% 各一张；MSI 用对应的 `msi-*.bmp`（24 位、白底）与整页白底 `msi-white.bmp`。`wix-banner.bmp`（493×58）、`wix-dialog.bmp`（493×312）只给 WixUI 公共对话框（浏览、取消确认等），传入 `--cjk` / `--latin` 字体时才重画。
 
 构建：仓库根运行 `node scripts/build-msi.mjs --arch x64|arm64`（`tauri build --no-bundle` 与 `cargo build -p primus-update` → 签名（配置了证书时） → `wix build -arch <arch>` → 签名 MSI → SHA-256 → `tauri signer`，输出 `out/Primus_<ver>_<arch>_zh-CN.msi`；同一份 `Primus.wxs` 构建两种架构）。脚本同时编译更新服务 `PrimusUpdate.exe`（`cargo build -p primus-update`，与 `Primus.exe` 同一 target 目录、同一把 updater 公钥）。x64 等价的 WiX 命令（在仓库根执行；`CARGO_TARGET_DIR` 未设置时）：`wix build apps/desktop/src-tauri/windows/Primus.wxs -arch x64 -culture zh-CN -acceptEula wix7 -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext -bindpath app=apps/desktop/src-tauri/target/release -bindpath core=dist/agent-core -bindpath runtime=dist/runtime -d ProductVersion=<主.次.(修订×100+阶段).0，见第 3.3.3 节> -d ShellDir=apps/desktop/src-tauri -d WebView2Setup=<引导程序路径> -o out/Primus_<ver>_x64_zh-CN.msi`
 
@@ -15,7 +16,7 @@
 
 | 内容 | 做法 |
 |---|---|
-| 安装目录可选 | 自己的界面 `PrimusUI.wxi`（ADR 0012，与 exe 的 `setup-theme.xml` 同一套页面），默认 `C:\Program Files\Primus`；静默安装可传 `INSTALLFOLDER="D:\某目录"` |
+| 安装目录可选 | 自己的界面 `PrimusUI.wxi`（ADR 0012 / 0014，与 exe 的 `setup-theme.xml` 同一套 6 步：欢迎 → 隐私政策 → 选择安装位置 → UAC → 进度 → 完成；前三步是同一个对话框，按 `PRIMUS_STEP` 显隐），默认 `C:\Program Files\Primus`；静默安装可传 `INSTALLFOLDER="D:\某目录"` |
 | 主程序与资源 | `Primus.exe`、`PrimusUpdate.exe` 在安装目录根；`resources\runtime`、`resources\agent-core` 用 `<Files>` 整目录收集 |
 | 安装目录 ACL | MSI 的 `CheckInstallDir` / `ResetProgramAcl` 运行 `windows/install-acl.ps1`：检查祖先路径，用 `SetKernelObjectSecurity` 只锁定目录自身（不传播权限），保持句柄并冻结、检查程序树，拒绝重解析点和多重硬链接，全部检查通过后才修复程序文件 ACL。MSI 的 `InstallDirAcl` 组件另用 `PermissionEx Sddl`（MsiLockPermissionsEx）设置同一受保护 DACL：SYSTEM、Administrators 完全控制，Users 与应用包读取和执行；`data` 不参与程序文件修复 |
 | `data` 目录 | `CreateFolder` + `util:PermissionEx` 给本地化的 Users 组（`util:QueryWindowsWellKnownSIDs` 查出的 `[WIX_ACCOUNT_USERS]`）授予“修改”(M)，继承到子项；组件 `Permanent`，卸载与升级保留 |
@@ -23,7 +24,7 @@
 | WebView2 | 注册表检测，缺失时运行内嵌引导程序 |
 | 更新服务（ADR 0007） | `ServiceInstall`：`PrimusUpdate`，LocalSystem、按需启动、参数 `--service`；服务 DACL 只给交互用户查询与启动；`ServiceControl` 升级与卸载时先停止，卸载时删除。`HKLM\Software\Primus\Version` 记已安装的 SemVer（服务据此拒绝降级）。暂存目录 `%ProgramData%\Primus\Update`：`PermissionEx` 设为所有者 SYSTEM、只有 SYSTEM 与 Administrators 可写的受保护 DACL；完全卸载时 `util:RemoveFolderEx` 删除整个 `%ProgramData%\Primus`（升级时保留） |
 | 从 NSIS 版迁移 | `AppSearch` 读到 NSIS 版的卸载信息与安装目录、且没有 MSI 记下的安装目录时，装回 NSIS 版的目录，并在 `CheckInstallDir` 之前以 `remove-nsis.ps1` 静默卸载 NSIS 版（`data` 保留） |
-| 完成页 | “立即启动 乾元 Primus”勾选框（默认勾选，仅全新安装 / 升级显示），`WixShellExec` 以安装者身份启动 |
+| 完成页 | “立即启动(L)”按钮（仅全新安装 / 升级、且不经 exe 时显示），`WixShellExec` 在界面进程中以安装者身份（非提权）启动；经 exe 安装时由 exe 的完成页启动 |
 | 快捷方式 | 公共开始菜单与公共桌面“乾元 Primus”，`System.AppUserModel.ID = com.primus.desktop`（通知归属） |
 | 卸载信息 | `ARPPRODUCTICON`；`ARPNOMODIFY`（定义在 PrimusUI.wxi；安装目录装后不可改，修复 / 卸载可用） |
 
