@@ -10,8 +10,8 @@ default-run = "primus"
 # 薄壳与更新服务（update-service，ADR 0007）同一个工作区：共用 Cargo.lock 与 target；
 # default-members 含两者，src-tauri 下的 cargo test / clippy / fmt 同时覆盖服务
 [workspace]
-members = [".", "update-service"]
-default-members = [".", "update-service"]
+members = [".", "update-service", "asr"]
+default-members = [".", "update-service", "asr"]
 
 [lib]
 name = "primus_lib"
@@ -47,6 +47,8 @@ rusqlite = { version = "=0.40.2", features = ["bundled"] }
 notify = "=8.2.0"
 # 工作区信任：`.primus/` 内容指纹（第 17.2 节），与 Tauri 依赖树中的版本一致
 sha2 = "=0.10.9"
+# 内置语音转文字（platform/speech.rs）：独立的库，见 asr/
+primus-asr = { path = "asr" }
 # 输入框图片附件（attachment_image）：在内存中解码、缩小、重新编码，不写文件（约束 C2）；只开常见格式
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
@@ -67,8 +69,8 @@ windows-sys = { version = "=0.61.2", features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
-# 语音输入（speech_*，platform/speech.rs）：系统自带的 Windows.Media.SpeechRecognition（WinRT），与 Tauri 依赖树中的版本一致
-windows = { version = "=0.62.2", features = ["Foundation", "Globalization", "Media_SpeechRecognition"] }
+# WebView2 COM 接口用到的 windows::core（platform/webview_permissions.rs），与 Tauri 依赖树中的版本一致
+windows = "=0.62.2"
 # 麦克风自动授权（platform/webview_permissions.rs）：WebView2 的 PermissionRequested 与 Profile 权限，与 Tauri 依赖树中的版本一致
 webview2-com = "=0.39.1"
 

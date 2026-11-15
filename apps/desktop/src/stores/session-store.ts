@@ -444,6 +444,9 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
       if (last?.role !== "assistant" || !Array.isArray(last.content)) return;
       last.usage = record.usage;
       applyUpdate(draft, last.content as TimelineContent[], record.assistantMessageEvent);
+      // 重试的请求已经开始输出（内容块事件）：Core 要到这条消息结束才发 auto_retry_end，这里先收起“正在重试”提示；
+      // 输出中途再失败时 Core 会发新的 auto_retry_start，提示重新出现。start 等不带 contentIndex 的事件不算开始输出
+      if ("contentIndex" in record.assistantMessageEvent) draft.retry = undefined;
       return;
     }
     case "message_end": {

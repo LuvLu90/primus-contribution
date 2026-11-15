@@ -12,7 +12,7 @@ import {
 } from "react";
 import { strings } from "@/lib/strings";
 
-// 对话索引：替代长对话右侧的滚动条，放在时间线左侧。每条用户提问一道刻度，
+// 对话索引：替代长对话右侧的滚动条，放在时间线右侧（提问不足 3 条时不显示）。每条用户提问一道刻度，
 // 当前所在的提问加长加深；点击平滑滚到那条提问。刻度长短按提问长短分三档。
 //
 // 指针在刻度条上移动时像手指划过尺子：以指针为中心、半径约 3.5 道刻度的余弦衰减，
@@ -26,6 +26,9 @@ export interface IndexItem {
   index: number;
   text: string;
 }
+
+/** 提问少于这么多条时不显示刻度条（两三道刻度起不到索引作用） */
+export const MIN_TICKS = 3;
 
 /** 刻度最多显示这么多道；更多时按比例取样，保证首尾都在 */
 const MAX_TICKS = 24;
@@ -195,7 +198,7 @@ export function MessageIndex({
     hideTimer.current = setTimeout(() => setHover(null), 120);
   }, [track]);
 
-  if (items.length < 2 || !overflowing) return null;
+  if (items.length < MIN_TICKS || !overflowing) return null;
   const ticks = sample(items, active);
   tickRefs.current.length = ticks.length;
 
@@ -281,7 +284,7 @@ export function MessageIndex({
   return (
     <nav
       aria-label={strings.chat.work.index}
-      className="-translate-y-1/2 pointer-events-none absolute top-1/2 left-3 z-20"
+      className="-translate-y-1/2 pointer-events-none absolute top-1/2 right-3 z-20"
     >
       {/* biome-ignore lint/a11y/noStaticElementInteractions: 刻度条只是放大效果的感应区，交互都在内部按钮上 */}
       <div
@@ -304,7 +307,7 @@ export function MessageIndex({
               onClick={() => jump(item)}
               onFocus={() => track(RAIL_PAD + TICK_PITCH * (i + 0.5))}
               onBlur={onTickBlur}
-              className="flex h-[11px] w-7 items-center outline-none"
+              className="flex h-[11px] w-7 items-center justify-end outline-none"
             >
               <span
                 aria-hidden
@@ -320,7 +323,7 @@ export function MessageIndex({
       </div>
       {hovered && hover !== null && (
         <div
-          className="index-pop-anchor absolute top-0 left-9"
+          className="index-pop-anchor absolute top-0 right-9"
           style={{ transform: `translateY(${RAIL_PAD + TICK_PITCH * (hover + 0.5)}px)` }}
         >
           <div

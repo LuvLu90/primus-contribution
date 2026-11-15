@@ -2,7 +2,7 @@
 
 // 时间线里用户消息的附件：消息末尾的 `<file>` 引用（Core 原生格式）解析成文件标签，
 // 不把路径与内联的文件内容原样铺在气泡里。悬停看完整路径；内联了内容的文本文件注明“已附上内容”。
-import type { FileTag } from "@primus/protocol";
+import type { FileTag, ImageContent } from "@primus/protocol";
 import { FileIcon } from "@/components/icons";
 import { Tooltip } from "@/components/ui/tooltip";
 import { strings } from "@/lib/strings";
@@ -38,6 +38,31 @@ export function SentFiles({ files }: { files: FileTag[] }) {
           </Tooltip>
         );
       })}
+    </ul>
+  );
+}
+
+/**
+ * 随消息发给模型的图片（Core 存进用户消息的 image 块）。粘贴或拖入的图片没有路径，只有这里能显示；
+ * 有路径的图片同时保留 `<file>` 标签：image 块不带路径，无法确认哪张缩略图对应哪个标签
+ * （如读取失败的图片与粘贴的图片同时发送），按数量推断会把失败文件的引用藏掉
+ */
+export function SentImages({ images }: { images: readonly ImageContent[] }) {
+  if (images.length === 0) return null;
+  return (
+    <ul aria-label={t.sentImages} className="flex max-w-full flex-wrap justify-end gap-1.5">
+      {images.map((img, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: 列表只随消息整体替换，不会重排
+        <li key={i} className="overflow-hidden rounded-[9px] ring-1 ring-tile-ring">
+          {/* biome-ignore lint/performance/noImgElement: 静态导出，图片是消息里的 base64 */}
+          <img
+            src={`data:${img.mimeType};base64,${img.data}`}
+            alt={t.sentImage}
+            draggable={false}
+            className="block size-16 bg-tile object-cover"
+          />
+        </li>
+      ))}
     </ul>
   );
 }

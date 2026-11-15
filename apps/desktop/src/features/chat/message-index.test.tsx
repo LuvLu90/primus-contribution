@@ -72,6 +72,26 @@ describe("刻度划过的放大衰减", () => {
   });
 });
 
+describe("对话索引显示条件", () => {
+  it("提问不足 3 条时不显示；3 条起显示在右侧", () => {
+    const scroll = document.createElement("div");
+    Object.defineProperty(scroll, "scrollHeight", { value: 5000 });
+    Object.defineProperty(scroll, "clientHeight", { value: 500 });
+    document.body.appendChild(scroll);
+    const ref = createRef<HTMLDivElement>();
+    (ref as { current: HTMLDivElement | null }).current = scroll;
+    const list = (n: number): IndexItem[] =>
+      Array.from({ length: n }, (_, i) => ({ index: i, text: `问题 ${i}` }));
+    const { rerender } = render(<MessageIndex items={list(2)} scrollRef={ref} />);
+    expect(screen.queryByRole("navigation")).toBeNull();
+    rerender(<MessageIndex items={list(3)} scrollRef={ref} />);
+    const nav = screen.getByRole("navigation");
+    expect(nav.className).toContain("right-3");
+    expect(nav.className).not.toContain("left-3");
+    expect(screen.getAllByRole("button")).toHaveLength(3);
+  });
+});
+
 describe("对话索引交互", () => {
   function setup() {
     const scroll = document.createElement("div");

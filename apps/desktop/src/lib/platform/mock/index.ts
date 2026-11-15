@@ -528,8 +528,12 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
   let nextTerminal = 1;
   // 模拟听写：当前会话的定时器与回调
   const speechStepMs = options.speechStepMs ?? 90;
-  let speech: { timer: ReturnType<typeof setInterval>; onEvent: (e: SpeechEvent) => void } | null =
-    null;
+  let speech: {
+    id: number;
+    timer: ReturnType<typeof setInterval>;
+    onEvent: (e: SpeechEvent) => void;
+  } | null = null;
+  let lastSpeech = 0;
   const endSpeech = () => {
     if (!speech) return;
     clearInterval(speech.timer);
@@ -1343,9 +1347,15 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           chars = 0;
         }
       }, speechStepMs);
-      speech = { timer, onEvent };
+      lastSpeech += 1;
+      speech = { id: lastSpeech, timer, onEvent };
+      return lastSpeech;
     },
-    speechStop: async () => endSpeech(),
+    speechAudio: async () => {},
+    // 只停这个编号的会话
+    speechStop: async (session) => {
+      if (speech?.id === session) endSpeech();
+    },
 
     terminalOpen: async (_cwd, onData) => {
       const terminalId = `mock-term-${nextTerminal++}`;

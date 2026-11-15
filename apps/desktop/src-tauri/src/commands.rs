@@ -23,18 +23,8 @@ use crate::updater::{
 };
 use crate::workspaces::{TrustDetails, WorkspaceInfo, Workspaces};
 
-/// 可以打开的系统设置页（语音输入被系统隐私设置拒绝时，引导用户去开麦克风 / 联机语音识别）。只认这几个完整值。
-const SETTINGS_PAGES: &[&str] = &[
-    "ms-settings:privacy-microphone",
-    "ms-settings:privacy-speech",
-];
-
-/// 外部链接只允许 http/https（以及 [`SETTINGS_PAGES`] 中的系统设置页），长度有限且不含空白与控制字符
-/// （防止被当成命令行参数或本地路径执行）。
+/// 外部链接只允许 http/https，长度有限且不含空白与控制字符（防止被当成命令行参数或本地路径执行）。
 fn check_external_url(target: &str) -> Result<(), String> {
-    if SETTINGS_PAGES.contains(&target) {
-        return Ok(());
-    }
     let lower = target.to_ascii_lowercase();
     let scheme_ok = lower.starts_with("https://") || lower.starts_with("http://");
     let host_ok = target.split_once("://").is_some_and(|(_, rest)| {
@@ -725,8 +715,6 @@ mod tests {
     fn external_url_only_http_https() {
         assert!(check_external_url("https://example.com/a?b=1").is_ok());
         assert!(check_external_url("HTTP://example.com").is_ok());
-        assert!(check_external_url("ms-settings:privacy-microphone").is_ok());
-        assert!(check_external_url("ms-settings:privacy-speech").is_ok());
         for bad in [
             "file:///C:/Windows/System32/cmd.exe",
             "C:\\Windows\\notepad.exe",
@@ -737,8 +725,8 @@ mod tests {
             "https://example.com/\n",
             "ms-settings:",
             "ms-settings:privacy-webcam",
-            "ms-settings:privacy-microphone ",
-            "MS-SETTINGS:privacy-microphone",
+            "ms-settings:privacy-microphone",
+            "ms-settings:privacy-speech",
         ] {
             assert!(check_external_url(bad).is_err(), "{bad}");
         }
@@ -1035,31 +1023,56 @@ pub(crate) fn attachment_image(
     crate::attachments::read_image(&checked.path, max_edge)
 }
 
-/// 语音输入是否可用（Windows 有系统语音语言时为 true）。
+/// 语音转文字是否可用（构建时注入了识别服务的密钥）。
 #[tauri::command]
 pub(crate) fn speech_available(speech: State<'_, crate::platform::speech::Speech>) -> bool {
     speech.available()
 }
 
-/// 开始语音听写：识别事件（interim / final / error / end）经 Channel 推送；已有会话时先停止旧的。
-/// 启动失败也走事件（`error` 带可解决它的系统设置页，随后 `end`），命令本身只在 IPC 层失败。
-#[tauri::command(async)]
+/// 开始语音转文字：识别事件（interim / final / error / end）经 Channel 推送；已有会话时先结束旧的。
+/// 出错只推 `error`（文案固定为“语音转文字暂不可用”），随后 `end`。返回会话编号，音频与停止请求都要带上。
+#[tauri::command]
 pub(crate) fn speech_start(
     speech: State<'_, crate::platform::speech::Speech>,
     on_event: Channel<crate::platform::speech::SpeechEvent>,
-) -> Result<(), String> {
-    let sink: crate::platform::speech::SpeechSink = Arc::new(move |event| {
+) -> u64 {
+    speech.start(Arc::new(move |event| {
         let _ = on_event.send(event);
-    });
-    if let Err(failure) = speech.start(sink.clone()) {
-        sink(failure.into());
-        sink(crate::platform::speech::SpeechEvent::End);
-    }
-    Ok(())
+    }))
 }
 
-/// 停止语音听写（之后推送 `end`）。
+/// 麦克风音频请求头里的会话编号
+const SPEECH_SESSION_HEADER: &str = "x-speech-session";
+
+/// 麦克风音频：请求体为原始字节（16 kHz、16 位、单声道、小端 PCM），请求头 `x-speech-session` 为会话编号。
+/// 自定义协议不可用、Tauri 回退到 postMessage 时请求体是字节数组的 JSON（`[0, 255, …]`），严格校验后照收。
 #[tauri::command]
-pub(crate) fn speech_stop(speech: State<'_, crate::platform::speech::Speech>) {
-    speech.stop();
+pub(crate) fn speech_audio(
+    speech: State<'_, crate::platform::speech::Speech>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let session = request
+        .headers()
+        .get(SPEECH_SESSION_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .ok_or_else(|| "缺少语音会话编号".to_string())?;
+    match request.body() {
+        tauri::ipc::InvokeBody::Raw(pcm) => {
+            speech.audio(session, pcm);
+            Ok(())
+        }
+        tauri::ipc::InvokeBody::Json(value) => {
+            let pcm = primus_asr::audio::pcm_from_json(value)
+                .ok_or_else(|| "音频必须是字节数组".to_string())?;
+            speech.audio(session, &pcm);
+            Ok(())
+        }
+    }
+}
+
+/// 停止录音（已录的音频识别完后推送 `end`）；只停 `session` 这个会话。
+#[tauri::command]
+pub(crate) fn speech_stop(speech: State<'_, crate::platform::speech::Speech>, session: u64) {
+    speech.stop(session);
 }

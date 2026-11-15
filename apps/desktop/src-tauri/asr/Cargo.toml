@@ -1,0 +1,27 @@
+[package]
+name = "primus-asr"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+description = "乾元（Primus）内置语音转文字：阿里云百炼的语音识别模型链，一款免费额度用完自动换下一款"
+publish = false
+
+# 独立的库：模型链、额度状态、各模型的协议都在这里，薄壳只负责把麦克风音频交进来、把文字推给前端。
+# 用到的密钥在构建时由环境变量 PRIMUS_ASR_KEY 注入（build.rs），不进仓库；没有注入时语音转文字不可用。
+[lib]
+name = "primus_asr"
+path = "src/lib.rs"
+
+[dependencies]
+# 版本与薄壳（../Cargo.toml）及其依赖树一致
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "sync", "time", "net", "macros"] }
+tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["connect", "handshake", "__rustls-tls"] }
+futures-util = { version = "=0.3.34", default-features = false, features = ["sink", "std"] }
+# WebSocket 经系统代理连接：与 reqwest 的 system-proxy 用同一套代理识别（环境变量、Windows 注册表）
+hyper-util = { version = "=0.1.21", default-features = false, features = ["client-proxy", "client-proxy-system"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "=0.7.1"
+base64 = "=0.23.1"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"

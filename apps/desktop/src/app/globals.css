@@ -962,7 +962,8 @@ html.window-effects.solid-window body {
   width: 28px;
   height: 1.5px;
   border-radius: 9999px;
-  transform-origin: left center;
+  /* 刻度条在右侧：从右端向左伸长 */
+  transform-origin: right center;
   transform: scale(
     calc(
       (
@@ -1001,12 +1002,12 @@ html.window-effects.solid-window body {
   from {
     opacity: 0;
     scale: 0.96;
-    translate: -6px -50%;
+    translate: 6px -50%;
   }
 }
 
 .index-pop {
-  transform-origin: left center;
+  transform-origin: right center;
   animation: index-pop 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 

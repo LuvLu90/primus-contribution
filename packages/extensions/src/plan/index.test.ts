@@ -284,6 +284,89 @@ describe("primus-plan", () => {
     expect(settle()).toBeUndefined();
   });
 
+  it("执行计划：用户回合注入当前进度；压缩、恢复后重新附上完整计划；更新待办后又做了事，结束前也提醒", async () => {
+    const entries: { type: string; customType?: string; data?: unknown }[] = [];
+    const { tools, ctx, cmd, handlers, userTurn } = setup(entries);
+    await cmd("on");
+    userTurn();
+    const submit = (tools[PLAN_SUBMIT_TOOL] as Tool).execute("t", PLAN, undefined, undefined, ctx);
+    await Promise.resolve();
+    await cmd(`approve ${JSON.stringify({ id: "p1" })}`);
+    await submit;
+    // 批准后的下一个用户回合：只带进度，不重复计划正文（工具结果里已有）
+    const next = userTurn()?.message.content ?? "";
+    expect(next).toContain("<primus-plan-executing>");
+    expect(next).toContain("[in_progress] 1. 协议类型");
+    expect(next).not.toContain("## 已批准的计划");
+    // 运行中压缩：下一次回合结束时插入带完整计划的提醒，只插一次
+    handlers.agent_start?.({}, ctx);
+    handlers.session_compact?.({}, ctx);
+    const turn = (toolName?: string) =>
+      handlers.turn_end?.({ toolResults: toolName ? [{ toolName }] : [] }, ctx) as
+        | { entries: { content: string }[] }
+        | undefined;
+    const after = turn("edit")?.entries[0]?.content ?? "";
+    expect(after).toContain("## 已批准的计划");
+    expect(after).toContain("# 加计划模式");
+    expect(turn("edit")).toBeUndefined();
+    // 这一轮更新过待办，之后又改了文件：准备结束时仍提醒一次
+    turn(TODO_TOOL);
+    turn("edit");
+    const settle = handlers.agent_before_settle?.(
+      { outcome: "completed", context: { canContinue: true } },
+      ctx,
+    ) as { continue: boolean } | undefined;
+    expect(settle?.continue).toBe(true);
+    // 恢复会话：第一次用户回合附上完整计划
+    const b = setup(entries);
+    b.handlers.session_start?.({}, b.ctx);
+    expect(b.plan.state.phase).toBe("executing");
+    expect(b.userTurn()?.message.content).toContain("## 已批准的计划");
+    expect(b.userTurn()?.message.content).not.toContain("## 已批准的计划");
+  });
+
+  it("执行计划：同一批里待办之后还有工具、或待办之后压缩再做事，结束前都会提醒", async () => {
+    const { tools, ctx, cmd, handlers } = setup();
+    await cmd("on");
+    const submit = (tools[PLAN_SUBMIT_TOOL] as Tool).execute("t", PLAN, undefined, undefined, ctx);
+    await Promise.resolve();
+    await cmd(`approve ${JSON.stringify({ id: "p1" })}`);
+    await submit;
+    const batch = (...names: string[]) =>
+      handlers.turn_end?.({ toolResults: names.map((toolName) => ({ toolName })) }, ctx);
+    const settle = () =>
+      handlers.agent_before_settle?.(
+        { outcome: "completed", context: { canContinue: true } },
+        ctx,
+      ) as { continue: boolean } | undefined;
+    // 同一批：先更新待办，再改文件
+    handlers.agent_start?.({}, ctx);
+    batch(TODO_TOOL, "edit");
+    expect(settle()?.continue).toBe(true);
+    // 同一批：先改文件，最后更新待办——待办是最新的，不提醒
+    handlers.agent_start?.({}, ctx);
+    batch("edit", TODO_TOOL);
+    expect(settle()).toBeUndefined();
+    // 待办 → 压缩 → 改文件：注入完整计划的同时也记下做了事
+    handlers.agent_start?.({}, ctx);
+    batch(TODO_TOOL);
+    handlers.session_compact?.({}, ctx);
+    expect(batch("edit")).toBeDefined();
+    expect(settle()?.continue).toBe(true);
+    // 同一次运行里（不再 agent_start）：提醒后更新了待办，又做了事，再次收尾仍提醒；没再做事则不提醒
+    batch(TODO_TOOL);
+    expect(settle()).toBeUndefined();
+    batch("edit");
+    expect(settle()?.continue).toBe(true);
+    expect(settle()).toBeUndefined();
+    // 待办 → 改文件 → 待办被拒（清单没变）：不算跟上进度，收尾仍提醒
+    handlers.agent_start?.({}, ctx);
+    batch(TODO_TOOL);
+    batch("edit");
+    handlers.turn_end?.({ toolResults: [{ toolName: TODO_TOOL, isError: true }] }, ctx);
+    expect(settle()?.continue).toBe(true);
+  });
+
   it("ask_user：推 primus:ask 等回答，选项或自己写的想法都能回；关闭提问时停下", async () => {
     const { tools, ctx, cmd, lastWidget } = setup();
     const ask = tools[ASK_USER_TOOL] as Tool;

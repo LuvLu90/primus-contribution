@@ -28,7 +28,7 @@ import { lastWrittenFile } from "@/features/files/written-file";
 import { type ChatTab, useSessionsStore } from "@/features/sessions/sessions-store";
 import { useSessionDefaultWorkspace } from "@/features/sessions/use-default-workspace";
 import { getFileDrop, getPlatform, isTauriRuntime } from "@/lib/platform";
-import type { SpeechSettingsPage, WorkspaceInfo } from "@/lib/platform/types";
+import type { WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { useModelsInfo, useProviderNames } from "@/lib/use-models";
 import { cn } from "@/lib/utils";
@@ -59,13 +59,20 @@ import { ModelPicker, withCoreCaps } from "./model-picker";
 import { PlanApproval } from "./plan-card";
 import { DEFAULT_THINKING_LEVEL, useChatSession } from "./use-chat-session";
 import { UserBubble } from "./user-bubble";
-import { SETTINGS_URLS, useVoiceInput } from "./voice/use-voice-input";
+import { useVoiceInput } from "./voice/use-voice-input";
 import { VoiceButton } from "./voice/voice-button";
 
 // 中央对话区：实色"纸面"上的时间线 + 悬浮在其上的玻璃输入框（滚动内容从玻璃下方折射穿过）。
 // 回复按 Markdown 渲染，流式输出平滑揭示；代码高亮、虚拟列表在后续任务补上。
 
 const t = strings.chat;
+
+/** 用户消息里的图片块 */
+function imagesOf(content: unknown): ImageContent[] {
+  return Array.isArray(content)
+    ? content.filter((c): c is ImageContent => (c as { type?: string })?.type === "image")
+    : [];
+}
 
 function textOf(content: unknown): string {
   if (typeof content === "string") return content;
@@ -75,10 +82,11 @@ function textOf(content: unknown): string {
     .join("");
 }
 
-/** 消息索引里的一行：正文；只有附件时列出文件名 */
-function indexText(text: string): string {
-  const { message, files } = splitFileTags(text);
-  return message || files.map((f) => f.path.split(/[\\/]/).pop() ?? f.path).join("、");
+/** 消息索引里的一行：正文；只有附件时列出文件名；只有图片时显示“图片” */
+export function indexText(text: string, hasImages: boolean): string {
+  const { message, files } = splitFileTags(text, { imageHints: hasImages });
+  const line = message || files.map((f) => f.path.split(/[\\/]/).pop() ?? f.path).join("、");
+  return line || (hasImages ? t.attachments.sentImage : "");
 }
 
 /** 一轮：一条用户消息 + 其后的助手消息与工具结果（会话开头若没有用户消息，user 为空） */
@@ -178,14 +186,6 @@ function useModelConfigGate() {
   const providerNames = useProviderNames(info);
   const unavailable = info !== null && info.error !== null && info.models.length === 0;
   return { info, providerNames, unavailable, reason: info?.error ?? null };
-}
-
-/** 语音输入被系统隐私设置拒绝时打开对应的 Windows 设置页 */
-function openVoiceSettings(page: SpeechSettingsPage | undefined) {
-  if (!page) return;
-  void getPlatform()
-    .then((p) => p.openExternal(SETTINGS_URLS[page]))
-    .catch(() => {});
 }
 
 /** 路径最后一段（工作区显示名） */
@@ -447,7 +447,11 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   }, []);
 
   // 刚发出、Core 还没回显的用户消息：先按它将来的位置显示，回显后同一个 key 原地替换，不闪烁
-  const [pendingUser, setPendingUser] = useState<{ text: string; index: number } | null>(null);
+  const [pendingUser, setPendingUser] = useState<{
+    text: string;
+    index: number;
+    images?: ImageContent[];
+  } | null>(null);
   // 回显后清除；发送失败在 submit 里清除。发送成功后 Core 的确认可能早于 agent_start 和回显，
   // 中间那一下既不在发送也不在运行：不能据此清除，否则欢迎页和气泡会消失再出现（闪一下）。
   // 只在发送成功、一段时间后仍没开始运行也没回显（如由扩展处理、不产生消息的命令）时兜底清除。
@@ -504,7 +508,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     // 能看图的模型：读取好的图片随 prompt 发送；其余文件（及不看图时的图片）按路径引用
     const { images, paths } = attachments.build();
     const message = withAttachments(text, paths);
-    setPendingUser({ text: message, index: state.messages.length });
+    setPendingUser({ text: message, index: state.messages.length, images });
     // 发送成功后才清空输入，失败时保留草稿和附件以便重试
     void send(message, images)
       .then((sent) => {
@@ -528,18 +532,18 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     if (busy || modelConfig.unavailable || submittingRef.current) return;
     const lastUser = state.messages.findLast((m) => m.role === "user");
     if (lastUser?.role !== "user") return;
-    const { message: body, files } = splitFileTags(textOf(lastUser.content));
+    const images = imagesOf(lastUser.content);
+    const { message: body, files } = splitFileTags(textOf(lastUser.content), {
+      imageHints: images.length > 0,
+    });
     const message = withAttachments(
       body,
       files.map((f) => f.path),
     );
-    const images = Array.isArray(lastUser.content)
-      ? lastUser.content.filter((c): c is ImageContent => c.type === "image")
-      : [];
     submittingRef.current = true;
     setSubmitting(true);
     stickToBottom.current = true;
-    setPendingUser({ text: message, index: state.messages.length });
+    setPendingUser({ text: message, index: state.messages.length, images });
     void send(message, images.length > 0 ? images : undefined)
       .then((sent) => {
         if (!sent) setPendingUser(null);
@@ -641,7 +645,15 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     () =>
       turns.flatMap((turn) =>
         turn.user
-          ? [{ index: turn.user.index, text: indexText(textOf(turn.user.message.content)) }]
+          ? [
+              {
+                index: turn.user.index,
+                text: indexText(
+                  textOf(turn.user.message.content),
+                  imagesOf(turn.user.message.content).length > 0,
+                ),
+              },
+            ]
           : [],
       ),
     [turns],
@@ -694,6 +706,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                       key={`${turn.user.index}-user`}
                       index={turn.user.index}
                       text={textOf(turn.user.message.content)}
+                      images={imagesOf(turn.user.message.content)}
                     />
                   )}
                   {turn.replies.length > 0 && (
@@ -727,6 +740,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   key={`${pendingUser.index}-user`}
                   index={pendingUser.index}
                   text={pendingUser.text}
+                  images={pendingUser.images}
                 />
               </Fragment>
             )}
@@ -853,17 +867,8 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   </p>
                 ) : (
                   voice.error && (
-                    <p role="alert" className="flex items-center gap-2 text-xs text-danger">
-                      <span className="min-w-0">{voice.error.message}</span>
-                      {voice.error.settings && (
-                        <button
-                          type="button"
-                          onClick={() => openVoiceSettings(voice.error?.settings)}
-                          className="shrink-0 rounded-full px-2 py-0.5 font-medium text-danger underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-danger/40"
-                        >
-                          {t.voice.openSettings}
-                        </button>
-                      )}
+                    <p role="alert" className="text-xs text-danger">
+                      {voice.error.message}
                     </p>
                   )
                 )}
