@@ -740,18 +740,74 @@ fn move_dir(from: &Path, to: &Path) -> Result<(), SkillError> {
     Ok(())
 }
 
-/// 解析 GitHub 链接：`https://github.com/<owner>/<repo>[.git]`、`…/tree/<ref>/<目录>`、`…/blob/<ref>/<目录>/SKILL.md`。
-/// 返回（owner，repo，ref，子目录）。ref 只取一段（含 `/` 的分支名请用链接里能区分的写法，见 ADR 0017）。
+/// 解析 GitHub 链接，返回（owner，repo，ref，子目录）。
+///
+/// 分支 / 标签的写法与 Core 安装 git 来源时一致（agent-core `packages/coding-agent/src/utils/git.ts` 的 `parseGitUrl`，
+/// 基于 hosted-git-info）：`https://github.com/<owner>/<repo>[.git]` 后接 `#<ref>` 或 `@<ref>`（ref 可以含 `/`，
+/// 如 `#feature/x`），`git:` 前缀的 `git:github.com/<owner>/<repo>[@<ref>]` 与 `git:git@github.com:<owner>/<repo>`，
+/// 以及 `http(s)://`、`ssh://`、`git://` 协议。Core 只会整库 `git clone`；这里另外接受网页上复制的
+/// `…/tree/<ref>/<目录>` 与 `…/blob/<ref>/<目录>/SKILL.md`（取所在目录），与 hosted-git-info 一样 ref 只取一段，
+/// 含 `/` 的分支请用 `#<ref>` 写法（这时没有子目录）。
 pub(crate) fn parse_github_url(
     url: &str,
 ) -> Result<(String, String, Option<String>, Option<String>), SkillError> {
     let bad = || invalid("请输入 GitHub 仓库链接，例如 https://github.com/owner/repo");
-    let rest = url
-        .trim()
-        .strip_prefix("https://github.com/")
-        .or_else(|| url.trim().strip_prefix("https://www.github.com/"))
-        .ok_or_else(bad)?;
-    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let raw = url.trim();
+    let (has_git_prefix, raw) = match raw.strip_prefix("git:") {
+        Some(rest) => (true, rest.trim()),
+        None => (false, raw),
+    };
+    // 去掉协议与主机，只留 `<owner>/<repo>…`
+    let lower = raw.to_ascii_lowercase();
+    let mut rest = None;
+    for scheme in [
+        "https://",
+        "http://",
+        "ssh://",
+        "git://",
+        "git+ssh://",
+        "git+https://",
+    ] {
+        if lower.starts_with(scheme) {
+            let after = &raw[scheme.len()..];
+            let after = after.strip_prefix("git@").unwrap_or(after);
+            let (host, path) = after.split_once('/').ok_or_else(bad)?;
+            if !matches!(
+                host.to_ascii_lowercase().as_str(),
+                "github.com" | "www.github.com"
+            ) {
+                return Err(bad());
+            }
+            // Core 不带 git: 前缀时只认 http(s) / ssh / git 协议
+            if !has_git_prefix && scheme.starts_with("git+") {
+                return Err(bad());
+            }
+            rest = Some(path);
+            break;
+        }
+    }
+    let rest = match rest {
+        Some(r) => r,
+        // 不带协议的写法只在 git: 前缀后接受（与 Core 一致）
+        None if has_git_prefix => {
+            if let Some(r) = raw.strip_prefix("git@github.com:") {
+                r
+            } else {
+                let (host, path) = raw.split_once('/').ok_or_else(bad)?;
+                if !host.eq_ignore_ascii_case("github.com") {
+                    return Err(bad());
+                }
+                path
+            }
+        }
+        None => return Err(bad()),
+    };
+    // `#<ref>`（hosted-git-info 的 committish）与查询串
+    let (rest, hash_ref) = match rest.split_once('#') {
+        Some((r, h)) => (r, Some(h)),
+        None => (rest, None),
+    };
+    let rest = rest.split('?').next().unwrap_or("");
     let parts: Vec<&str> = rest.split('/').filter(|p| !p.is_empty()).collect();
     let segment_ok = |s: &str| {
         !s.is_empty()
@@ -760,12 +816,47 @@ pub(crate) fn parse_github_url(
             && s.chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     };
-    let (owner, repo) = match parts.as_slice() {
-        [o, r, ..] => (*o, r.strip_suffix(".git").unwrap_or(r)),
+    let ref_ok = |r: &str| {
+        !r.is_empty()
+            && !r.starts_with('/')
+            && !r.split('/').any(|p| p.is_empty() || p == "..")
+            && !r.chars().any(|c| c.is_control() || c == '\\' || c == ' ')
+    };
+    let (owner, repo_part) = match parts.as_slice() {
+        [o, r, ..] => (*o, *r),
         _ => return Err(bad()),
     };
+    // `@<ref>`（Core 的 splitRef）：仓库名后第一个 `@` 之后都是 ref，可以含 `/`
+    // （只认仓库名那一段里的 `@`，`tree/…/a@b` 这类路径里的不算）
+    let at = repo_part.contains('@').then(|| rest.find('@')).flatten();
+    let (repo_part, at_ref) = match at {
+        Some(i) => {
+            let repo = repo_part.split('@').next().unwrap_or("");
+            (repo, Some(&rest[i + 1..]))
+        }
+        None => (repo_part, None),
+    };
+    let repo = repo_part.strip_suffix(".git").unwrap_or(repo_part);
     if !segment_ok(owner) || !segment_ok(repo) {
         return Err(bad());
+    }
+    let named_ref = match (hash_ref, at_ref) {
+        (Some(_), Some(_)) => return Err(bad()),
+        (Some(r), None) | (None, Some(r)) => {
+            let r = percent_decode(r);
+            if !ref_ok(&r) {
+                return Err(bad());
+            }
+            Some(r)
+        }
+        (None, None) => None,
+    };
+    if let Some(r) = named_ref {
+        // `@ref` / `#ref` 写法后面不能再有路径
+        if at.is_none() && parts.len() > 2 {
+            return Err(bad());
+        }
+        return Ok((owner.to_owned(), repo.to_owned(), Some(r), None));
     }
     let (reference, sub) = match parts.get(2..) {
         None | Some([]) => (None, None),
@@ -783,7 +874,7 @@ pub(crate) fn parse_github_url(
                 return Err(bad());
             }
             let r = percent_decode(r);
-            if r.is_empty() || r.chars().any(|c| c.is_control() || c == '\\' || c == ' ') {
+            if !ref_ok(&r) {
                 return Err(bad());
             }
             (Some(r), sub)
@@ -1114,38 +1205,54 @@ mod tests {
     #[test]
     fn github_urls() {
         let p = |u: &str| parse_github_url(u).ok();
-        assert_eq!(
-            p("https://github.com/o/r"),
-            Some(("o".into(), "r".into(), None, None))
-        );
-        assert_eq!(
-            p("https://github.com/o/r.git"),
-            Some(("o".into(), "r".into(), None, None))
-        );
+        let repo = |r: Option<&str>, sub: Option<&str>| {
+            Some((
+                "o".to_owned(),
+                "r".to_owned(),
+                r.map(str::to_owned),
+                sub.map(str::to_owned),
+            ))
+        };
+        assert_eq!(p("https://github.com/o/r"), repo(None, None));
+        assert_eq!(p("https://github.com/o/r.git"), repo(None, None));
+        assert_eq!(p("https://www.github.com/o/r/"), repo(None, None));
         assert_eq!(
             p("https://github.com/o/r/tree/main/skills/pdf"),
-            Some((
-                "o".into(),
-                "r".into(),
-                Some("main".into()),
-                Some("skills/pdf".into())
-            ))
+            repo(Some("main"), Some("skills/pdf"))
         );
         assert_eq!(
             p("https://github.com/o/r/blob/v1/skills/pdf/SKILL.md?plain=1"),
-            Some((
-                "o".into(),
-                "r".into(),
-                Some("v1".into()),
-                Some("skills/pdf".into())
-            ))
+            repo(Some("v1"), Some("skills/pdf"))
         );
+        // Core 的 ref 写法：#ref（hosted-git-info）与 @ref（splitRef），ref 可以含 /
+        assert_eq!(
+            p("https://github.com/o/r#feature/x"),
+            repo(Some("feature/x"), None)
+        );
+        assert_eq!(
+            p("https://github.com/o/r.git@feature/x"),
+            repo(Some("feature/x"), None)
+        );
+        assert_eq!(p("git:github.com/o/r@v2"), repo(Some("v2"), None));
+        assert_eq!(p("git:git@github.com:o/r"), repo(None, None));
+        assert_eq!(
+            p("https://github.com/o/r/tree/main/a@b"),
+            repo(Some("main"), Some("a@b"))
+        );
+        assert_eq!(p("ssh://git@github.com/o/r"), repo(None, None));
+        assert_eq!(p("http://github.com/o/r"), repo(None, None));
+        assert_eq!(p("git:https://github.com/o/r#v1"), repo(Some("v1"), None));
         for bad in [
-            "http://github.com/o/r",
+            "github.com/o/r",
+            "git@github.com:o/r",
+            "git+https://github.com/o/r",
             "https://gitlab.com/o/r",
             "https://github.com/o",
             "https://github.com/o/r/issues/1",
             "https://github.com/o/r/tree/main/../x",
+            "https://github.com/o/r#a/../b",
+            "https://github.com/o/r#",
+            "https://github.com/o/r/tree/x#y",
             "https://github.com/../r",
             "https://github.com.evil.com/o/r",
         ] {
@@ -1158,6 +1265,10 @@ mod tests {
         assert_eq!(
             codeload_url("o", "r", Some("feat x")),
             "https://codeload.github.com/o/r/zip/feat%20x"
+        );
+        assert_eq!(
+            codeload_url("o", "r", Some("feature/x")),
+            "https://codeload.github.com/o/r/zip/feature/x"
         );
     }
 

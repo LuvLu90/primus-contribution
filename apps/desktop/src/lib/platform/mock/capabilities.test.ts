@@ -27,6 +27,13 @@ describe("mock 能力中心", () => {
     const repo = await c.skillStage({ kind: "github", url: "https://github.com/acme/skills" });
     expect(repo.label).toBe("skills");
     expect(repo.candidates.map((x) => x.dirName)).toEqual(["web-search", "broken"]);
+    // Core 的 ref 写法
+    const hashRef = await c.skillStage({
+      kind: "github",
+      url: "https://github.com/acme/skills#feature/x",
+    });
+    expect(hashRef.label).toBe("skills");
+    await c.skillDiscard(hashRef.stageId);
     // 一次装入仓库里的全部技能
     expect(await c.skillInstall(repo.stageId, "acme", false)).toMatch(/skills\\acme$/);
     const installed = (await c.skillsList()).filter((s) => s.package === "acme");

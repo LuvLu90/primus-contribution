@@ -91,8 +91,9 @@ const validDir = (name: string) =>
   !name.endsWith(".") &&
   !/^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i.test(name);
 
+/** 薄壳接受的 GitHub 链接的简化版：仓库、`tree/` / `blob/` 链接，以及 Core 的 `#<ref>` / `@<ref>` 写法 */
 const GITHUB =
-  /^https:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/(tree|blob)\/[^/?#]+(\/[^?#]*)?)?\/?(?:[?#].*)?$/;
+  /^https:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/(tree|blob)\/[^/?#]+(\/[^?#]*)?|@[^#?]+)?\/?(?:[?#].*)?$/;
 
 const lastSegment = (path: string) =>
   path
