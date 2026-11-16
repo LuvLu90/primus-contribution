@@ -17,9 +17,8 @@ path = "src/lib.rs"
 tokio = { version = "=1.54.1", features = ["rt-multi-thread", "sync", "time", "net", "macros"] }
 tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["connect", "handshake", "__rustls-tls"] }
 futures-util = { version = "=0.3.34", default-features = false, features = ["sink", "std"] }
-# WebSocket 经系统代理连接：与 reqwest 的 system-proxy 用同一套代理识别（环境变量、Windows 注册表）
-hyper-util = { version = "=0.1.21", default-features = false, features = ["client-proxy", "client-proxy-system"] }
-reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
+# 百炼直连、不走代理（ADR 0015）：reqwest 不开 system-proxy，客户端另设 no_proxy()
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = "=0.7.1"
 base64 = "=0.23.1"
