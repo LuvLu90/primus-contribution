@@ -325,16 +325,20 @@ mod tests {
     fn kimi_versions_and_tiers_fall_back_to_their_base_model() {
         let k3 = table()["kimi-k3"];
         assert!(k3.image && k3.reasoning && k3.context_window == 1_048_576);
-        // 能力表里没有的 k3.1-pro：去掉 -pro 后按 kimi 系列规则（1M 上下文、能看图、支持思考）
-        let k31 = Capabilities {
+        // 能力表已收录的 k3.1-pro：精确命中表里的值（含带网关前缀的 ID）
+        let k31_pro = table()["kimi-k3-1-pro"];
+        assert_eq!(lookup("kimi-k3.1-pro"), Some(k31_pro));
+        assert_eq!(lookup("openrouter/moonshotai/kimi-k3.1-pro"), Some(k31_pro));
+        // 能力表里没有的版本：去掉 -pro 后按 kimi 系列规则（1M 上下文、能看图、支持思考）
+        let k3_family = Capabilities {
             context_window: 1_048_576,
             max_tokens: 131_072,
             image: true,
             reasoning: true,
         };
-        assert_eq!(lookup("kimi-k3.1-pro"), Some(k31));
-        assert_eq!(lookup("Kimi-K3.1"), Some(k31));
-        assert_eq!(lookup("openrouter/moonshotai/kimi-k3.1-pro"), Some(k31));
+        assert_eq!(lookup("Kimi-K3.1"), Some(k3_family));
+        assert_eq!(lookup("kimi-k3.2-pro"), Some(k3_family));
+        assert_eq!(lookup("openrouter/moonshotai/kimi-k3.2-pro"), Some(k3_family));
         // 带厂商前缀的 ID
         assert_eq!(lookup("moonshotai/kimi-k3"), Some(k3));
         // 档位后缀：去掉 -turbo 命中 kimi-k2-6
