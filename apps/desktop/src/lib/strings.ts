@@ -751,8 +751,9 @@ export const strings = {
           jsonPlaceholder:
             '{\n  "mcpServers": {\n    "名称": { "command": "npx", "args": [] }\n  }\n}',
           jsonNameNeeded: "粘贴的是单个条目，请在上方填写名称",
-          // biome-ignore lint/suspicious/noTemplateCurlyInString: 展示给用户的 mcp.json 变量写法
-          plaintextWarning: "环境变量与请求头以明文保存在 mcp.json 中，建议写成 ${环境变量} 引用。",
+          plaintextWarning:
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: 展示给用户的 mcp.json 变量写法
+            "环境变量与请求头的值按原样（明文）写入 mcp.json。Core 连接时把 $名称 或 ${名称} 换成同名环境变量的值，以 ! 开头的值当作命令执行、取其输出；值里要写字面的 $ 时写成 $$。",
           found: "将添加：{names}",
           save: "保存",
           saving: "正在保存…",
@@ -821,6 +822,9 @@ export const strings = {
       dropped: "“{name}”去掉了 Core 不支持的字段：{keys}",
       // biome-ignore lint/suspicious/noTemplateCurlyInString: 展示给用户的配置变量写法
       vscodeInput: "“{name}”用到了 VS Code 的 ${input:…} 变量，请改成实际的值或 ${环境变量}",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: 展示给用户的配置变量写法
+      vscodeEnv: "“{name}”的 ${env:名称} 已改成 Core 的写法 ${名称}",
+      vscodeLiteral: "“{name}”的 {keys} 里有变量，Core 不会展开这些字段，请改成实际的值",
       pasteEmpty: "请粘贴 JSON 配置",
       pasteJson: "不是有效的 JSON：{message}",
       pasteObject: "应为 JSON 对象",

@@ -200,6 +200,38 @@ describe("粘贴格式", () => {
     ]);
     expect(r.notes.join("\n")).toContain("envFile");
     expect(r.notes.join("\n")).toContain("input:");
+    // VS Code 的 ${env:NAME}：env、headers 与 oauth.clientSecret 里换成 Core 的 ${NAME}；其他字段只提示
+    const env = (n: string) => ["$", `{env:${n}}`].join("");
+    const core = (n: string) => ["$", `{${n}}`].join("");
+    const e = parsePastedServers(
+      JSON.stringify({
+        servers: {
+          s: {
+            command: "x",
+            args: [env("HOME")],
+            env: { K: `a-${env("TOKEN")}` },
+          },
+          h: {
+            url: "https://h",
+            headers: { Authorization: `Bearer ${env("T")}` },
+            oauth: { clientSecret: env("S"), callbackPort: 1 },
+          },
+        },
+      }),
+    );
+    expect(e.servers).toEqual([
+      ["s", { command: "x", args: [env("HOME")], env: { K: `a-${core("TOKEN")}` } }],
+      [
+        "h",
+        {
+          url: "https://h",
+          headers: { Authorization: `Bearer ${core("T")}` },
+          oauth: { clientSecret: core("S"), callbackPort: 1 },
+        },
+      ],
+    ]);
+    expect(e.notes.join("\n")).toContain("args");
+    expect(e.notes.filter((n) => n.includes("Core 的写法"))).toHaveLength(2);
     const s = parsePastedServers(
       '{"mcp": {"servers": {"a": {"type": "sse", "url": "https://a"}}}}',
     );

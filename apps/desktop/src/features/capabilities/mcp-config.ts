@@ -335,14 +335,50 @@ export interface PastedServers {
 /** VS Code 条目里 Core 不认识、转换时去掉的字段 */
 const VSCODE_ONLY_KEYS = ["envFile", "dev", "gallery", "version"];
 
-/** VS Code 的条目 → Core 的写法：type 为 stdio / http 时去掉，去掉 Core 不认识的字段 */
+/** VS Code 的环境变量引用 `${env:NAME}` */
+const VSCODE_ENV_REF = /\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g;
+
+/**
+ * 字符串映射里的 `${env:NAME}` 换成 Core 的 `${NAME}`：Core 连接时只展开 env、headers（与 oauth.clientSecret）里的
+ * `$NAME` / `${NAME}`（agent-core `core/resolve-config-value.ts`），所以只换这几处。返回是否换过
+ */
+function convertEnvRefs(map: unknown): boolean {
+  if (!isStringRecord(map)) return false;
+  let changed = false;
+  for (const [k, v] of Object.entries(map)) {
+    const next = v.replace(VSCODE_ENV_REF, (_, n: string) => `\${${n}}`);
+    if (next !== v) {
+      map[k] = next;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/**
+ * VS Code 的条目 → Core 的写法：type 为 stdio / http 时去掉，去掉 Core 不认识的字段；env / headers 里的
+ * `${env:NAME}` 换成 `${NAME}`。其他字段（command、args、url、cwd）里的变量 Core 不展开，只提示
+ */
 function fromVsCode(name: string, entry: Obj, notes: string[]): Obj {
-  const out: Obj = { ...entry };
+  const out: Obj = structuredClone(entry);
   if (out.type === "stdio" || out.type === "http") delete out.type;
   const dropped = VSCODE_ONLY_KEYS.filter((k) => k in out);
   for (const k of dropped) delete out[k];
   if (dropped.length) notes.push(fill(msg.dropped, { name, keys: dropped.join("、") }));
+  const secret = isRecord(out.oauth) ? { clientSecret: out.oauth.clientSecret } : null;
+  const converted = [
+    convertEnvRefs(out.env),
+    convertEnvRefs(out.headers),
+    convertEnvRefs(secret),
+  ].some(Boolean);
+  if (secret && isRecord(out.oauth)) out.oauth.clientSecret = secret.clientSecret;
+  if (converted) notes.push(fill(msg.vscodeEnv, { name }));
   if (/\$\{input:/.test(JSON.stringify(out))) notes.push(fill(msg.vscodeInput, { name }));
+  const literalFields = ["command", "args", "url", "cwd"].filter((k) =>
+    /\$\{/.test(JSON.stringify(out[k] ?? "")),
+  );
+  if (literalFields.length)
+    notes.push(fill(msg.vscodeLiteral, { name, keys: literalFields.join("、") }));
   return out;
 }
 
