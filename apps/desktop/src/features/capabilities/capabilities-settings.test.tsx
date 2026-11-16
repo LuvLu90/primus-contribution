@@ -198,6 +198,91 @@ describe("设置·能力中心·MCP", () => {
     expect((await within(dialog).findByRole("alert")).textContent).toContain("冲突");
   });
 
+  it("表单添加不会替换同名服务器", async () => {
+    setup();
+    openMcp();
+    fireEvent.click(await screen.findByRole("button", { name: tm.add }));
+    const dialog = await screen.findByRole("dialog", { name: tm.dialog.addTitle });
+    fireEvent.change(within(dialog).getByLabelText(tm.dialog.name), {
+      target: { value: "filesystem" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(tm.dialog.command), { target: { value: "x" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: tm.dialog.save }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("已有名为");
+  });
+
+  it("粘贴不带名字的单个条目：名称框在输入时不消失", async () => {
+    const platform = setup();
+    openMcp();
+    fireEvent.click(await screen.findByRole("button", { name: tm.add }));
+    const dialog = await screen.findByRole("dialog", { name: tm.dialog.addTitle });
+    fireEvent.mouseDown(within(dialog).getByRole("tab", { name: tm.dialog.modes.json }));
+    fireEvent.change(within(dialog).getByLabelText(tm.dialog.json), {
+      target: { value: '{"url": "https://s.example/mcp"}' },
+    });
+    fireEvent.change(within(dialog).getByLabelText(tm.dialog.name), { target: { value: "s" } });
+    fireEvent.change(within(dialog).getByLabelText(tm.dialog.name), { target: { value: "srv" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: tm.dialog.save }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const servers = JSON.parse((await platform.mcpConfigRead()).text ?? "").mcpServers;
+    expect(servers.srv).toEqual({ url: "https://s.example/mcp" });
+  });
+
+  it("保存后清掉旧的测试结果", async () => {
+    setup();
+    openMcp();
+    fireEvent.click(await screen.findByRole("button", { name: tm.test }));
+    const fs = await row(tm.title, "filesystem");
+    await waitFor(() => expect(fs.textContent).toContain("已连接"));
+    fireEvent.click(within(fs).getByRole("switch", { name: "启用 filesystem" }));
+    await waitFor(async () =>
+      expect((await row(tm.title, "filesystem")).textContent).not.toContain("已连接"),
+    );
+  });
+
+  it("编辑中文件被别处改过：关掉对话框并提示，不用旧条目覆盖", async () => {
+    const platform = setup();
+    openMcp();
+    const docs = await row(tm.title, "docs-auth");
+    fireEvent.click(within(docs).getByRole("button", { name: "编辑 docs-auth" }));
+    const dialog = await screen.findByRole("dialog", { name: tm.dialog.editTitle });
+    const current = await platform.mcpConfigRead();
+    const changed = JSON.parse(current.text ?? "");
+    changed.mcpServers["docs-auth"].oauth = { clientId: "new" };
+    await platform.mcpConfigWrite(JSON.stringify(changed), current.version);
+    fireEvent.change(within(dialog).getByLabelText(tm.dialog.description), {
+      target: { value: "d" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: tm.dialog.save }));
+    expect(await screen.findByText(tm.conflict)).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    const servers = JSON.parse((await platform.mcpConfigRead()).text ?? "").mcpServers;
+    expect(servers["docs-auth"]).toEqual({
+      url: "https://example.com/mcp",
+      oauth: { clientId: "new" },
+    });
+  });
+
+  it("编辑时在 JSON 里改的字段切回表单后保留", async () => {
+    const platform = setup();
+    openMcp();
+    const fs = await row(tm.title, "filesystem");
+    fireEvent.click(within(fs).getByRole("button", { name: "编辑 filesystem" }));
+    const dialog = await screen.findByRole("dialog", { name: tm.dialog.editTitle });
+    fireEvent.mouseDown(within(dialog).getByRole("tab", { name: tm.dialog.modes.json }));
+    const json = within(dialog).getByLabelText(tm.dialog.json) as HTMLTextAreaElement;
+    const entry = JSON.parse(json.value);
+    fireEvent.change(json, { target: { value: JSON.stringify({ ...entry, timeout: 30 }) } });
+    fireEvent.mouseDown(within(dialog).getByRole("tab", { name: tm.dialog.modes.form }));
+    fireEvent.change(within(dialog).getByLabelText(tm.dialog.description), {
+      target: { value: "files" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: tm.dialog.save }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const servers = JSON.parse((await platform.mcpConfigRead()).text ?? "").mcpServers;
+    expect(servers.filesystem).toMatchObject({ timeout: 30, description: "files" });
+  });
+
   it("粘贴 Claude Desktop 配置添加多个服务器", async () => {
     const platform = setup();
     openMcp();
@@ -291,6 +376,24 @@ describe("entryFromForm", () => {
         headers: { Authorization: "Bearer t" },
       },
     );
+  });
+
+  it("表单文本没改动的环境变量、请求头与参数沿用原值", () => {
+    const base = { command: "node", args: ["a b", "c\nd"], env: { TOKEN: " secret ", M: "x\ny" } };
+    const stdio = {
+      ...form,
+      transport: "stdio" as const,
+      command: 'node "a b" "c\nd"',
+      env: "TOKEN= secret \nM=x\ny",
+      url: "",
+      headers: "",
+    };
+    // 与 formFrom 生成的文本一致时原样保留
+    const kept = entryFromForm({ ...stdio, description: "d" }, base);
+    expect(kept).toEqual({ ...base, description: "d" });
+    const http = { url: "https://x/mcp", headers: { A: " v " } };
+    expect(entryFromForm({ ...form, headers: "A:  v " }, http).headers).toEqual({ A: " v " });
+    expect(entryFromForm({ ...form, headers: "A: w" }, http).headers).toEqual({ A: "w" });
   });
 
   it("换成 stdio 时去掉 oauth 与 auth；缺命令或地址时报错", () => {

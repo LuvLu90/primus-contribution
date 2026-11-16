@@ -154,6 +154,17 @@ describe("mcp.json 修改", () => {
     );
   });
 
+  it("名为 __proto__ 的服务器作为普通键保留；不存在的名字不会命中原型上的属性", () => {
+    const text = '{"mcpServers": {"__proto__": {"command": "a"}}}';
+    const next = setServer(text, "b", { command: "b" });
+    expect(Object.keys(JSON.parse(next).mcpServers)).toEqual(["__proto__", "b"]);
+    expect(
+      Object.keys(JSON.parse(setServer(null, "__proto__", { command: "x" })).mcpServers),
+    ).toEqual(["__proto__"]);
+    expect(() => removeServer(FILE, "toString")).toThrow("没有服务器");
+    expect(() => setServerEnabled(FILE, "toString", false)).toThrow("没有服务器");
+  });
+
   it("nameConflict 忽略正在编辑的条目", () => {
     const doc = parseMcpDocument(FILE);
     expect(nameConflict(doc, "fs", "fs")).toBeNull();
@@ -285,7 +296,7 @@ describe("表单辅助", () => {
   it("命令行拆分与拼接互逆", () => {
     expect(splitCommandLine(` npx -y "@a/b c" '' x`)).toEqual(["npx", "-y", "@a/b c", "", "x"]);
     expect(() => splitCommandLine('a "b')).toThrow("引号");
-    const parts = ["C:\\Program Files\\node.exe", 'say "hi"', "", "-y"];
+    const parts = ["C:\\Program Files\\node.exe", 'say "hi"', "", "-y", `console.log("it's")`];
     expect(splitCommandLine(joinCommandLine(parts))).toEqual(parts);
   });
 });

@@ -242,4 +242,14 @@ describe("技能 frontmatter（YAML 子集）", () => {
     for (const bad of ["", ".x", "a/b", "con", "x.", "名", "a b", "x".repeat(65)])
       expect(validDirName(bad)).toBe(false);
   });
+
+  it("长空白串不会让解析卡住（不可信来源的技能文件）", () => {
+    const spaces = " ".repeat(60_000);
+    const t0 = performance.now();
+    expect(() => parseYamlSubset(`a${spaces}x`)).toThrow();
+    expect(parseYamlSubset(`description: a${spaces}x`).description).toBe(`a${spaces}x`);
+    expect(parseYamlSubset(`description: a${spaces}# c`).description).toBe("a");
+    expect(performance.now() - t0).toBeLessThan(1000);
+    expect(parseYamlSubset('"quoted key" : v')).toEqual({ "quoted key": "v" });
+  });
 });

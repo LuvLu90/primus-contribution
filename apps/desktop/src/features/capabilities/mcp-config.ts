@@ -290,7 +290,8 @@ export function setServer(
   const conflict = nameConflict(doc, name, previous);
   if (conflict) throw new Error(conflict);
   const servers = serversOf(doc);
-  const next: Obj = {};
+  // 无原型对象：名为 `__proto__` 的服务器也作为普通键保留
+  const next: Obj = Object.create(null);
   let placed = false;
   for (const [key, value] of Object.entries(servers)) {
     if (key === previous || key === name) {
@@ -307,7 +308,7 @@ export function setServer(
 export function removeServer(text: string | null, name: string): string {
   const doc = parseMcpDocument(text);
   const servers = serversOf(doc);
-  if (!(name in servers)) throw new Error(fill(msg.missing, { name }));
+  if (!Object.hasOwn(servers, name)) throw new Error(fill(msg.missing, { name }));
   delete servers[name];
   return serializeMcpDocument(doc);
 }
@@ -315,7 +316,8 @@ export function removeServer(text: string | null, name: string): string {
 /** 启用（删掉 enabled 键）或停用（enabled: false） */
 export function setServerEnabled(text: string | null, name: string, enabled: boolean): string {
   const doc = parseMcpDocument(text);
-  const entry = serversOf(doc)[name];
+  const servers = serversOf(doc);
+  const entry = Object.hasOwn(servers, name) ? servers[name] : undefined;
   if (!isRecord(entry)) throw new Error(fill(msg.missing, { name }));
   if (enabled) delete entry.enabled;
   else entry.enabled = false;
@@ -510,7 +512,8 @@ export function joinCommandLine(parts: string[]): string {
   return parts
     .map((p) => {
       if (p !== "" && !/[\s"']/.test(p)) return p;
-      return p.includes('"') ? `'${p}'` : `"${p}"`;
+      // 双引号包住；参数里的双引号写成 `"'"'"`（结束双引号、单引号包住的 "、再开双引号），与 splitCommandLine 无损往返
+      return `"${p.replace(/"/g, `"'"'"`)}"`;
     })
     .join(" ");
 }

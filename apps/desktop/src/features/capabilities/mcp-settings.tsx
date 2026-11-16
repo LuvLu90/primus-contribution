@@ -60,6 +60,9 @@ const t = strings.settings.capabilities;
 const tm = t.mcp;
 const td = tm.dialog;
 
+/** mcp.json 在别处被改过：界面已重新读取，编辑中的内容基于旧文件，需要重新打开 */
+class McpConflictError extends Error {}
+
 /** 命令行调用失败时给用户看的说明：超时，或 stderr / stdout 的最后几行 */
 export function cliFailure(out: CliOutput): string {
   if (out.timedOut) return tm.timedOut;
@@ -117,10 +120,12 @@ export function McpSettings() {
     try {
       const version = await (await getPlatform()).mcpConfigWrite(next, current.version);
       apply({ ...current, text: next, version });
+      // 测试结果按名字对应，配置变了就不再可信：需要重新测试
+      setReport(null);
     } catch (e) {
       if (e instanceof PlatformError && e.code === MCP_CONFLICT) {
         await reload();
-        throw new Error(tm.conflict);
+        throw new McpConflictError(tm.conflict);
       }
       throw e;
     }
@@ -337,7 +342,13 @@ export function McpSettings() {
           existing={servers.map((s) => s.name)}
           onClose={() => setEditing(null)}
           onSubmit={async (mutate) => {
-            await save(mutate);
+            try {
+              await save(mutate);
+            } catch (e) {
+              // 冲突：对话框里的条目基于旧文件，关掉对话框，让用户在新内容上重新编辑
+              if (!(e instanceof McpConflictError)) throw e;
+              setActionError({ title: tm.saveFailed, message: e.message });
+            }
             setEditing(null);
           }}
         />
@@ -439,25 +450,42 @@ function formFrom(name: string, entry: unknown): FormState {
   };
 }
 
-/** 表单 → 条目；`base` 是编辑前的条目。填写不完整时抛出中文错误 */
+/**
+ * 表单 → 条目；`base` 是编辑前的条目。表单文本没改动的字段（命令与参数、环境变量、请求头）沿用 `base` 中的原值，
+ * 不经文本往返（值里的首尾空白、换行等无法在表单文本中无损表示）。填写不完整时抛出中文错误
+ */
 export function entryFromForm(form: FormState, base: unknown): Record<string, unknown> {
-  const entry: Record<string, unknown> = isRecord(base) ? structuredClone(base) : {};
+  const original: Record<string, unknown> = isRecord(base) ? structuredClone(base) : {};
+  const initial = formFrom(form.name, original);
+  const entry: Record<string, unknown> = { ...original };
   for (const k of FORM_KEYS) delete entry[k];
+  const keep = (field: keyof FormState, ...keys: string[]) => {
+    if (form[field] !== initial[field] || form.transport !== initial.transport) return false;
+    for (const k of keys) if (k in original) entry[k] = original[k];
+    return true;
+  };
   if (form.transport === "stdio") {
     delete entry.oauth;
     delete entry.auth;
-    const [command, ...args] = splitCommandLine(form.command);
-    if (!command) throw new Error(td.commandRequired);
-    entry.command = command;
-    if (args.length) entry.args = args;
-    const env = parsePairs(form.env, "=", `${td.env}：`);
-    if (Object.keys(env).length) entry.env = env;
+    if (!keep("command", "command", "args")) {
+      const [command, ...args] = splitCommandLine(form.command);
+      if (!command) throw new Error(td.commandRequired);
+      entry.command = command;
+      if (args.length) entry.args = args;
+    } else if (typeof entry.command !== "string" || !entry.command)
+      throw new Error(td.commandRequired);
+    if (!keep("env", "env")) {
+      const env = parsePairs(form.env, "=", `${td.env}：`);
+      if (Object.keys(env).length) entry.env = env;
+    }
     if (form.cwd.trim()) entry.cwd = form.cwd.trim();
   } else {
     if (!form.url.trim()) throw new Error(td.urlRequired);
     entry.url = form.url.trim();
-    const headers = parsePairs(form.headers, ":", `${td.headers}：`);
-    if (Object.keys(headers).length) entry.headers = headers;
+    if (!keep("headers", "headers")) {
+      const headers = parsePairs(form.headers, ":", `${td.headers}：`);
+      if (Object.keys(headers).length) entry.headers = headers;
+    }
   }
   if (form.description.trim()) entry.description = form.description.trim();
   if (form.exposure !== DEFAULT_EXPOSURE) entry.exposure = form.exposure;
@@ -480,6 +508,8 @@ function ServerDialog({
   const [mode, setMode] = useState<Mode>("form");
   const [form, setForm] = useState<FormState>(() => formFrom(server?.name ?? "", server?.entry));
   const [json, setJson] = useState(() => (server ? JSON.stringify(server.entry, null, 2) : ""));
+  /** 编辑的基底：最初是文件中的条目，从 JSON 切回表单时换成 JSON 里的条目（表单不管的字段以它为准） */
+  const [base, setBase] = useState<unknown>(() => server?.entry);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ids = {
@@ -502,13 +532,17 @@ function ServerDialog({
   const switchMode = (next: Mode) => {
     if (server && next === "json" && mode === "form") {
       try {
-        setJson(JSON.stringify(entryFromForm(form, server.entry), null, 2));
+        setJson(JSON.stringify(entryFromForm(form, base), null, 2));
       } catch {
         // 表单填写不完整：保留上次的 JSON
       }
     } else if (server && next === "form" && mode === "json") {
       try {
-        setForm(formFrom(form.name, JSON.parse(json)));
+        const value: unknown = JSON.parse(json);
+        if (isRecord(value)) {
+          setBase(value);
+          setForm(formFrom(form.name, value));
+        }
       } catch {
         // JSON 无效：保留表单原样
       }
@@ -517,27 +551,33 @@ function ServerDialog({
   };
 
   // 粘贴 JSON 时预览将添加的服务器
-  let pasted: { names: string[]; notes: string[]; error: string | null } | null = null;
+  let pasted: {
+    names: string[];
+    unnamed: boolean;
+    notes: string[];
+    error: string | null;
+  } | null = null;
   if (mode === "json" && !server && json.trim()) {
     try {
       const r = parsePastedServers(json);
       pasted = {
         names: r.servers.map(([n]) => n || form.name.trim()),
+        // 按粘贴的原文判断，不看已代入的名称：否则输入第一个字符后名称框就消失了
+        unnamed: r.servers.some(([n]) => n === ""),
         notes: r.notes,
         error: null,
       };
     } catch (e) {
-      pasted = { names: [], notes: [], error: errorText(e, td.json) };
+      pasted = { names: [], unnamed: false, notes: [], error: errorText(e, td.json) };
     }
   }
-  const needsName =
-    mode === "form" || server !== null || (pasted?.names.some((n) => n === "") ?? false);
+  const needsName = mode === "form" || server !== null || (pasted?.unnamed ?? false);
   const nameInvalid = needsName && form.name.trim() !== "" && !validServerName(form.name.trim());
 
   /** 本次要写入的 [名字, 条目]；改名时的原名由 previous 给出 */
   const collect = (): [string, Record<string, unknown>][] => {
     const name = form.name.trim();
-    if (mode === "form") return [[name, entryFromForm(form, server?.entry)]];
+    if (mode === "form") return [[name, entryFromForm(form, base)]];
     if (server) {
       let value: unknown;
       try {
@@ -571,8 +611,12 @@ function ServerDialog({
       await onSubmit((text) => {
         let next = text;
         for (const [name, entry] of entries) {
-          // 编辑：替换原条目（可改名）；粘贴：同名的服务器被替换
-          const previous = server ? server.name : existing.includes(name) ? name : undefined;
+          // 编辑：替换原条目（可改名）；粘贴 JSON：同名的服务器被替换；表单添加：同名报冲突
+          const previous = server
+            ? server.name
+            : mode === "json" && existing.includes(name)
+              ? name
+              : undefined;
           next = setServer(next, name, entry, previous);
         }
         return next ?? "";

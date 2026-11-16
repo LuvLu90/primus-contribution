@@ -144,11 +144,11 @@ export function parseYamlSubset(yaml: string): Record<string, unknown> {
     if (indentOf(line) > 0) throw new YamlError(fill(msg.yamlIndent, { line: i + 1 }));
     if (line.startsWith("---") || line.startsWith("...")) throw new YamlError(msg.yamlDocuments);
     const m =
-      /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s:#'"[\]{},&*!|>%@`-][^:#]*?|-[^\s:][^:#]*?)\s*:(?:\s+(.*))?$/.exec(
+      /^("(?:[^"\\]|\\.)*"\s*|'(?:[^']|'')*'\s*|[^\s:#'"[\]{},&*!|>%@`-][^:#]*|-[^\s:][^:#]*):(?:\s+(.*))?$/.exec(
         line,
       );
     if (!m?.[1]) throw new YamlError(fill(msg.yamlPair, { line: i + 1 }));
-    let key = m[1];
+    let key = m[1].trimEnd();
     if (key.startsWith('"')) key = doubleQuoted(key.slice(1, -1));
     else if (key.startsWith("'")) key = key.slice(1, -1).replace(/''/g, "'");
     key = key.trim();
@@ -199,7 +199,7 @@ export function parseYamlSubset(yaml: string): Record<string, unknown> {
     }
     if (/^[&*!%@`]/.test(rest)) throw new YamlError(fill(msg.yamlValue, { key }));
     // 普通标量：去掉行尾注释，可以跨行（缩进的续行用空格连接）
-    let text = rest.replace(/\s+#.*$/, "");
+    let text = stripComment(rest);
     while (i < lines.length) {
       const l = lines[i] ?? "";
       if (l.trim() === "") {
@@ -215,13 +215,22 @@ export function parseYamlSubset(yaml: string): Record<string, unknown> {
       }
       if (indentOf(l) === 0) break;
       if (/^\s+#/.test(l)) break;
-      text += `${text.endsWith("\n") ? "" : " "}${l.trim().replace(/\s+#.*$/, "")}`;
+      text += `${text.endsWith("\n") ? "" : " "}${stripComment(l.trim())}`;
       i++;
     }
     if (/:\s|:$/.test(text)) throw new YamlError(fill(msg.yamlColon, { key }));
     out[key] = plainValue(text.trim());
   }
   return out;
+}
+
+/**
+ * 去掉普通标量的行尾注释（空白后的 `#` 起）。不用 `/\s+#.*$/` 替换：长空白串上未锚定的匹配会反复回退，
+ * 耗时随长度平方增长，来源不可信的技能文件能借此卡住界面
+ */
+function stripComment(text: string): string {
+  const at = text.search(/\s#/);
+  return at < 0 ? text : text.slice(0, at).trimEnd();
 }
 
 /** 名称规则（Core 的 validateName，只告警） */
