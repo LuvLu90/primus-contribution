@@ -274,7 +274,7 @@ export default function preview(pi: unknown): void {
     promptSnippet: TEXT.snippet,
     promptGuidelines: [...TEXT.guidelines],
     parameters: PREVIEW_PARAMETERS,
-    // 只读、不联网：primus-guard 按注解直接放行（受保护路径由工具自己拒绝）
+    // 只读、不联网：primus-guard 按注解直接放行（受保护路径同样预览给用户，内容不进工具结果）
     annotations: { readOnlyHint: true, openWorldHint: false },
     execute: (toolCallId, params, _signal, _onUpdate, ctx) => runPreview(toolCallId, params, ctx),
   });

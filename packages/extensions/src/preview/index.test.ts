@@ -115,6 +115,31 @@ describe("inspectPreview 状态", () => {
     expect(JSON.stringify(r)).not.toContain("SECRET");
   });
 
+  it("~/.ssh 里的私钥与 Core 用户目录的 auth.json 也给用户预览，结果里没有内容", async () => {
+    const key = join(root, "home", ".ssh", "id_ed25519");
+    writeFileSync(key, "PRIVATE-KEY-BODY");
+    const core = join(root, "data", "users", "S", "core");
+    mkdirSync(core, { recursive: true });
+    writeFileSync(join(core, "auth.json"), '{"token":"TOKEN-BODY"}');
+    const env = { PRIMUS_CODING_AGENT_DIR: core };
+    for (const [path, body] of [
+      ["~/.ssh/id_ed25519", "PRIVATE-KEY-BODY"],
+      [join(core, "auth.json"), "TOKEN-BODY"],
+    ] as const) {
+      const widget = vi.fn();
+      const r = await runPreview(
+        "c",
+        { path },
+        { hasUI: true, cwd: w(), ui: { setWidget: widget } },
+        { ...pe(), env },
+      );
+      expect(r.details.status, path).toBe("shown");
+      expect(widget).toHaveBeenCalledOnce();
+      expect(JSON.stringify(r)).not.toContain(body);
+      expect(JSON.stringify(widget.mock.calls)).not.toContain(body);
+    }
+  });
+
   it("应用数据目录（PRIMUS_CODING_AGENT_DIR 往上三级的 data）也给用户预览", async () => {
     const data = join(root, "data");
     mkdirSync(join(data, "users", "S", "core"), { recursive: true });
