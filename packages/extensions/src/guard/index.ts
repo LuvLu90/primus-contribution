@@ -14,7 +14,7 @@
 // 计划模式（primus-plan 经 plan/gate.ts 打开只读开关）压过上面三种模式：修改文件一律拒绝，命令按只读分类器
 // 放行 / 拒绝 / 询问（询问时不提供“始终允许”），其他未声明只读的工具询问（decidePlan）。
 
-import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -124,6 +124,15 @@ export function insideWorkspace(
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** 是否是已存在的目录（跟随链接）；不存在或读不了时为 false */
+function isDirectory(p: string): boolean {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /** `p` 是否是 `root` 本身或在其内（两者都是绝对路径；Windows 上不区分大小写） */
 function within(root: string, p: string, platform: NodeJS.Platform): boolean {
   const norm = (x: string) => (platform === "win32" ? x.toLowerCase() : x);
@@ -207,9 +216,10 @@ export function insideLoadedSkill(abs: string, ge: GuardEnv): boolean {
   const dirs = ge.skillDirs ?? [];
   if (dirs.length === 0) return false;
   const real = realPath(abs, ge.real);
-  const guarded = [agentDirOf(ge.env), dataDirOf(ge.env), ge.home].filter(
-    (d): d is string => typeof d === "string" && d.length > 0,
-  );
+  // 受保护的根目录连同其真实路径：技能目录经链接 / 目录联接指向数据目录时同样识别
+  const guarded = [agentDirOf(ge.env), dataDirOf(ge.env), ge.home]
+    .filter((d): d is string => typeof d === "string" && d.length > 0)
+    .flatMap((d) => [d, realPath(d, ge.real)]);
   return dirs.some((dir) => {
     if (typeof dir !== "string" || !isAbsolute(dir)) return false;
     const base = resolve(dir);
@@ -292,8 +302,10 @@ export function decide(
     // 用户级 MCP 配置 <agentDir>/mcp.json：读写都按工作区外的文件处理（完全访问放行，其他模式询问），
     // 计划模式的修改已在 decidePlan 拒绝（ADR 0016）
     if (isUserMcpConfig(abs, ge)) return mode === "full" ? "allow" : "ask";
-    // 已加载技能目录内的读取：任何模式都放行（技能按需读取 SKILL.md 与其引用的文件，ADR 0016）
-    if (isRead && insideLoadedSkill(abs, ge)) return "allow";
+    // 已加载技能目录内的读取：任何模式都放行（技能按需读取 SKILL.md 与其引用的文件，ADR 0016）。
+    // grep 会递归读取目录里的文件内容（含隐藏文件，如技能目录里的 .env），只对单个文件放行
+    if (isRead && insideLoadedSkill(abs, ge) && (call.toolName !== "grep" || !isDirectory(real)))
+      return "allow";
     if (isAppDataPath(abs, ge.env, ge.platform) || isAppDataPath(real, ge.env, ge.platform))
       return isEdit ? "deny" : "ask";
   }

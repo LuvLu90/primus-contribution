@@ -590,6 +590,25 @@ describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
           ).toBe("deny");
       }
       expect(insideLoadedSkill(join(f.skill, "escape", "auth.json"), f.ge)).toBe(false);
+      // grep 递归读取目录里的文件（含技能目录里的 .env）：对目录不放行，对单个文件放行
+      const grep = (path: string) => ({ toolName: "grep", input: { path, pattern: "SECRET" } });
+      expect(decide("ask", grep(f.skill), f.ws, undefined, f.ge)).toBe("ask");
+      expect(decide("ask", grep(join(f.skill, "refs")), f.ws, undefined, f.ge)).toBe("ask");
+      expect(decide("ask", grep(join(f.skill, "SKILL.md")), f.ws, undefined, f.ge)).toBe("allow");
+      // 数据目录经链接访问（PRIMUS_CODING_AGENT_DIR 在链接下），技能目录是指向同一数据目录的另一个链接：
+      // 两边解析路径不同，按真实路径识别出技能目录覆盖了数据目录，不放开
+      const alias = join(f.root, "alias");
+      const link = join(f.root, "skill-link");
+      symlinkSync(f.root, alias, "junction");
+      symlinkSync(join(f.root, "data"), link, "junction");
+      const aliased = {
+        ...f.ge,
+        env: { PRIMUS_CODING_AGENT_DIR: join(alias, "data", "users", "S-1", "core") },
+        skillDirs: [link],
+      };
+      expect(insideLoadedSkill(join(link, "users", "S-1", "core", "auth.json"), aliased)).toBe(
+        false,
+      );
       expect(insideLoadedSkill(join(f.skill, "refs", "a.md"), f.ge)).toBe(true);
       // 技能目录包含 Core 用户目录或数据目录（配置错误）时不放开
       const wide = { ...f.ge, skillDirs: [join(f.core, "..", "..", "..")] };
