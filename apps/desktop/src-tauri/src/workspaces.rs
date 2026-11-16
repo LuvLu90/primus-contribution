@@ -400,7 +400,8 @@ fn agents_skill_dirs(workspace: &Path) -> Vec<(usize, PathBuf)> {
     let mut dirs = Vec::new();
     for (depth, dir) in start.ancestors().enumerate() {
         let skills = dir.join(".agents").join("skills");
-        if user_key.as_deref() != Some(crate::platform::path_key(&skills.to_string_lossy()).as_str())
+        if user_key.as_deref()
+            != Some(crate::platform::path_key(&skills.to_string_lossy()).as_str())
         {
             dirs.push((depth, skills));
         }
@@ -415,7 +416,13 @@ fn agents_skill_dirs(workspace: &Path) -> Vec<(usize, PathBuf)> {
 fn home_dir() -> Option<PathBuf> {
     let from = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
     from("HOME")
-        .or_else(|| if cfg!(windows) { from("USERPROFILE") } else { None })
+        .or_else(|| {
+            if cfg!(windows) {
+                from("USERPROFILE")
+            } else {
+                None
+            }
+        })
         .map(PathBuf::from)
 }
 
@@ -515,8 +522,14 @@ pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
     let skill_dir = primus.join("skills");
     let mut skills = Vec::new();
     let mut visited = std::collections::HashSet::new();
-    list_skills(&skill_dir, "", SkillLayout::Primus, &mut skills, &mut visited)
-        .map_err(|e| WorkspaceError::Read(skill_dir, e))?;
+    list_skills(
+        &skill_dir,
+        "",
+        SkillLayout::Primus,
+        &mut skills,
+        &mut visited,
+    )
+    .map_err(|e| WorkspaceError::Read(skill_dir, e))?;
     skills.sort();
     let mut agents_skills = Vec::new();
     for (depth, dir) in agents_skill_dirs(root) {

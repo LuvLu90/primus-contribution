@@ -672,6 +672,28 @@ describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
     }
   });
 
+  it("MCP 工具按权限模式：完全访问放行，询问 / 自动编辑询问，计划模式询问；参数里的路径不改变判断", () => {
+    const f = skillFixture();
+    try {
+      // Core 的 MCP 工具（直接暴露或经 codemode 脚本嵌套调用）都以各自的工具名经过 tool_call
+      const call = { toolName: "github_search_issues", input: { query: "x" } };
+      const withPath = { toolName: "fs_read_file", input: { path: join(f.skill, "SKILL.md") } };
+      for (const c of [call, withPath]) {
+        expect(decide("full", c, f.ws, undefined, f.ge)).toBe("allow");
+        expect(decide("ask", c, f.ws, undefined, f.ge)).toBe("ask");
+        expect(decide("edit", c, f.ws, undefined, f.ge)).toBe("ask");
+        expect(decidePlan(c, undefined, f.ws, f.ge)).toBe("ask");
+      }
+      // 服务器声明只读且不联网：与其他工具同一条规则
+      const ro = { readOnlyHint: true, openWorldHint: false };
+      expect(decide("ask", call, f.ws, ro, f.ge)).toBe("allow");
+      expect(decidePlan(call, ro, f.ws, f.ge)).toBe(undefined);
+      expect(decide("ask", call, f.ws, { readOnlyHint: true }, f.ge)).toBe("ask");
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
   it("扩展：before_agent_start 记下技能目录后，读取技能文件不弹确认（含计划模式）", async () => {
     const f = skillFixture();
     vi.stubEnv("PRIMUS_CODING_AGENT_DIR", f.core);

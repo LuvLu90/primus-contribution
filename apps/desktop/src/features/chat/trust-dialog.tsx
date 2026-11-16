@@ -71,6 +71,7 @@ export function TrustDialog({
     ? ([
         [t.trustExtensions, details.extensions],
         [t.trustSkills, details.skills],
+        [t.trustAgentsSkills, details.agentsSkills],
         [t.trustMcp, details.mcpServers],
       ] as const)
     : [];
