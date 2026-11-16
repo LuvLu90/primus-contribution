@@ -153,6 +153,17 @@ describe("主界面外壳", () => {
     expect(useRouter().push).toHaveBeenCalledWith("/settings/");
   });
 
+  it("左栏菜单的“能力中心”打开设置的能力中心分组", async () => {
+    render(<AppShell />);
+    fireEvent.keyDown(screen.getByRole("button", { name: strings.layout.settings }), {
+      key: "Enter",
+    });
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: new RegExp(strings.layout.menuCapabilities) }),
+    );
+    expect(useRouter().push).toHaveBeenCalledWith("/settings/?group=capabilities");
+  });
+
   it("空会话显示欢迎页，点建议填入输入框", () => {
     render(<AppShell />);
     const suggestion = strings.chat.suggestions[0];
