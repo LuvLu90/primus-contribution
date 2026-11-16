@@ -428,8 +428,9 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 /// 某级 `.agents/skills` 是否要计入指纹与信任确认。只有确定没有技能时返回 false：路径不存在
-/// （含上级 `.agents` 不是目录），或它（跟随链接后）是普通文件。其余情况——没有权限、断开的符号链接
-/// （链接在、目标缺失）、其他 IO 错误——都返回错误：读不到就无法确认 Core 会加载什么，不能当作“没有”。
+/// （上级 `.agents` 不存在，或它跟随链接后是普通文件），或它（跟随链接后）是普通文件。其余情况——没有权限、
+/// 断开的符号链接（链接在、目标缺失，不论是 `skills` 还是上级 `.agents`）、其他 IO 错误——都返回错误：
+/// 读不到就无法确认 Core 会加载什么，不能当作“没有”。
 fn agents_skill_dir_present(dir: &Path) -> io::Result<bool> {
     match std::fs::symlink_metadata(dir) {
         Err(e)
@@ -438,7 +439,12 @@ fn agents_skill_dir_present(dir: &Path) -> io::Result<bool> {
                 io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
             ) =>
         {
-            return Ok(false);
+            // 解析 `.agents/skills` 时会跟随上级 `.agents`：它是断开的链接时同样报“不存在”，
+            // 需要单独看上级，确认是真的没有，而不是读不到
+            return match dir.parent() {
+                Some(parent) => agents_parent_absent(parent).map(|()| false),
+                None => Ok(false),
+            };
         }
         Err(e) => return Err(e),
         Ok(_) => {}
@@ -460,6 +466,25 @@ fn agents_skill_dir_present(dir: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
+/// `.agents/skills` 不存在时检查上级 `.agents`：不存在，或（跟随链接后）存在——是文件，或是目录但其中
+/// 没有 `skills`——返回 Ok；断开的链接（目标缺失）与其他读取失败返回错误。
+fn agents_parent_absent(parent: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(parent) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+        Ok(m) if !m.file_type().is_symlink() => return Ok(()),
+        Ok(_) => {}
+    }
+    match std::fs::metadata(parent) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "上级 .agents 符号链接的目标不存在",
+        )),
+        Err(e) => Err(e),
+    }
+}
+
 /// `.agents/skills` 在信任确认里显示的前缀：相对工作区，如 `.agents/skills`、`../.agents/skills`。
 fn agents_skill_label(depth: usize) -> String {
     format!("{}.agents/skills", "../".repeat(depth))
@@ -476,8 +501,17 @@ fn walk_hash(
     if !visited.insert(canonical) {
         return Some(());
     }
+    // read_dir 的顺序在调用间可能不同：先按文件名排序再递归，同一目录经多个链接到达时展开哪一处才固定，
+    // 内容未变时指纹不变
+    let mut entries = Vec::new();
     for entry in std::fs::read_dir(dir).ok()? {
-        let entry = entry.ok()?;
+        entries.push(entry.ok()?);
+        if out.len() + entries.len() > HASH_MAX_FILES {
+            return None;
+        }
+    }
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
         if out.len() >= HASH_MAX_FILES {
             return None;
         }
@@ -1086,6 +1120,65 @@ mod tests {
         assert!(inspect(&path).unwrap().agents_skills.is_empty());
         trust_now(&ws, &path);
         assert!(ws.approved(&path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_hash_expands_linked_dirs_in_name_order() {
+        // 同一目录经链接到达两次：按文件名排序后先到的一处展开，与 read_dir 的返回顺序无关
+        let root = temp_dir("walk-order");
+        let skills = root.join("skills");
+        std::fs::create_dir_all(skills.join("z")).unwrap();
+        std::fs::write(skills.join("z/SKILL.md"), "z").unwrap();
+        std::os::unix::fs::symlink(skills.join("z"), skills.join("a")).unwrap();
+        let mut items = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        walk_hash(&skills, "", &mut items, &mut visited).unwrap();
+        let rels: Vec<&str> = items.iter().map(|i| i.rel.as_str()).collect();
+        assert_eq!(rels, ["a", "a/SKILL.md", "z"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn broken_agents_parent_link_cannot_be_trusted() {
+        let root = temp_dir("agents-parent-broken");
+        let proj = root.join("proj");
+        std::fs::create_dir_all(proj.join(".git")).unwrap();
+        let path = proj.to_string_lossy().into_owned();
+        let ws = Workspaces::new(&root.join("app"));
+        ws.open(&path).unwrap();
+        trust_now(&ws, &path);
+        assert!(ws.approved(&path));
+
+        // 上级 .agents 是断开的链接：.agents/skills 解析为“不存在”，但目标之后出现时 Core 就会加载，
+        // 是读取失败，不能跳过
+        let agents = proj.join(".agents");
+        let skills = agents.join("skills");
+        std::os::unix::fs::symlink(root.join("target"), &agents).unwrap();
+        assert_eq!(primus_hash(&proj), None);
+        assert!(!ws.approved(&path));
+        assert!(matches!(inspect(&path), Err(WorkspaceError::Read(p, _)) if p == skills));
+        assert!(matches!(
+            ws.trust(&path, true, None),
+            Err(WorkspaceError::Incomplete)
+        ));
+
+        // 链接指向文件：.agents/skills 不可能存在，跳过
+        std::fs::write(root.join("target"), "file").unwrap();
+        assert!(primus_hash(&proj).is_some());
+        assert!(inspect(&path).unwrap().agents_skills.is_empty());
+        // 链接指向没有 skills 的目录：跳过
+        std::fs::remove_file(root.join("target")).unwrap();
+        std::fs::create_dir(root.join("target")).unwrap();
+        assert!(primus_hash(&proj).is_some());
+        assert!(inspect(&path).unwrap().agents_skills.is_empty());
+        trust_now(&ws, &path);
+        assert!(ws.approved(&path));
+        // 目标里出现技能后指纹改变，需要重新确认
+        std::fs::create_dir_all(root.join("target/skills/review")).unwrap();
+        std::fs::write(root.join("target/skills/review/SKILL.md"), "r").unwrap();
+        assert!(!ws.approved(&path));
+        assert_eq!(inspect(&path).unwrap().agents_skills.len(), 1);
     }
 
     #[test]
