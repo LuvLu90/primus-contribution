@@ -345,7 +345,7 @@ function fromVsCode(name: string, entry: Obj, notes: string[]): Obj {
   return out;
 }
 
-const looksLikeEntry = (v: unknown): v is Obj =>
+const looksLikeEntry = (v: unknown): boolean =>
   isRecord(v) && (typeof v.command === "string" || typeof v.url === "string");
 
 /**

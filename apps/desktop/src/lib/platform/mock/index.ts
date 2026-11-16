@@ -37,6 +37,7 @@ import {
   type UpdateStatus,
   type WorkspaceInfo,
 } from "../types";
+import { createMockCapabilities } from "./capabilities";
 import {
   errorScenario,
   MOCK_ASK,
@@ -1414,6 +1415,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       ];
       return { entries, total: entries.length, truncated: false };
     },
+    ...createMockCapabilities(),
     storageUsage: async () => ({ sessions: 0, logs: 0, cache: 0 }),
     storageClean: async () => {},
     diagnosticsExport: () => notAvailable("导出诊断包"),
