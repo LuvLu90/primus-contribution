@@ -144,13 +144,22 @@ function within(root: string, p: string, platform: NodeJS.Platform): boolean {
   return rel === "" || (!parentStep && !isAbsolute(rel));
 }
 
-/** 机密路径：`.env*`、`.git/` 内部、`~/.ssh`。不论位置（含技能目录）一律受保护 */
-function isSecretPath(abs: string, platform: NodeJS.Platform, home: string): boolean {
+/**
+ * 机密路径：`.env*`、`.git/` 内部、`~/.ssh`。不论位置（含技能目录）一律受保护。
+ * `~/.ssh` 同时按字面路径与真实路径比较：主目录（或 .ssh）是链接时，直接访问链接目标里的 .ssh 也算
+ */
+function isSecretPath(
+  abs: string,
+  platform: NodeJS.Platform,
+  home: string,
+  real?: (p: string) => string,
+): boolean {
   const parts = (platform === "win32" ? abs.toLowerCase() : abs).split(/[\\/]+/);
   if (parts.includes(".git")) return true;
   // `.env*` 文件，以及 `.env*` 目录里的任何文件（例如 `.env/secret.txt`）
   if (parts.some((part) => part.startsWith(".env"))) return true;
-  return within(join(home, ".ssh"), abs, platform);
+  const ssh = join(home, ".ssh");
+  return within(ssh, abs, platform) || within(realDir(ssh, real), abs, platform);
 }
 
 /** Core 的用户目录 `<安装目录>\data\users\<SID>\core`（PRIMUS_CODING_AGENT_DIR）；未设置为 undefined */
@@ -167,7 +176,7 @@ function dataDirOf(env: Record<string, string | undefined>): string | undefined 
   return basename(data).toLowerCase() === "data" ? data : undefined;
 }
 
-/** 平台 / 安装层面的目录（App 数据目录、Core 用户目录）的真实路径缓存：会话内不会变，只缓存已存在的目录 */
+/** 平台 / 安装层面的目录（App 数据目录、Core 用户目录、~/.ssh）的真实路径缓存：会话内不会变，只缓存已存在的目录 */
 const realDirCache = new Map<string, string>();
 
 /** 目录的真实路径；用默认的 realpath 且目录存在时缓存（测试替换 real 时不缓存） */
@@ -233,7 +242,7 @@ export function isProtectedPath(
   home: string = homedir(),
   real?: (p: string) => string,
 ): boolean {
-  return isSecretPath(abs, platform, home) || isAppDataPath(abs, env, platform, real);
+  return isSecretPath(abs, platform, home, real) || isAppDataPath(abs, env, platform, real);
 }
 
 /**
@@ -352,7 +361,10 @@ export function decide(
   if (abs !== undefined && (isRead || isEdit)) {
     const real = realPath(abs, ge.real);
     // .env*、.git、~/.ssh：不论在哪（含技能目录）都按受保护处理
-    if (isSecretPath(abs, ge.platform, ge.home) || isSecretPath(real, ge.platform, ge.home))
+    if (
+      isSecretPath(abs, ge.platform, ge.home, ge.real) ||
+      isSecretPath(real, ge.platform, ge.home, ge.real)
+    )
       return isEdit ? "deny" : "ask";
     // 用户级 MCP 配置 <agentDir>/mcp.json：读写都按工作区外的文件处理（完全访问放行，其他模式询问），
     // 计划模式的修改已在 decidePlan 拒绝（ADR 0016）
