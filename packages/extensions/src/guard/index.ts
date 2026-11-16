@@ -6,13 +6,15 @@
 //   full  完全访问：不再询问
 // 询问走扩展 UI 的 select 对话框（RPC 的 extension_ui_request），用户可选“允许”“本会话内始终允许”或“拒绝”。
 // 受保护路径（.env*、.git/、~/.ssh、<安装目录>\data）的写入不论模式一律拒绝，读取需要确认；
+// 两处例外（ADR 0016）：Core 已加载技能目录内的读取任何模式都放行（目录取自 before_agent_start）；
+// 用户级 MCP 配置 <agentDir>/mcp.json 的读写按工作区外的文件处理（完全访问放行，其他模式询问）。
 // 强制推送与下载后直接执行的命令在完全访问下也询问，且不能“始终允许”。路径按 Core 的规则解析并跟随符号链接比较。
 // 没有界面（hasUI 为 false）时需要询问的调用一律拒绝；处理出错时 Core 按失败即拦截处理。
 // 当前模式经 setWidget("primus:mode") 告知前端。
 // 计划模式（primus-plan 经 plan/gate.ts 打开只读开关）压过上面三种模式：修改文件一律拒绝，命令按只读分类器
 // 放行 / 拒绝 / 询问（询问时不提供“始终允许”），其他未声明只读的工具询问（decidePlan）。
 
-import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -119,40 +121,180 @@ export function insideWorkspace(
 ): boolean {
   const norm = (p: string) => (platform === "win32" ? p.toLowerCase() : p);
   const rel = relative(norm(realPath(cwd, real)), norm(realPath(resolve(cwd, target), real)));
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  const parentStep =
+    rel === ".." || rel.startsWith("../") || (platform === "win32" && rel.startsWith("..\\"));
+  return rel === "" || (!parentStep && !isAbsolute(rel));
+}
+
+/** 是否是已存在的目录（跟随链接）；不存在或读不了时为 false */
+function isDirectory(p: string): boolean {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** `p` 是否是 `root` 本身或在其内（两者都是绝对路径；Windows 上不区分大小写） */
+function within(root: string, p: string, platform: NodeJS.Platform): boolean {
+  const norm = (x: string) => (platform === "win32" ? x.toLowerCase() : x);
+  const rel = relative(norm(resolve(root)), norm(resolve(p)));
+  const parentStep =
+    rel === ".." || rel.startsWith("../") || (platform === "win32" && rel.startsWith("..\\"));
+  return rel === "" || (!parentStep && !isAbsolute(rel));
+}
+
+/**
+ * 机密路径：`.env*`、`.git/` 内部、`~/.ssh`。不论位置（含技能目录）一律受保护。
+ * `~/.ssh` 同时按字面路径与真实路径比较：主目录（或 .ssh）是链接时，直接访问链接目标里的 .ssh 也算。
+ * `~/.ssh` 的真实路径每次重新解析、不缓存：用户可能在会话中改链接目标，缓存旧目标会漏掉新目标
+ */
+function isSecretPath(
+  abs: string,
+  platform: NodeJS.Platform,
+  home: string,
+  real?: (p: string) => string,
+): boolean {
+  const parts = (platform === "win32" ? abs.toLowerCase() : abs).split(/[\\/]+/);
+  if (parts.includes(".git")) return true;
+  // `.env*` 文件，以及 `.env*` 目录里的任何文件（例如 `.env/secret.txt`）
+  if (parts.some((part) => part.startsWith(".env"))) return true;
+  const ssh = join(home, ".ssh");
+  return within(ssh, abs, platform) || within(realPath(ssh, real), abs, platform);
+}
+
+/** Core 的用户目录 `<安装目录>\data\users\<SID>\core`（PRIMUS_CODING_AGENT_DIR）；未设置为 undefined */
+function agentDirOf(env: Record<string, string | undefined>): string | undefined {
+  const dir = env.PRIMUS_CODING_AGENT_DIR;
+  return dir ? resolve(dir) : undefined;
+}
+
+/** App 数据目录 `<安装目录>\data`：PRIMUS_CODING_AGENT_DIR 往上三级，且名为 data；否则 undefined */
+function dataDirOf(env: Record<string, string | undefined>): string | undefined {
+  const coreDir = agentDirOf(env);
+  if (!coreDir) return undefined;
+  const data = resolve(coreDir, "..", "..", "..");
+  return basename(data).toLowerCase() === "data" ? data : undefined;
+}
+
+/** 安装层面的目录（App 数据目录、Core 用户目录）的真实路径缓存：会话内不会变，只缓存已存在的目录 */
+const realDirCache = new Map<string, string>();
+
+/** 目录的真实路径；用默认的 realpath 且目录存在时缓存（测试替换 real 时不缓存） */
+function realDir(dir: string, real?: (p: string) => string): string {
+  if (real) return realPath(dir, real);
+  const cached = realDirCache.get(dir);
+  if (cached !== undefined) return cached;
+  const r = realPath(dir);
+  if (isDirectory(dir)) realDirCache.set(dir, r);
+  return r;
+}
+
+/**
+ * App 数据目录的比较根：数据目录本身与其真实路径、Core 用户目录的真实路径（它自身是链接、指向数据目录外时），
+ * 以及要排除的默认对话工作区——按数据目录的字面路径与真实路径各一份（不取 chat 自身的真实路径：
+ * chat 是指向 core 等目录的链接时不能借此把它们排除在外）。未配置时为 undefined。
+ */
+function appDataRoots(
+  env: Record<string, string | undefined>,
+  real?: (p: string) => string,
+): { data: string[]; chat: string[] } | undefined {
+  const data = dataDirOf(env);
+  const coreDir = agentDirOf(env);
+  if (!data || !coreDir) return undefined;
+  const dataReal = realDir(data, real);
+  // 例外：users\<SID>\chat 是未选工作区时对话的默认工作区（薄壳 sessions.rs 的 DEFAULT_WORKSPACE_DIR），
+  // 属于用户自己的文件，不算 App 数据；其中的 .env*、.git 仍按机密路径保护
+  const chat = resolve(coreDir, "..", "chat");
+  return {
+    data: [data, dataReal, realDir(coreDir, real)],
+    chat: [chat, join(dataReal, relative(data, chat))],
+  };
+}
+
+/**
+ * App 数据目录内（默认对话工作区 `data\users\<SID>\chat` 除外）。数据目录按字面路径与真实路径都比较：
+ * 数据目录在平台链接下（macOS 的 /var → /private/var、安装路径里的目录联接）时，经真实路径给出的
+ * auth.json、mcp.json 同样识别。调用方另把 `abs` 的真实路径也传进来比较。
+ */
+function isAppDataPath(
+  abs: string,
+  env: Record<string, string | undefined>,
+  platform: NodeJS.Platform,
+  real?: (p: string) => string,
+): boolean {
+  const roots = appDataRoots(env, real);
+  if (!roots) return false;
+  return (
+    roots.data.some((d) => within(d, abs, platform)) &&
+    !roots.chat.some((c) => within(c, abs, platform))
+  );
 }
 
 /**
  * 受保护路径（技术方案第 17.4 节）：`.env*`、`.git/` 内部、`~/.ssh`、App 的数据目录 `<安装目录>\data`
  * （默认对话工作区 `data\users\<SID>\chat` 除外）。
- * 写入一律拒绝（不论权限模式），读取需要确认。
+ * 写入一律拒绝（不论权限模式），读取需要确认。例外见 decide：已加载技能目录内的读取、用户级 `mcp.json`（ADR 0016）。
  */
 export function isProtectedPath(
   abs: string,
   env: Record<string, string | undefined> = process.env,
   platform: NodeJS.Platform = process.platform,
   home: string = homedir(),
+  real?: (p: string) => string,
 ): boolean {
-  const norm = (p: string) => (platform === "win32" ? p.toLowerCase() : p);
-  const parts = norm(abs).split(/[\\/]+/);
-  if (parts.includes(".git")) return true;
-  // `.env*` 文件，以及 `.env*` 目录里的任何文件（例如 `.env/secret.txt`）
-  if (parts.some((part) => part.startsWith(".env"))) return true;
-  const within = (root: string) => {
-    const rel = relative(norm(resolve(root)), norm(abs));
-    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-  };
-  if (within(join(home, ".ssh"))) return true;
-  // PRIMUS_CODING_AGENT_DIR 为 <安装目录>\data\users\<SID>\core：往上三级是 data
-  const coreDir = env.PRIMUS_CODING_AGENT_DIR;
-  if (coreDir) {
-    const data = resolve(coreDir, "..", "..", "..");
-    // 例外：users\<SID>\chat 是未选工作区时对话的默认工作区（薄壳 sessions.rs 的 DEFAULT_WORKSPACE_DIR），
-    // 属于用户自己的文件，不算 App 数据；其中的 .env*、.git 仍按上面的规则保护
-    const chat = resolve(coreDir, "..", "chat");
-    if (basename(data).toLowerCase() === "data" && within(data) && !within(chat)) return true;
+  return isSecretPath(abs, platform, home, real) || isAppDataPath(abs, env, platform, real);
+}
+
+/**
+ * 是否正是用户级 MCP 配置 `<agentDir>/mcp.json`（ADR 0016）。三条都满足才算：
+ * 1. 解析后的路径（`..` 按字面消去，与 Core 打开的路径相同）正是 `<agentDir>/mcp.json`：除 agentDir 自身的
+ *    各级目录外不经过任何目录，所以不会经由别处指向 agentDir 的链接 / 目录联接到达；
+ * 2. mcp.json 本身不是符号链接（可能指向 auth.json 等）；还不存在（新建）时可以；
+ * 3. 真实路径是 agentDir 真实路径下的 `mcp.json`（再防一道，例如不算符号链接的重解析点）。
+ * agentDir（PRIMUS_CODING_AGENT_DIR）由 App 设置，属于可信配置：它自身路径里的链接（macOS 的 `/var`、
+ * 安装路径里的目录联接，或 agentDir 本身就是链接）是平台 / 安装层面的，不影响判断。
+ * 不满足时按 App 数据目录处理。
+ */
+export function isUserMcpConfig(abs: string, ge: GuardEnv): boolean {
+  const agentDir = agentDirOf(ge.env);
+  if (!agentDir) return false;
+  const eq = (a: string, b: string) =>
+    ge.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  const file = join(agentDir, "mcp.json");
+  if (!eq(resolve(abs), file)) return false;
+  try {
+    if (lstatSync(file).isSymbolicLink()) return false;
+  } catch (err) {
+    // 不存在时是新建；其他错误（无权限、上级不是目录等）无法确认，不算
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") return false;
   }
-  return false;
+  return eq(realPath(file, ge.real), join(realPath(agentDir, ge.real), "mcp.json"));
+}
+
+/**
+ * `abs` 是否在某个已加载技能的目录（Skill.baseDir）内（ADR 0016）。解析后的路径须在技能目录内，
+ * 且真实路径须在技能目录的真实路径内：`..` 与指向外部的符号链接 / 目录联接都逃不出去。
+ * 技能目录本身包含 Core 用户目录、App 数据目录、用户主目录或是根目录时不算（配置错误的技能不能把整块数据放开）。
+ */
+export function insideLoadedSkill(abs: string, ge: GuardEnv): boolean {
+  const dirs = ge.skillDirs ?? [];
+  if (dirs.length === 0) return false;
+  const real = realPath(abs, ge.real);
+  // 受保护的根目录连同其真实路径：技能目录经链接 / 目录联接指向数据目录时同样识别
+  const guarded = [agentDirOf(ge.env), dataDirOf(ge.env), ge.home]
+    .filter((d): d is string => typeof d === "string" && d.length > 0)
+    .flatMap((d) => [d, realPath(d, ge.real)]);
+  return dirs.some((dir) => {
+    if (typeof dir !== "string" || !isAbsolute(dir)) return false;
+    const base = resolve(dir);
+    const baseReal = realPath(base, ge.real);
+    for (const b of [base, baseReal]) {
+      if (dirname(b) === b) return false;
+      if (guarded.some((g) => within(b, g, ge.platform))) return false;
+    }
+    return within(base, abs, ge.platform) && within(baseReal, real, ge.platform);
+  });
 }
 
 /**
@@ -193,6 +335,8 @@ export interface GuardEnv {
   real?: (p: string) => string;
   /** 读文本文件（git 配置）；读不到返回 undefined。测试里替换 */
   readText?: (p: string) => string | undefined;
+  /** 本会话 Core 已加载技能的目录（Skill.baseDir，取自 before_agent_start 的 systemPromptOptions.skills） */
+  skillDirs?: readonly string[];
 }
 
 const defaultEnv = (): GuardEnv => ({
@@ -217,10 +361,24 @@ export function decide(
   const isEdit = EDIT_TOOLS.has(call.toolName);
   if (abs !== undefined && (isRead || isEdit)) {
     const real = realPath(abs, ge.real);
-    const protectedPath =
-      isProtectedPath(abs, ge.env, ge.platform, ge.home) ||
-      isProtectedPath(real, ge.env, ge.platform, ge.home);
-    if (protectedPath) return isEdit ? "deny" : "ask";
+    // .env*、.git、~/.ssh：不论在哪（含技能目录）都按受保护处理
+    if (
+      isSecretPath(abs, ge.platform, ge.home, ge.real) ||
+      isSecretPath(real, ge.platform, ge.home, ge.real)
+    )
+      return isEdit ? "deny" : "ask";
+    // 用户级 MCP 配置 <agentDir>/mcp.json：读写都按工作区外的文件处理（完全访问放行，其他模式询问），
+    // 计划模式的修改已在 decidePlan 拒绝（ADR 0016）
+    if (isUserMcpConfig(abs, ge)) return mode === "full" ? "allow" : "ask";
+    // 已加载技能目录内的读取：任何模式都放行（技能按需读取 SKILL.md 与其引用的文件，ADR 0016）。
+    // grep 会递归读取目录里的文件内容（含隐藏文件，如技能目录里的 .env），只对单个文件放行
+    if (isRead && insideLoadedSkill(abs, ge) && (call.toolName !== "grep" || !isDirectory(real)))
+      return "allow";
+    if (
+      isAppDataPath(abs, ge.env, ge.platform, ge.real) ||
+      isAppDataPath(real, ge.env, ge.platform, ge.real)
+    )
+      return isEdit ? "deny" : "ask";
   }
   const command = call.input?.command;
   if (
@@ -303,8 +461,8 @@ export function commandTouchesProtected(
     try {
       const abs = resolveToolPath(w, cwd, ge.platform, ge.home);
       return (
-        isProtectedPath(abs, ge.env, ge.platform, ge.home) ||
-        isProtectedPath(realPath(abs, ge.real), ge.env, ge.platform, ge.home)
+        isProtectedPath(abs, ge.env, ge.platform, ge.home, ge.real) ||
+        isProtectedPath(realPath(abs, ge.real), ge.env, ge.platform, ge.home, ge.real)
       );
     } catch {
       return false;
@@ -549,10 +707,22 @@ export interface GuardState {
   mode: PermissionMode;
   /** 本会话内已“始终允许”的操作（见 approvalKey） */
   alwaysAllowed: Set<string>;
+  /** 本会话 Core 已加载技能的目录，每轮开始（before_agent_start）时刷新 */
+  skillDirs: string[];
+}
+
+/** 从 before_agent_start 事件取已加载技能的目录（systemPromptOptions.skills[].baseDir） */
+export function loadedSkillDirs(event: unknown): string[] {
+  const skills = (event as { systemPromptOptions?: { skills?: unknown } } | null)
+    ?.systemPromptOptions?.skills;
+  if (!Array.isArray(skills)) return [];
+  return skills
+    .map((s) => (s as { baseDir?: unknown } | null)?.baseDir)
+    .filter((d): d is string => typeof d === "string" && d.length > 0);
 }
 
 export function createGuard(initial: PermissionMode = "ask", gate: PlanGate = planGate) {
-  const state: GuardState = { mode: initial, alwaysAllowed: new Set() };
+  const state: GuardState = { mode: initial, alwaysAllowed: new Set(), skillDirs: [] };
   function guard(pi: unknown): void {
     if (!isGuardApi(pi)) return;
     pi.registerCommand(MODE_COMMAND, {
@@ -568,13 +738,23 @@ export function createGuard(initial: PermissionMode = "ask", gate: PlanGate = pl
       },
     });
     pi.on("session_start", (_event, ctx) => publishMode(ctx, state.mode));
+    // 每轮开始时记下 Core 已加载的技能目录（/reload 后下一轮即生效）；只读，不改提示词
+    pi.on("before_agent_start", (event: never) => {
+      state.skillDirs = loadedSkillDirs(event);
+      return undefined;
+    });
     pi.on("tool_call", async (event: never, ctx) => {
       const call = event as ToolCall;
       const annotations = pi.getAllTools?.().find((t) => t.name === call.toolName)?.annotations;
       // 计划模式先判断：拒绝与放行直接生效，询问时不提供“始终允许”
       const planDecision = gate.readOnly ? decidePlan(call, annotations, ctx.cwd) : undefined;
       if (planDecision === "deny") return { block: true, reason: PLAN_DENY_REASON };
-      const decision = planDecision ?? decide(state.mode, call, ctx.cwd, annotations);
+      const decision =
+        planDecision ??
+        decide(state.mode, call, ctx.cwd, annotations, {
+          ...defaultEnv(),
+          skillDirs: state.skillDirs,
+        });
       if (decision === "allow") return undefined;
       if (decision === "deny")
         return {

@@ -30,7 +30,12 @@ export interface TrustDetails {
   extensions: string[];
   skills: string[];
   mcpServers: string[];
-  /** 此刻 `.primus/` 的内容指纹，信任时原样带回；内容过多或无法完整读取时为 null（不能信任） */
+  /**
+   * 工作区及上级目录（到 Git 仓库根为止）`.agents/skills` 中信任后 Core 会加载的技能，
+   * 带相对工作区的目录前缀（如 `.agents/skills/review`、`../.agents/skills/lint`）
+   */
+  agentsSkills: string[];
+  /** 此刻项目资源（`.primus/` 与 `.agents/skills`）的内容指纹，信任时原样带回；内容过多或无法完整读取时为 null（不能信任） */
   fingerprint: string | null;
 }
 

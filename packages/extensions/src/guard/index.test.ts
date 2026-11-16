@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createPlanGate } from "../plan/gate.ts";
 import {
@@ -11,11 +11,15 @@ import {
   decide,
   decidePlan,
   describeCall,
+  insideLoadedSkill,
   insideWorkspace,
   isAlwaysAskCommand,
   isProtectedPath,
+  isUserMcpConfig,
+  loadedSkillDirs,
   MODE_COMMAND,
   MODE_WIDGET,
+  MODES,
   needsApproval,
   PLAN_ASK_PREFIX,
   PLAN_DENY_REASON,
@@ -128,6 +132,49 @@ describe("primus-guard 权限判断", () => {
     }
   });
 
+  it("~/.ssh 是链接时按当前目标判断，会话中切换链接目标后仍受保护", () => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "guard-ssh-")));
+    try {
+      const home = join(root, "home");
+      const oldKeys = join(root, "keys-old");
+      const newKeys = join(root, "keys-new");
+      mkdirSync(home);
+      mkdirSync(oldKeys);
+      mkdirSync(newKeys);
+      const ssh = join(home, ".ssh");
+      const p = process.platform;
+      symlinkSync(oldKeys, ssh, "junction");
+      expect(isProtectedPath(join(oldKeys, "id_ed25519"), {}, p, home)).toBe(true);
+      expect(isProtectedPath(join(newKeys, "id_ed25519"), {}, p, home)).toBe(false);
+      // 同一进程内把 ~/.ssh 改指到新目标：新目标受保护，旧目标不再是 ~/.ssh
+      rmSync(ssh, { recursive: false, force: true });
+      symlinkSync(newKeys, ssh, "junction");
+      expect(isProtectedPath(join(newKeys, "id_ed25519"), {}, p, home)).toBe(true);
+      expect(isProtectedPath(join(oldKeys, "id_ed25519"), {}, p, home)).toBe(false);
+      const ge = { platform: p, home, env: {} };
+      expect(
+        decide(
+          "full",
+          { toolName: "read", input: { path: join(newKeys, "id_ed25519") } },
+          root,
+          undefined,
+          ge,
+        ),
+      ).not.toBe("allow");
+      expect(
+        decide(
+          "full",
+          { toolName: "write", input: { path: join(newKeys, "id_ed25519") } },
+          root,
+          undefined,
+          ge,
+        ),
+      ).toBe("deny");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("受保护路径的写入不论模式一律拒绝，读取需要确认", () => {
     const env = { PRIMUS_CODING_AGENT_DIR: "/opt/Primus/data/users/S-1/core" };
     const ge = { platform: "linux" as const, home: "/home/u", env };
@@ -139,6 +186,15 @@ describe("primus-guard 权限判断", () => {
     expect(isProtectedPath("/work/proj/.git/config", env, "linux", "/home/u")).toBe(true);
     expect(isProtectedPath("/home/u/.ssh/id_rsa", env, "linux", "/home/u")).toBe(true);
     expect(isProtectedPath("/opt/Primus/data/x.json", env, "linux", "/home/u")).toBe(true);
+    // 以 `..` 开头的文件名仍在目录内，不是父级遍历
+    expect(isProtectedPath("/home/u/.ssh/..key", env, "linux", "/home/u")).toBe(true);
+    expect(isProtectedPath("/opt/Primus/data/..x", env, "linux", "/home/u")).toBe(true);
+    // Linux 上反斜杠是文件名的一部分，`..\\key` 仍在目录内
+    expect(isProtectedPath("/home/u/.ssh/..\\key", env, "linux", "/home/u")).toBe(true);
+    // 主目录是链接（/home/u → /mnt/u）：直接访问链接目标里的 .ssh 也受保护
+    const homeLink = (p: string) => p.replace(/^\/home\/u(?=\/|$)/, "/mnt/u");
+    expect(isProtectedPath("/mnt/u/.ssh/id_rsa", env, "linux", "/home/u", homeLink)).toBe(true);
+    expect(isProtectedPath("/mnt/u/notes.txt", env, "linux", "/home/u", homeLink)).toBe(false);
     expect(isProtectedPath("/work/proj/src/env.ts", env, "linux", "/home/u")).toBe(false);
     // 默认对话工作区 users/<SID>/chat 不算 App 数据；其中的 .env、.git 仍受保护，其他用户的 chat 仍受保护
     const chat = "/opt/Primus/data/users/S-1/chat";
@@ -493,5 +549,379 @@ describe("primus-guard 计划模式（只读）", () => {
     expect(c.ui.select).toHaveBeenCalledTimes(2);
     expect(c.ui.select.mock.calls[1]?.[1]).toEqual([CHOICES.allow, CHOICES.deny]);
     expect(state.alwaysAllowed.size).toBe(0);
+  });
+});
+
+/**
+ * 临时的数据目录：<root>/data/users/S-1/core 下有技能 skills/foo（含指向 auth.json 的链接）、mcp.json、mcp-auth.json，
+ * 另有一个不在数据目录内的外部技能目录 <root>/ext-skill
+ */
+function skillFixture() {
+  // 取真实路径（macOS 的 /var → /private/var、Windows 的 8.3 短名）：经链接到达数据目录的用例按真实路径落到
+  // 数据目录内，各平台结果一致；agentDir 经平台链接配置的情形由专门的用例覆盖
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "guard-skill-")));
+  const core = join(root, "data", "users", "S-1", "core");
+  const skill = join(core, "skills", "foo");
+  const ext = join(root, "ext-skill");
+  const ws = join(root, "ws");
+  for (const d of [skill, join(skill, "refs"), ext, ws]) mkdirSync(d, { recursive: true });
+  for (const [f, text] of [
+    [join(skill, "SKILL.md"), "---\nname: foo\ndescription: x\n---\n"],
+    [join(skill, "refs", "a.md"), "a"],
+    [join(skill, ".env"), "SECRET=1"],
+    [join(ext, "SKILL.md"), "x"],
+    [join(core, "auth.json"), "{}"],
+    [join(core, "mcp.json"), "{}"],
+    [join(core, "mcp-auth.json"), "{}"],
+  ] as const)
+    writeFileSync(f, text);
+  // 技能目录里指向数据目录其他文件的链接：真实路径在技能目录外，不能借此读取
+  symlinkSync(core, join(skill, "escape"), "junction");
+  const env = { PRIMUS_CODING_AGENT_DIR: core };
+  const ge = { platform: process.platform, home: join(root, "home"), env, skillDirs: [skill, ext] };
+  return { root, core, skill, ext, ws, env, ge };
+}
+
+describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
+  it("从 before_agent_start 的 systemPromptOptions.skills 取技能目录", () => {
+    expect(
+      loadedSkillDirs({
+        systemPromptOptions: { skills: [{ baseDir: "/a" }, { baseDir: "" }, {}, null] },
+      }),
+    ).toEqual(["/a"]);
+    expect(loadedSkillDirs({})).toEqual([]);
+    expect(loadedSkillDirs(undefined)).toEqual([]);
+  });
+
+  it("已加载技能目录内的读取在所有权限模式与计划模式下放行", () => {
+    const f = skillFixture();
+    try {
+      const read = (path: string) => ({ toolName: "read", input: { path } });
+      for (const mode of MODES) {
+        for (const p of [join(f.skill, "SKILL.md"), join(f.skill, "refs", "a.md"), f.skill]) {
+          expect(decide(mode, read(p), f.ws, undefined, f.ge), `${mode} ${p}`).toBe("allow");
+          expect(decide(mode, { toolName: "ls", input: { path: p } }, f.ws, undefined, f.ge)).toBe(
+            "allow",
+          );
+        }
+        // 数据目录外的技能目录：工作区外也放行
+        expect(decide(mode, read(join(f.ext, "SKILL.md")), f.ws, undefined, f.ge)).toBe("allow");
+      }
+      // 计划模式：读取交给常规规则（decidePlan 返回 undefined），结果同样放行
+      expect(decidePlan(read(join(f.skill, "SKILL.md")), undefined, f.ws, f.ge)).toBe(undefined);
+      // 未加载技能时仍是受保护路径
+      const none = { ...f.ge, skillDirs: [] };
+      expect(decide("full", read(join(f.skill, "SKILL.md")), f.ws, undefined, none)).toBe("ask");
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("技能目录：.. 与符号链接逃不出去，修改照旧拒绝，.env 仍受保护", () => {
+    const f = skillFixture();
+    try {
+      const read = (path: string) => ({ toolName: "read", input: { path } });
+      for (const mode of MODES) {
+        expect(
+          decide(mode, read(join(f.skill, "..", "..", "auth.json")), f.ws, undefined, f.ge),
+        ).toBe("ask");
+        expect(decide(mode, read(`${f.skill}/../../mcp-auth.json`), f.ws, undefined, f.ge)).toBe(
+          "ask",
+        );
+        expect(
+          decide(mode, read(join(f.skill, "escape", "auth.json")), f.ws, undefined, f.ge),
+        ).toBe("ask");
+        expect(decide(mode, read(join(f.skill, ".env")), f.ws, undefined, f.ge)).toBe("ask");
+        for (const tool of ["write", "edit"])
+          expect(
+            decide(
+              mode,
+              { toolName: tool, input: { path: join(f.skill, "SKILL.md") } },
+              f.ws,
+              undefined,
+              f.ge,
+            ),
+          ).toBe("deny");
+      }
+      expect(insideLoadedSkill(join(f.skill, "escape", "auth.json"), f.ge)).toBe(false);
+      // grep 递归读取目录里的文件（含技能目录里的 .env）：对目录不放行，对单个文件放行
+      const grep = (path: string) => ({ toolName: "grep", input: { path, pattern: "SECRET" } });
+      expect(decide("ask", grep(f.skill), f.ws, undefined, f.ge)).toBe("ask");
+      expect(decide("ask", grep(join(f.skill, "refs")), f.ws, undefined, f.ge)).toBe("ask");
+      expect(decide("ask", grep(join(f.skill, "SKILL.md")), f.ws, undefined, f.ge)).toBe("allow");
+      // 数据目录经链接访问（PRIMUS_CODING_AGENT_DIR 在链接下），技能目录是指向同一数据目录的另一个链接：
+      // 两边解析路径不同，按真实路径识别出技能目录覆盖了数据目录，不放开
+      const alias = join(f.root, "alias");
+      const link = join(f.root, "skill-link");
+      symlinkSync(f.root, alias, "junction");
+      symlinkSync(join(f.root, "data"), link, "junction");
+      const aliased = {
+        ...f.ge,
+        env: { PRIMUS_CODING_AGENT_DIR: join(alias, "data", "users", "S-1", "core") },
+        skillDirs: [link],
+      };
+      expect(insideLoadedSkill(join(link, "users", "S-1", "core", "auth.json"), aliased)).toBe(
+        false,
+      );
+      expect(insideLoadedSkill(join(f.skill, "refs", "a.md"), f.ge)).toBe(true);
+      // 技能目录包含 Core 用户目录或数据目录（配置错误）时不放开
+      const wide = { ...f.ge, skillDirs: [join(f.core, "..", "..", "..")] };
+      expect(insideLoadedSkill(join(f.core, "auth.json"), wide)).toBe(false);
+      expect(insideLoadedSkill(join(f.core, "auth.json"), { ...f.ge, skillDirs: [f.core] })).toBe(
+        false,
+      );
+      expect(
+        insideLoadedSkill(join(f.core, "auth.json"), { ...f.ge, skillDirs: ["relative"] }),
+      ).toBe(false);
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "win32")("Windows 上技能目录比较不区分大小写", () => {
+    const ge = {
+      platform: "win32" as const,
+      home: "C:\\Users\\u",
+      env: { PRIMUS_CODING_AGENT_DIR: "C:\\Primus\\data\\users\\S-1\\core" },
+      skillDirs: ["C:\\Primus\\data\\users\\S-1\\core\\skills\\foo"],
+      real: (p: string) => p,
+    };
+    expect(insideLoadedSkill("c:\\primus\\DATA\\users\\s-1\\core\\skills\\FOO\\SKILL.md", ge)).toBe(
+      true,
+    );
+  });
+
+  it("用户级 mcp.json：完全访问放行，询问 / 自动编辑询问，计划模式拒绝修改；mcp-auth.json 仍受保护", () => {
+    const f = skillFixture();
+    try {
+      const mcp = join(f.core, "mcp.json");
+      const call = (toolName: string, path = mcp) => ({ toolName, input: { path } });
+      expect(isUserMcpConfig(mcp, f.ge)).toBe(true);
+      for (const tool of ["write", "edit", "read"]) {
+        expect(decide("full", call(tool), f.ws, undefined, f.ge)).toBe("allow");
+        expect(decide("ask", call(tool), f.ws, undefined, f.ge)).toBe("ask");
+        expect(decide("edit", call(tool), f.ws, undefined, f.ge)).toBe("ask");
+      }
+      expect(decidePlan(call("write"), undefined, f.ws, f.ge)).toBe("deny");
+      expect(decidePlan(call("edit"), undefined, f.ws, f.ge)).toBe("deny");
+      for (const mode of MODES) {
+        expect(
+          decide(mode, call("write", join(f.core, "mcp-auth.json")), f.ws, undefined, f.ge),
+        ).toBe("deny");
+        expect(
+          decide(mode, call("read", join(f.core, "mcp-auth.json")), f.ws, undefined, f.ge),
+        ).toBe("ask");
+        expect(decide(mode, call("write", join(f.core, "auth.json")), f.ws, undefined, f.ge)).toBe(
+          "deny",
+        );
+        // 经技能目录里的链接到达 mcp.json：不是确切路径，按数据目录拒绝
+        expect(
+          decide(mode, call("write", join(f.skill, "escape", "mcp.json")), f.ws, undefined, f.ge),
+        ).toBe("deny");
+      }
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("mcp.json 本身是指向其他文件的符号链接时不算用户级 MCP 配置", () => {
+    const f = skillFixture();
+    try {
+      const mcp = join(f.core, "mcp.json");
+      rmSync(mcp);
+      try {
+        symlinkSync(join(f.core, "auth.json"), mcp);
+      } catch (err) {
+        // Windows 无开发者模式时不能创建文件符号链接
+        if ((err as NodeJS.ErrnoException).code === "EPERM") return;
+        throw err;
+      }
+      expect(isUserMcpConfig(mcp, f.ge)).toBe(false);
+      expect(
+        decide("full", { toolName: "write", input: { path: mcp } }, f.ws, undefined, f.ge),
+      ).toBe("deny");
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("mcp.json 经别处的链接到达时不算；agentDir 自身路径里的链接（平台 / 安装层面）不影响", () => {
+    const f = skillFixture();
+    try {
+      const write = (path: string, ge = f.ge) =>
+        decide("full", { toolName: "write", input: { path } }, f.ws, undefined, ge);
+      // 另一个指向 agentDir 的目录链接：真实路径相同，但不是 agentDir 的确切路径，按数据目录拒绝
+      const alias = join(f.root, "alias");
+      symlinkSync(f.core, alias, "junction");
+      expect(isUserMcpConfig(join(alias, "mcp.json"), f.ge)).toBe(false);
+      expect(write(join(alias, "mcp.json"))).toBe("deny");
+      // `..` 按字面消去后正是 agentDir/mcp.json：Core 打开的也是这个路径
+      expect(isUserMcpConfig(join(f.core, "skills", "..", "mcp.json"), f.ge)).toBe(true);
+
+      // agentDir 经上级的目录链接配置（如 macOS 的 /var → /private/var、安装路径里的目录联接）：仍然识别
+      const dataLink = join(f.root, "data-link");
+      symlinkSync(join(f.root, "data"), dataLink, "junction");
+      const linkedCore = join(dataLink, "users", "S-1", "core");
+      const viaParent = { ...f.ge, env: { PRIMUS_CODING_AGENT_DIR: linkedCore } };
+      expect(isUserMcpConfig(join(linkedCore, "mcp.json"), viaParent)).toBe(true);
+      expect(write(join(linkedCore, "mcp.json"), viaParent)).toBe("allow");
+
+      // agentDir 本身是链接（core-link → core）：App 设置的可信配置，同样识别
+      const coreLink = join(f.root, "data", "users", "S-1", "core-link");
+      symlinkSync(f.core, coreLink, "junction");
+      const viaSelf = { ...f.ge, env: { PRIMUS_CODING_AGENT_DIR: coreLink } };
+      expect(isUserMcpConfig(join(coreLink, "mcp.json"), viaSelf)).toBe(true);
+      expect(write(join(coreLink, "mcp.json"), viaSelf)).toBe("allow");
+      // 此时绕开配置的 agentDir 直接用真实目录：不是确切路径，不算
+      expect(isUserMcpConfig(join(f.core, "mcp.json"), viaSelf)).toBe(false);
+
+      // 还不存在的 mcp.json（新建）：算
+      rmSync(join(f.core, "mcp.json"));
+      expect(isUserMcpConfig(join(f.core, "mcp.json"), f.ge)).toBe(true);
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("数据目录在链接下配置时，经真实路径访问 auth.json / mcp.json 仍按 App 数据处理", () => {
+    const f = skillFixture();
+    try {
+      const call = (toolName: string, path: string) => ({ toolName, input: { path } });
+      // agentDir 经上级的目录链接配置（如 macOS 的 /var → /private/var）；模型给出的是真实路径
+      const rootLink = join(f.root, "root-link");
+      symlinkSync(f.root, rootLink, "junction");
+      const linked = {
+        ...f.ge,
+        env: { PRIMUS_CODING_AGENT_DIR: join(rootLink, "data", "users", "S-1", "core") },
+      };
+      // 经配置的（链接下的）路径访问 mcp.json 仍是用户级 MCP 配置
+      expect(
+        isUserMcpConfig(join(rootLink, "data", "users", "S-1", "core", "mcp.json"), linked),
+      ).toBe(true);
+      for (const name of ["auth.json", "mcp.json", "mcp-auth.json"]) {
+        const target = join(f.core, name);
+        // mcp.json 的例外只认 <agentDir>/mcp.json 的确切路径；真实路径别名按数据目录处理
+        expect(isUserMcpConfig(target, linked)).toBe(false);
+        expect(isProtectedPath(target, linked.env, linked.platform, linked.home)).toBe(true);
+        for (const mode of MODES) {
+          for (const tool of ["write", "edit"])
+            expect(
+              decide(mode, call(tool, target), f.ws, undefined, linked),
+              `${mode} ${tool} ${name}`,
+            ).toBe("deny");
+          expect(
+            decide(mode, call("read", target), f.ws, undefined, linked),
+            `${mode} read ${name}`,
+          ).toBe("ask");
+        }
+      }
+      // 默认对话工作区经真实路径同样不算 App 数据
+      const chat = join(f.root, "data", "users", "S-1", "chat");
+      mkdirSync(chat, { recursive: true });
+      expect(decide("full", call("write", join(chat, "a.txt")), f.ws, undefined, linked)).toBe(
+        "allow",
+      );
+      // chat 是指向 core 的链接时不能借此排除 core 里的文件
+      rmSync(chat, { recursive: true });
+      symlinkSync(f.core, chat, "junction");
+      expect(decide("full", call("write", join(chat, "auth.json")), f.ws, undefined, f.ge)).toBe(
+        "deny",
+      );
+
+      // agentDir 本身是指向数据目录外的链接：经真实路径访问同样受保护
+      const outside = join(f.root, "outside-core");
+      mkdirSync(outside);
+      writeFileSync(join(outside, "auth.json"), "{}");
+      const coreOut = join(f.root, "data", "users", "S-2", "core");
+      mkdirSync(dirname(coreOut), { recursive: true });
+      symlinkSync(outside, coreOut, "junction");
+      const out = { ...f.ge, env: { PRIMUS_CODING_AGENT_DIR: coreOut } };
+      expect(decide("full", call("write", join(outside, "auth.json")), f.ws, undefined, out)).toBe(
+        "deny",
+      );
+      expect(decide("full", call("read", join(outside, "auth.json")), f.ws, undefined, out)).toBe(
+        "ask",
+      );
+      expect(decide("full", call("write", join(outside, "mcp.json")), f.ws, undefined, out)).toBe(
+        "deny",
+      );
+      expect(decide("full", call("write", join(coreOut, "mcp.json")), f.ws, undefined, out)).toBe(
+        "allow",
+      );
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("mcp.json 是悬空的符号链接时不算（目标之后才出现，可能是任意文件）", () => {
+    const f = skillFixture();
+    try {
+      const mcp = join(f.core, "mcp.json");
+      rmSync(mcp);
+      try {
+        symlinkSync(join(f.core, "later.json"), mcp);
+      } catch (err) {
+        // Windows 无开发者模式时不能创建文件符号链接
+        if ((err as NodeJS.ErrnoException).code === "EPERM") return;
+        throw err;
+      }
+      expect(isUserMcpConfig(mcp, f.ge)).toBe(false);
+      expect(
+        decide("full", { toolName: "write", input: { path: mcp } }, f.ws, undefined, f.ge),
+      ).toBe("deny");
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("MCP 工具按权限模式：完全访问放行，询问 / 自动编辑询问，计划模式询问；参数里的路径不改变判断", () => {
+    const f = skillFixture();
+    try {
+      // Core 的 MCP 工具（直接暴露或经 codemode 脚本嵌套调用）都以各自的工具名经过 tool_call
+      const call = { toolName: "github_search_issues", input: { query: "x" } };
+      const withPath = { toolName: "fs_read_file", input: { path: join(f.skill, "SKILL.md") } };
+      for (const c of [call, withPath]) {
+        expect(decide("full", c, f.ws, undefined, f.ge)).toBe("allow");
+        expect(decide("ask", c, f.ws, undefined, f.ge)).toBe("ask");
+        expect(decide("edit", c, f.ws, undefined, f.ge)).toBe("ask");
+        expect(decidePlan(c, undefined, f.ws, f.ge)).toBe("ask");
+      }
+      // 服务器声明只读且不联网：与其他工具同一条规则
+      const ro = { readOnlyHint: true, openWorldHint: false };
+      expect(decide("ask", call, f.ws, ro, f.ge)).toBe("allow");
+      expect(decidePlan(call, ro, f.ws, f.ge)).toBe(undefined);
+      expect(decide("ask", call, f.ws, { readOnlyHint: true }, f.ge)).toBe("ask");
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("扩展：before_agent_start 记下技能目录后，读取技能文件不弹确认（含计划模式）", async () => {
+    const f = skillFixture();
+    vi.stubEnv("PRIMUS_CODING_AGENT_DIR", f.core);
+    try {
+      const gate = createPlanGate();
+      const { guard, state } = createGuard("ask", gate);
+      const { pi, handlers } = fakePi();
+      guard(pi);
+      const read = { toolName: "read", input: { path: join(f.skill, "SKILL.md") } };
+      const before = ctx(CHOICES.deny);
+      expect(await handlers.tool_call?.(read, before)).toMatchObject({ block: true });
+      expect(before.ui.select).toHaveBeenCalled();
+      await handlers.before_agent_start?.(
+        { systemPromptOptions: { skills: [{ name: "foo", baseDir: f.skill }] } },
+        ctx(),
+      );
+      expect(state.skillDirs).toEqual([f.skill]);
+      for (const readOnly of [false, true]) {
+        gate.readOnly = readOnly;
+        const c = ctx(CHOICES.deny);
+        expect(await handlers.tool_call?.(read, c)).toBe(undefined);
+        expect(c.ui.select).not.toHaveBeenCalled();
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(f.root, { recursive: true, force: true });
+    }
   });
 });

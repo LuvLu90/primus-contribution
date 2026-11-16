@@ -141,8 +141,8 @@ export async function inspectPreview(
   const real = realPath(path, pe.real);
   if (isNetworkOrDevice(real)) return denied(TEXT.reason.network, path);
   if (
-    isProtectedPath(path, pe.env, pe.platform, pe.home) ||
-    isProtectedPath(real, pe.env, pe.platform, pe.home)
+    isProtectedPath(path, pe.env, pe.platform, pe.home, pe.real) ||
+    isProtectedPath(real, pe.env, pe.platform, pe.home, pe.real)
   )
     return denied(TEXT.reason.protected, path);
 
