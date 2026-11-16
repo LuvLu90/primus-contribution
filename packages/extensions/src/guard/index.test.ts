@@ -132,6 +132,49 @@ describe("primus-guard 权限判断", () => {
     }
   });
 
+  it("~/.ssh 是链接时按当前目标判断，会话中切换链接目标后仍受保护", () => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "guard-ssh-")));
+    try {
+      const home = join(root, "home");
+      const oldKeys = join(root, "keys-old");
+      const newKeys = join(root, "keys-new");
+      mkdirSync(home);
+      mkdirSync(oldKeys);
+      mkdirSync(newKeys);
+      const ssh = join(home, ".ssh");
+      const p = process.platform;
+      symlinkSync(oldKeys, ssh, "junction");
+      expect(isProtectedPath(join(oldKeys, "id_ed25519"), {}, p, home)).toBe(true);
+      expect(isProtectedPath(join(newKeys, "id_ed25519"), {}, p, home)).toBe(false);
+      // 同一进程内把 ~/.ssh 改指到新目标：新目标受保护，旧目标不再是 ~/.ssh
+      rmSync(ssh, { recursive: false, force: true });
+      symlinkSync(newKeys, ssh, "junction");
+      expect(isProtectedPath(join(newKeys, "id_ed25519"), {}, p, home)).toBe(true);
+      expect(isProtectedPath(join(oldKeys, "id_ed25519"), {}, p, home)).toBe(false);
+      const ge = { platform: p, home, env: {} };
+      expect(
+        decide(
+          "full",
+          { toolName: "read", input: { path: join(newKeys, "id_ed25519") } },
+          root,
+          undefined,
+          ge,
+        ),
+      ).not.toBe("allow");
+      expect(
+        decide(
+          "full",
+          { toolName: "write", input: { path: join(newKeys, "id_ed25519") } },
+          root,
+          undefined,
+          ge,
+        ),
+      ).toBe("deny");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("受保护路径的写入不论模式一律拒绝，读取需要确认", () => {
     const env = { PRIMUS_CODING_AGENT_DIR: "/opt/Primus/data/users/S-1/core" };
     const ge = { platform: "linux" as const, home: "/home/u", env };

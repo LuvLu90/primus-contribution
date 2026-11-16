@@ -146,7 +146,8 @@ function within(root: string, p: string, platform: NodeJS.Platform): boolean {
 
 /**
  * 机密路径：`.env*`、`.git/` 内部、`~/.ssh`。不论位置（含技能目录）一律受保护。
- * `~/.ssh` 同时按字面路径与真实路径比较：主目录（或 .ssh）是链接时，直接访问链接目标里的 .ssh 也算
+ * `~/.ssh` 同时按字面路径与真实路径比较：主目录（或 .ssh）是链接时，直接访问链接目标里的 .ssh 也算。
+ * `~/.ssh` 的真实路径每次重新解析、不缓存：用户可能在会话中改链接目标，缓存旧目标会漏掉新目标
  */
 function isSecretPath(
   abs: string,
@@ -159,7 +160,7 @@ function isSecretPath(
   // `.env*` 文件，以及 `.env*` 目录里的任何文件（例如 `.env/secret.txt`）
   if (parts.some((part) => part.startsWith(".env"))) return true;
   const ssh = join(home, ".ssh");
-  return within(ssh, abs, platform) || within(realDir(ssh, real), abs, platform);
+  return within(ssh, abs, platform) || within(realPath(ssh, real), abs, platform);
 }
 
 /** Core 的用户目录 `<安装目录>\data\users\<SID>\core`（PRIMUS_CODING_AGENT_DIR）；未设置为 undefined */
@@ -176,7 +177,7 @@ function dataDirOf(env: Record<string, string | undefined>): string | undefined 
   return basename(data).toLowerCase() === "data" ? data : undefined;
 }
 
-/** 平台 / 安装层面的目录（App 数据目录、Core 用户目录、~/.ssh）的真实路径缓存：会话内不会变，只缓存已存在的目录 */
+/** 安装层面的目录（App 数据目录、Core 用户目录）的真实路径缓存：会话内不会变，只缓存已存在的目录 */
 const realDirCache = new Map<string, string>();
 
 /** 目录的真实路径；用默认的 realpath 且目录存在时缓存（测试替换 real 时不缓存） */
