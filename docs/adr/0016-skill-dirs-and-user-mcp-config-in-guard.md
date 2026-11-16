@@ -25,7 +25,7 @@
 
 ### 项目信任指纹（`apps/desktop/src-tauri/src/workspaces.rs`）
 
-- 指纹在 `.primus/` 之后，按层级依次计入 Core 信任后会加载的每个 `.agents/skills`：从工作区起逐级往上，到含 `.git` 的目录（含该级）为止，不在仓库内时到根目录；用户级 `~/.agents/skills`（Core 总会加载）跳过。每段以 NUL 开头的分段标记与层级区分。读不了的目录、是文件的 `.agents/skills` Core 不加载，也不计入。
+- 指纹在 `.primus/` 之后，按层级依次计入 Core 信任后会加载的每个 `.agents/skills`：从工作区起逐级往上，到含 `.git` 的目录（含该级）为止，不在仓库内时到根目录；用户级 `~/.agents/skills`（Core 总会加载）跳过。每段以 NUL 开头的分段标记与层级区分。只有确定没有技能时跳过：`.agents/skills` 不存在（含上级 `.agents` 不是目录），或它（跟随链接后）是普通文件。其他情况——没有权限、断开的符号链接（目标之后出现时 Core 就会加载）、其他 IO 错误——无法确认 Core 会加载什么：指纹不完整、不能信任，`workspace_inspect` 报读取错误，而不是当作“没有”。
 - 没有任何 `.agents/skills` 时指纹与只算 `.primus/` 的旧指纹相同，升级前已信任的工作区不必重新确认。
 - 文件数与字节数上限（20,000 个、512 MiB）为 `.primus/` 与各 `.agents/skills` 合计。
 - `workspace_inspect` 新增 `agentsSkills`：按 Core 的发现规则（`.agents/skills` 根目录下的 `*.md` 不算，子目录里没有 `SKILL.md` 时的 `*.md` 各是一个技能）列出，带相对工作区的前缀（`.agents/skills/review`、`../.agents/skills/lint`）；信任确认弹窗单列为“.agents 技能”。

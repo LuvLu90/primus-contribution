@@ -310,7 +310,8 @@ struct HashItem {
 }
 
 /// 项目资源的内容指纹（SHA-256）：先是 `.primus/`，按相对路径排序，依次计入路径、符号链接目标、长度与内容；
-/// 再按 [`agents_skill_dirs`] 的顺序计入每个存在的 `.agents/skills`（目录层级 + 同样的条目）。
+/// 再按 [`agents_skill_dirs`] 的顺序计入每个存在的 `.agents/skills`（目录层级 + 同样的条目；
+/// 不存在或是文件的跳过，其他读取失败见 [`agents_skill_dir_present`]）。
 /// 跟随符号链接（Core 加载扩展与技能时也跟随），按规范路径防止循环。都不存在时为空集合的指纹；
 /// 没有 `.agents/skills` 时与只算 `.primus/` 的旧指纹相同，已信任的工作区不必重新确认。
 /// 任何目录或文件读取失败、断开的链接、超过 [`HASH_MAX_FILES`] / [`HASH_MAX_BYTES`] 时返回 None：
@@ -331,8 +332,8 @@ fn primus_hash(workspace: &Path) -> Option<String> {
     let mut files = items.len();
     hash_items(&mut hasher, &mut items, &mut budget)?;
     for (depth, dir) in agents_skill_dirs(workspace) {
-        // 与 Core 一致：读不了的目录 Core 不加载任何技能，这里也不计入；之后能读了，指纹随之变化
-        if std::fs::read_dir(&dir).is_err() {
+        // 只有不存在或是文件时才跳过；无权限、断开的链接等读取失败无法确认 Core 会加载什么，指纹不完整
+        if !agents_skill_dir_present(&dir).ok()? {
             continue;
         }
         let mut items = Vec::new();
@@ -424,6 +425,39 @@ fn home_dir() -> Option<PathBuf> {
             }
         })
         .map(PathBuf::from)
+}
+
+/// 某级 `.agents/skills` 是否要计入指纹与信任确认。只有确定没有技能时返回 false：路径不存在
+/// （含上级 `.agents` 不是目录），或它（跟随链接后）是普通文件。其余情况——没有权限、断开的符号链接
+/// （链接在、目标缺失）、其他 IO 错误——都返回错误：读不到就无法确认 Core 会加载什么，不能当作“没有”。
+fn agents_skill_dir_present(dir: &Path) -> io::Result<bool> {
+    match std::fs::symlink_metadata(dir) {
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(false);
+        }
+        Err(e) => return Err(e),
+        Ok(_) => {}
+    }
+    let meta = match std::fs::metadata(dir) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "符号链接的目标不存在",
+            ));
+        }
+        Err(e) => return Err(e),
+    };
+    if meta.is_file() {
+        return Ok(false);
+    }
+    std::fs::read_dir(dir)?;
+    Ok(true)
 }
 
 /// `.agents/skills` 在信任确认里显示的前缀：相对工作区，如 `.agents/skills`、`../.agents/skills`。
@@ -533,8 +567,8 @@ pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
     skills.sort();
     let mut agents_skills = Vec::new();
     for (depth, dir) in agents_skill_dirs(root) {
-        // 与指纹一致：读不了的目录 Core 不加载，不列出
-        if std::fs::read_dir(&dir).is_err() {
+        // 与指纹一致：只有不存在或是文件时才跳过；其他读取失败报错，不能把读不到的技能显示成“没有”
+        if !agents_skill_dir_present(&dir).map_err(|e| WorkspaceError::Read(dir.clone(), e))? {
             continue;
         }
         let mut found = Vec::new();
@@ -979,6 +1013,79 @@ mod tests {
         std::fs::create_dir_all(proj.join(".agents/skills")).unwrap();
         // 空的 .agents/skills 也计入（目录存在本身是内容的一部分）
         assert_ne!(primus_hash(&proj), Some(primus_only));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_agents_skills_cannot_be_trusted() {
+        use std::os::unix::fs::PermissionsExt;
+        // 只有不存在或是文件时跳过；读不了的 .agents/skills 不能当作“没有”而被信任
+        let root = temp_dir("agents-noread");
+        let proj = root.join("proj");
+        std::fs::create_dir_all(proj.join(".git")).unwrap();
+        let skills = proj.join(".agents/skills");
+        std::fs::create_dir_all(skills.join("review")).unwrap();
+        std::fs::write(skills.join("review/SKILL.md"), "r").unwrap();
+        let path = proj.to_string_lossy().into_owned();
+        let ws = Workspaces::new(&root.join("app"));
+        ws.open(&path).unwrap();
+        trust_now(&ws, &path);
+        assert!(ws.approved(&path));
+
+        std::fs::set_permissions(&skills, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // 以 root 运行时权限不起作用，跳过
+        if std::fs::read_dir(&skills).is_ok() {
+            std::fs::set_permissions(&skills, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+        let hash = primus_hash(&proj);
+        let approved = ws.approved(&path);
+        let details = inspect(&path);
+        let trusted = ws.trust(&path, true, None);
+        std::fs::set_permissions(&skills, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(hash, None);
+        assert!(!approved);
+        assert!(matches!(details, Err(WorkspaceError::Read(p, _)) if p == skills));
+        assert!(matches!(trusted, Err(WorkspaceError::Incomplete)));
+        assert!(ws.approved(&path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn broken_agents_skills_link_cannot_be_trusted() {
+        let root = temp_dir("agents-broken");
+        let proj = root.join("proj");
+        std::fs::create_dir_all(proj.join(".git")).unwrap();
+        std::fs::create_dir_all(proj.join(".agents")).unwrap();
+        let path = proj.to_string_lossy().into_owned();
+        let ws = Workspaces::new(&root.join("app"));
+        ws.open(&path).unwrap();
+        trust_now(&ws, &path);
+        assert!(ws.approved(&path));
+
+        // 断开的链接（链接在、目标缺失）是读取失败，不是“不存在”：目标之后出现时 Core 就会加载
+        let skills = proj.join(".agents/skills");
+        std::os::unix::fs::symlink(root.join("missing"), &skills).unwrap();
+        assert_eq!(primus_hash(&proj), None);
+        assert!(!ws.approved(&path));
+        assert!(matches!(inspect(&path), Err(WorkspaceError::Read(p, _)) if p == skills));
+        assert!(matches!(
+            ws.trust(&path, true, None),
+            Err(WorkspaceError::Incomplete)
+        ));
+
+        // 指向文件的链接与普通文件一样，Core 不加载，跳过
+        std::fs::write(root.join("missing"), "file").unwrap();
+        assert!(primus_hash(&proj).is_some());
+        assert!(inspect(&path).unwrap().agents_skills.is_empty());
+        // 上级 .agents 是文件：.agents/skills 不可能存在，跳过
+        std::fs::remove_file(&skills).unwrap();
+        std::fs::remove_dir(proj.join(".agents")).unwrap();
+        std::fs::write(proj.join(".agents"), "file").unwrap();
+        assert!(primus_hash(&proj).is_some());
+        assert!(inspect(&path).unwrap().agents_skills.is_empty());
+        trust_now(&ws, &path);
+        assert!(ws.approved(&path));
     }
 
     #[test]
