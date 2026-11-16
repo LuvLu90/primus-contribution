@@ -121,7 +121,8 @@ export function insideWorkspace(
 ): boolean {
   const norm = (p: string) => (platform === "win32" ? p.toLowerCase() : p);
   const rel = relative(norm(realPath(cwd, real)), norm(realPath(resolve(cwd, target), real)));
-  const parentStep = rel === ".." || rel.startsWith("../") || rel.startsWith("..\\");
+  const parentStep =
+    rel === ".." || rel.startsWith("../") || (platform === "win32" && rel.startsWith("..\\"));
   return rel === "" || (!parentStep && !isAbsolute(rel));
 }
 
@@ -138,7 +139,8 @@ function isDirectory(p: string): boolean {
 function within(root: string, p: string, platform: NodeJS.Platform): boolean {
   const norm = (x: string) => (platform === "win32" ? x.toLowerCase() : x);
   const rel = relative(norm(resolve(root)), norm(resolve(p)));
-  const parentStep = rel === ".." || rel.startsWith("../") || rel.startsWith("..\\");
+  const parentStep =
+    rel === ".." || rel.startsWith("../") || (platform === "win32" && rel.startsWith("..\\"));
   return rel === "" || (!parentStep && !isAbsolute(rel));
 }
 
