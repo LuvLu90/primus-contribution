@@ -23,7 +23,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -67,6 +67,8 @@ pub(crate) struct CoreLayout {
     pub(crate) entry: PathBuf,
     /// 第一方扩展 `primus-bundle.js`
     pub(crate) extension: PathBuf,
+    /// 命令行入口 `cli.js`（`mcp list` / `mcp login` 等，见 [`Supervisor::run_cli`]）
+    pub(crate) cli: PathBuf,
     /// 内置 Python 目录（运行时目录下的 `python/`，ADR 0010）；不存在时不注入 Python 环境
     pub(crate) python: PathBuf,
 }
@@ -78,6 +80,7 @@ impl CoreLayout {
             node: runtime_dir.join(NODE_EXE),
             entry: core_dir.join("rpc-entry.js"),
             extension: core_dir.join("extensions").join("primus-bundle.js"),
+            cli: core_dir.join("cli.js"),
             python: runtime_dir.join("python"),
         }
     }
@@ -272,25 +275,7 @@ pub(crate) fn build_command(
     });
     cmd.arg("-e").arg(&layout.extension);
     cmd.current_dir(&opts.cwd);
-
-    let tmp = paths.tmp_dir();
-    cmd.env("PRIMUS_CODING_AGENT_DIR", paths.core_dir())
-        .env("PRIMUS_CODING_AGENT_SESSION_DIR", paths.sessions_dir())
-        .env("TEMP", &tmp)
-        .env("TMP", &tmp)
-        .env("PRIMUS_SKIP_VERSION_CHECK", "1")
-        .env("PRIMUS_TELEMETRY", if opts.telemetry { "1" } else { "0" })
-        .env_remove("NODE_OPTIONS");
-    if opts.offline {
-        cmd.env("PRIMUS_OFFLINE", "1");
-    } else {
-        cmd.env_remove("PRIMUS_OFFLINE");
-    }
-    if let Some(python) = layout.bundled_python() {
-        apply_python_env(&mut cmd, python, paths, std::env::var_os("PATH").as_deref());
-    }
-    // 有 Windows 系统代理时 Core 走代理，没有时直连（ADR 0015）
-    crate::platform::proxy::apply_core_proxy_env(&mut cmd);
+    apply_core_env(&mut cmd, layout, paths, opts.offline, opts.telemetry);
 
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -304,6 +289,132 @@ pub(crate) fn build_command(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd
+}
+
+/// Core 进程的环境（技术方案第 4.4 节）：会话进程与命令行（[`Supervisor::run_cli`]）共用，保证两者读写同一份
+/// Core 用户目录、临时目录、Python 与代理设置。
+fn apply_core_env(
+    cmd: &mut Command,
+    layout: &CoreLayout,
+    paths: &DataPaths,
+    offline: bool,
+    telemetry: bool,
+) {
+    let tmp = paths.tmp_dir();
+    cmd.env("PRIMUS_CODING_AGENT_DIR", paths.core_dir())
+        .env("PRIMUS_CODING_AGENT_SESSION_DIR", paths.sessions_dir())
+        .env("TEMP", &tmp)
+        .env("TMP", &tmp)
+        .env("PRIMUS_SKIP_VERSION_CHECK", "1")
+        .env("PRIMUS_TELEMETRY", if telemetry { "1" } else { "0" })
+        .env_remove("NODE_OPTIONS");
+    if offline {
+        cmd.env("PRIMUS_OFFLINE", "1");
+    } else {
+        cmd.env_remove("PRIMUS_OFFLINE");
+    }
+    if let Some(python) = layout.bundled_python() {
+        apply_python_env(cmd, python, paths, std::env::var_os("PATH").as_deref());
+    }
+    // 有 Windows 系统代理时 Core 走代理，没有时直连（ADR 0015）
+    crate::platform::proxy::apply_core_proxy_env(cmd);
+}
+
+/// 构造 Core 命令行的调用（不拉起）：`node cli.js <args>`，环境同会话进程（[`apply_core_env`]），
+/// 工作目录为 Core 用户目录（不在任何项目里，只读写用户级配置），stdin 为空。
+pub(crate) fn build_cli_command(layout: &CoreLayout, paths: &DataPaths, args: &[&str]) -> Command {
+    let mut cmd = Command::new(&layout.node);
+    cmd.arg(&layout.cli).args(args);
+    cmd.current_dir(paths.core_dir());
+    apply_core_env(&mut cmd, layout, paths, false, false);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
+/// 一次 Core 命令行调用的结果。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CliOutput {
+    /// 退出码；超时被结束或被信号结束时为 None
+    pub(crate) code: Option<i32>,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    /// 超过时限被结束
+    pub(crate) timed_out: bool,
+}
+
+/// 命令行输出（stdout、stderr 各自）最多保留的字节数，超出部分丢弃。
+const CLI_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
+
+/// 读完一个输出管道，只保留前 [`CLI_OUTPUT_LIMIT`] 字节（之后的照常读走，子进程不会因管道写满而卡住）。
+fn read_capped(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut kept = Vec::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            match pipe.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let room = CLI_OUTPUT_LIMIT.saturating_sub(kept.len());
+                    kept.extend_from_slice(&buf[..n.min(room)]);
+                }
+            }
+        }
+        kept
+    })
+}
+
+/// 拉起命令并等待结束，超过 `timeout` 时结束整个作业（含子进程，例如 MCP 服务器）。
+pub(crate) fn run_with_timeout(
+    mut cmd: Command,
+    timeout: Duration,
+) -> Result<CliOutput, SupervisorError> {
+    let job = Job::new()?;
+    cmd.env(crate::job::JOB_NAME_ENV, job.name());
+    let mut child = cmd.spawn()?;
+    if let Err(e) = job.assign(&child) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(e.into());
+    }
+    let out = child.stdout.take().map(read_capped);
+    let err = child.stderr.take().map(read_capped);
+    let start = Instant::now();
+    let mut timed_out = false;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if start.elapsed() >= timeout {
+            timed_out = true;
+            let _ = job.terminate();
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    // 进程结束后其子进程可能还拿着管道：结束整个作业，读取线程随管道关闭收尾
+    let _ = job.terminate();
+    let text = |h: Option<std::thread::JoinHandle<Vec<u8>>>| {
+        h.and_then(|h| h.join().ok())
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default()
+    };
+    Ok(CliOutput {
+        code: status.and_then(|s| s.code()),
+        stdout: text(out),
+        stderr: text(err),
+        timed_out,
+    })
 }
 
 /// 内置 Python 的环境（ADR 0010）：Python 目录与用户包脚本目录放在 `PATH` 最前（先于系统里的 Python 与
@@ -822,6 +933,30 @@ impl Supervisor {
         })
     }
 
+    /// 运行 Core 命令行（`node cli.js <args>`，如 `mcp list --json`）：与会话进程同一套环境（共享
+    /// [`apply_core_env`]），放进独立的作业对象，超过 `timeout` 时连同其子进程一起结束。不占会话进程名额。
+    pub(crate) fn run_cli(
+        &self,
+        args: &[&str],
+        timeout: Duration,
+    ) -> Result<CliOutput, SupervisorError> {
+        let node_is_bare = self
+            .layout
+            .node
+            .parent()
+            .is_none_or(|p| p.as_os_str().is_empty());
+        if !node_is_bare && !self.layout.node.is_file() {
+            return Err(SupervisorError::NodeNotFound(self.layout.node.clone()));
+        }
+        if !self.layout.cli.is_file() {
+            return Err(SupervisorError::MissingFile(self.layout.cli.clone()));
+        }
+        run_with_timeout(
+            build_cli_command(&self.layout, &self.paths, args),
+            timeout,
+        )
+    }
+
     fn launch(&self, key: &str, opts: &LaunchOptions) -> Result<CoreProcess, SupervisorError> {
         let job = Job::new()?;
         let mut cmd = build_command(&self.layout, &self.paths, opts);
@@ -1040,6 +1175,7 @@ pub(crate) mod tests {
             node: PathBuf::from("node"),
             entry: core.join("rpc-entry.js"),
             extension: core.join("extensions").join("primus-bundle.js"),
+            cli: core.join("cli.js"),
             python: root.join("no-python"),
         }
     }
@@ -1080,7 +1216,10 @@ pub(crate) mod tests {
             installed.extension,
             Path::new("/opt/Primus/resources/agent-core/extensions/primus-bundle.js")
         );
-
+        assert_eq!(
+            installed.cli,
+            Path::new("/opt/Primus/resources/agent-core/cli.js")
+        );
         assert_eq!(
             installed.python,
             Path::new("/opt/Primus/resources/runtime/python")
@@ -1193,6 +1332,81 @@ pub(crate) mod tests {
         assert_eq!(args[1], "--session-id");
         assert_eq!(args[2], "primus-1");
         assert!(!has_arg(&cmd, "--session"));
+    }
+
+    #[test]
+    fn cli_command_shares_core_environment() {
+        let tmp = TempDir::new();
+        let paths = data_paths(&tmp.0);
+        let layout = fake_layout(&tmp.0, "");
+        let cmd = build_cli_command(&layout, &paths, &["mcp", "list", "--json"]);
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_owned()).collect();
+        assert_eq!(args[0], layout.cli.as_os_str());
+        assert_eq!(&args[1..], ["mcp", "list", "--json"]);
+        assert_eq!(cmd.get_current_dir(), Some(paths.core_dir().as_path()));
+        let session = build_command(&layout, &paths, &opts(&tmp.0));
+        for name in [
+            "PRIMUS_CODING_AGENT_DIR",
+            "PRIMUS_CODING_AGENT_SESSION_DIR",
+            "TEMP",
+            "TMP",
+            "PRIMUS_SKIP_VERSION_CHECK",
+            "PRIMUS_TELEMETRY",
+            "PRIMUS_OFFLINE",
+            "NODE_OPTIONS",
+        ] {
+            assert_eq!(env_of(&cmd, name), env_of(&session, name), "{name}");
+        }
+    }
+
+    #[test]
+    fn run_cli_reports_missing_entry() {
+        let tmp = TempDir::new();
+        let paths = data_paths(&tmp.0);
+        let layout = fake_layout(&tmp.0, "");
+        let sup = Supervisor::new(layout.clone(), paths).unwrap();
+        assert!(
+            matches!(sup.run_cli(&["mcp", "list"], Duration::from_secs(5)), Err(SupervisorError::MissingFile(p)) if p == layout.cli)
+        );
+    }
+
+    #[test]
+    fn run_cli_captures_output_and_exit_code() {
+        let tmp = TempDir::new();
+        let paths = data_paths(&tmp.0);
+        let layout = fake_layout(&tmp.0, "");
+        std::fs::write(
+            &layout.cli,
+            "process.stdout.write(JSON.stringify(process.argv.slice(2)));\
+             process.stderr.write(process.env.PRIMUS_CODING_AGENT_DIR);process.exit(3);",
+        )
+        .unwrap();
+        let sup = Supervisor::new(layout, paths.clone()).unwrap();
+        let out = sup
+            .run_cli(&["mcp", "logout", "--", "a b"], Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(out.code, Some(3));
+        assert!(!out.timed_out);
+        assert_eq!(out.stdout, r#"["mcp","logout","--","a b"]"#);
+        assert_eq!(out.stderr, paths.core_dir().to_string_lossy());
+    }
+
+    #[test]
+    fn run_cli_kills_on_timeout() {
+        let tmp = TempDir::new();
+        let paths = data_paths(&tmp.0);
+        let layout = fake_layout(&tmp.0, "");
+        std::fs::write(
+            &layout.cli,
+            "process.stdout.write('started');setTimeout(() => {}, 60000);",
+        )
+        .unwrap();
+        let sup = Supervisor::new(layout, paths).unwrap();
+        let start = Instant::now();
+        let out = sup.run_cli(&[], Duration::from_millis(1500)).unwrap();
+        assert!(out.timed_out);
+        assert_eq!(out.code, None);
+        assert!(start.elapsed() < Duration::from_secs(20));
     }
 
     #[test]

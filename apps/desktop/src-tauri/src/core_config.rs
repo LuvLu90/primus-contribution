@@ -169,7 +169,7 @@ fn write_if_changed(file: &Path, text: &str) -> io::Result<bool> {
 }
 
 /// 读取 Core 的 `settings.json`；不存在或不是对象时返回空对象（解析失败的旧文件备份为 `.bak` 后重建）。
-fn read_settings(core_dir: &Path) -> Map<String, Value> {
+pub(crate) fn read_settings(core_dir: &Path) -> Map<String, Value> {
     let file = core_dir.join(SETTINGS_FILE);
     let Ok(text) = fs::read_to_string(&file) else {
         return Map::new();
@@ -183,7 +183,7 @@ fn read_settings(core_dir: &Path) -> Map<String, Value> {
     }
 }
 
-fn write_settings(core_dir: &Path, settings: &Map<String, Value>) -> io::Result<bool> {
+pub(crate) fn write_settings(core_dir: &Path, settings: &Map<String, Value>) -> io::Result<bool> {
     let mut text =
         serde_json::to_string_pretty(&Value::Object(settings.clone())).map_err(io::Error::other)?;
     text.push('\n');
@@ -245,7 +245,7 @@ fn apply_shell_tools(settings: &mut Map<String, Value>, powershell: bool) -> boo
 
 /// 严格读取 `settings.json`：文件不存在时为空设置；存在但读不出或不是 JSON 对象时返回错误（不备份、不当作空设置），
 /// 避免把用户写坏的设置文件覆盖成只剩本 App 写入的几项。
-fn read_settings_strict(core_dir: &Path) -> io::Result<Map<String, Value>> {
+pub(crate) fn read_settings_strict(core_dir: &Path) -> io::Result<Map<String, Value>> {
     let file = core_dir.join(SETTINGS_FILE);
     let text = match fs::read_to_string(&file) {
         Ok(text) => text,

@@ -369,6 +369,31 @@ export interface Platform {
    * 页面放进只给 `allow-scripts` 的沙箱 iframe，脚本、同文件夹的相对资源与 https 资源都能加载
    */
   previewServe(path: string): Promise<string>;
+  /** 能力中心·技能（ADR 0017）：Core 用户目录 `skills/` 与 `~/.agents/skills` 中的技能 */
+  skillsList(): Promise<SkillInfo[]>;
+  /** 把来源（GitHub 链接 / 本地 zip / 本地文件夹）解到暂存目录，列出其中的技能 */
+  skillStage(source: SkillSource): Promise<SkillStage>;
+  /**
+   * 把暂存中的候选技能装进 `skills/<name>`；已有同名技能时以 code `exists` 拒绝，用户确认后带 `overwrite` 重试。
+   * 返回技能文件路径；成功后这次暂存删除
+   */
+  skillInstall(stageId: string, path: string, name: string, overwrite: boolean): Promise<string>;
+  /** 放弃一次暂存 */
+  skillDiscard(stageId: string): Promise<void>;
+  /** 删除能力中心安装的技能（链接只删链接本身） */
+  skillDelete(file: string): Promise<void>;
+  /** 启用或停用技能（写 Core 设置，新会话生效） */
+  skillSetEnabled(file: string, enabled: boolean): Promise<void>;
+  /** 读取用户级 mcp.json */
+  mcpConfigRead(): Promise<McpConfigFile>;
+  /** 写入用户级 mcp.json；文件已被别处修改时以 code `conflict` 拒绝。返回新版本 */
+  mcpConfigWrite(text: string, version: string): Promise<string>;
+  /** 列出 MCP 服务器并测试连接（Core `mcp list --json`，最多 60 秒） */
+  mcpList(): Promise<CliOutput>;
+  /** OAuth 登录（Core 打开系统浏览器，最多等 5 分钟） */
+  mcpLogin(name: string): Promise<CliOutput>;
+  /** 删除已保存的 OAuth 凭据 */
+  mcpLogout(name: string): Promise<CliOutput>;
   storageUsage(): Promise<Record<string, number>>;
   storageClean(category: string): Promise<void>;
   diagnosticsExport(options?: Record<string, unknown>): Promise<string>;
@@ -387,6 +412,75 @@ export interface Platform {
   updateInstall(force?: boolean): Promise<void>;
   logWrite(level: LogLevel, message: string): Promise<void>;
 }
+
+/** 能力中心·技能：来源目录（ADR 0017） */
+export type SkillScope = "user" | "agents";
+
+/** 已安装的技能（`skillsList`） */
+export interface SkillInfo {
+  /** 技能文件所在目录的名字；frontmatter 没写 name 时 Core 用它 */
+  dirName: string;
+  /** 技能文件（`SKILL.md` 或单个 `*.md`）的绝对路径，启停与删除都用它 */
+  file: string;
+  /** 技能目录 */
+  dir: string;
+  /** `user`：Core 用户目录 `skills/`（能力中心安装，可删除）；`agents`：`~/.agents/skills`（只能启停） */
+  scope: SkillScope;
+  /** 技能文件开头（最多 64 KiB），用于解析 frontmatter；读不了时为 null */
+  content: string | null;
+  enabled: boolean;
+  deletable: boolean;
+  /** 目录本身是链接 / 目录联接（删除只删链接） */
+  link: boolean;
+}
+
+/** 技能的安装来源 */
+export type SkillSource =
+  | { kind: "github"; url: string }
+  | { kind: "zip"; path: string }
+  | { kind: "folder"; path: string };
+
+/** 暂存中找到的候选技能 */
+export interface SkillCandidate {
+  /** 相对暂存根目录的路径；根目录本身是技能时为空串 */
+  path: string;
+  dirName: string;
+  /** SKILL.md 开头（最多 64 KiB） */
+  content: string;
+}
+
+/** `skillStage` 的结果 */
+export interface SkillStage {
+  stageId: string;
+  candidates: SkillCandidate[];
+  /** 跳过的符号链接数 */
+  skippedLinks: number;
+  /** 候选过多，只列出了前 200 个 */
+  truncated: boolean;
+}
+
+/** 用户级 `mcp.json`（`mcpConfigRead`） */
+export interface McpConfigFile {
+  path: string;
+  /** 原文；文件不存在时为 null */
+  text: string | null;
+  /** 版本，写入时原样带回 */
+  version: string;
+}
+
+/** 一次 Core 命令行调用的结果（`mcp list` / `login` / `logout`） */
+export interface CliOutput {
+  /** 退出码；超时被结束时为 null */
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+}
+
+/** 技能命令错误码：已有同名技能，用户确认后带 overwrite 重试 */
+export const SKILL_EXISTS = "exists";
+/** MCP 配置错误码：mcp.json 已在别处被修改，需重新读取 */
+export const MCP_CONFLICT = "conflict";
 
 /** `previewFile` 的结果 */
 export type FilePreview =
@@ -503,6 +597,17 @@ export const COMMANDS = {
   previewFileBytes: "preview_file_bytes",
   previewDir: "preview_dir",
   previewServe: "preview_serve",
+  skillsList: "skills_list",
+  skillStage: "skill_stage",
+  skillInstall: "skill_install",
+  skillDiscard: "skill_discard",
+  skillDelete: "skill_delete",
+  skillSetEnabled: "skill_set_enabled",
+  mcpConfigRead: "mcp_config_read",
+  mcpConfigWrite: "mcp_config_write",
+  mcpList: "mcp_list",
+  mcpLogin: "mcp_login",
+  mcpLogout: "mcp_logout",
   storageUsage: "storage_usage",
   storageClean: "storage_clean",
   diagnosticsExport: "diagnostics_export",
