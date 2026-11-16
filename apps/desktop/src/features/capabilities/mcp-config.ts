@@ -5,6 +5,10 @@
 // 启用 = 删掉 `enabled` 键，停用 = 写 `enabled: false`（Core 的默认值不落盘）。
 
 import type { CliOutput } from "@/lib/platform";
+import { strings } from "@/lib/strings";
+import { fill } from "./ui";
+
+const msg = strings.capabilityChecks.mcp;
 
 export type McpExposure = "codemode" | "deferred" | "direct" | "hidden";
 export const MCP_EXPOSURES: readonly McpExposure[] = ["codemode", "deferred", "direct", "hidden"];
@@ -51,26 +55,25 @@ export type McpTransport = "stdio" | "http";
 
 function checkBase(entry: Obj): string | null {
   const { enabled, timeout, description } = entry;
-  if (enabled !== undefined && typeof enabled !== "boolean") return "enabled 应为布尔值";
-  if (description !== undefined && typeof description !== "string") return "description 应为字符串";
+  if (enabled !== undefined && typeof enabled !== "boolean") return msg.enabledBool;
+  if (description !== undefined && typeof description !== "string") return msg.descriptionString;
   if (timeout !== undefined && (typeof timeout !== "number" || !(timeout > 0)))
-    return "timeout 应为正数（秒）";
+    return msg.timeoutPositive;
   return null;
 }
 
 function checkOAuth(value: unknown): string | null {
   if (value === undefined) return null;
-  if (!isRecord(value)) return "oauth 应为对象";
-  if (value.clientId !== undefined && typeof value.clientId !== "string")
-    return "oauth.clientId 应为字符串";
+  if (!isRecord(value)) return msg.oauthObject;
+  if (value.clientId !== undefined && typeof value.clientId !== "string") return msg.oauthClientId;
   if (value.clientSecret !== undefined && typeof value.clientSecret !== "string")
-    return "oauth.clientSecret 应为字符串";
+    return msg.oauthClientSecret;
   const port = value.callbackPort;
   if (
     port !== undefined &&
     (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535)
   )
-    return "oauth.callbackPort 应为端口号";
+    return msg.oauthCallbackPort;
   let callback: URL | null = null;
   if (value.callbackUrl !== undefined) {
     callback = typeof value.callbackUrl === "string" ? canParseUrl(value.callbackUrl) : null;
@@ -80,24 +83,23 @@ function checkOAuth(value: unknown): string | null {
       callback.search !== "" ||
       callback.hash !== ""
     )
-      return "oauth.callbackUrl 应为 localhost、127.0.0.1 或 [::1] 上的 http 地址，且不带查询参数与片段";
+      return msg.oauthCallbackUrl;
     if (callback.port && port !== undefined && Number(callback.port) !== port)
-      return "oauth.callbackUrl 与 oauth.callbackPort 的端口不一致";
+      return msg.oauthPortMismatch;
   }
-  if (value.scope !== undefined && typeof value.scope !== "string") return "oauth.scope 应为字符串";
+  if (value.scope !== undefined && typeof value.scope !== "string") return msg.oauthScope;
   if (
     value.clientName !== undefined &&
     (typeof value.clientName !== "string" || !value.clientName.trim())
   )
-    return "oauth.clientName 应为非空字符串";
+    return msg.oauthClientName;
   const registration = value.clientRegistration;
   if (registration !== undefined && registration !== "auto" && registration !== "dcr") {
-    if (registration !== "cimd") return 'oauth.clientRegistration 应为 "auto"、"dcr" 或 "cimd"';
-    if (value.clientId !== undefined || value.clientName !== undefined)
-      return 'oauth.clientRegistration 为 "cimd" 时不能同时设置 oauth.clientId 或 oauth.clientName';
+    if (registration !== "cimd") return msg.oauthRegistration;
+    if (value.clientId !== undefined || value.clientName !== undefined) return msg.oauthCimdClient;
     // Core 的客户端元数据文档只登记了回环地址上路径为 /callback 的回调
     if (callback && (callback.hostname === "[::1]" || callback.pathname !== "/callback"))
-      return 'oauth.clientRegistration 为 "cimd" 时，oauth.callbackUrl 应在 localhost 或 127.0.0.1 上且路径为 /callback';
+      return msg.oauthCimdCallback;
   }
   const metadataUrl = value.authServerMetadataUrl;
   if (metadataUrl !== undefined) {
@@ -109,7 +111,7 @@ function checkOAuth(value: unknown): string | null {
         (url.protocol === "http:" && LOOPBACK_HOSTS.includes(url.hostname))
       )
     )
-      return "oauth.authServerMetadataUrl 应为 https 地址，或 localhost、127.0.0.1、[::1] 上的 http 地址";
+      return msg.oauthMetadataUrl;
   }
   return null;
 }
@@ -120,11 +122,11 @@ function checkExposures(entry: Obj): string | null {
     typeof v === "string" &&
     (MCP_EXPOSURES as readonly string[]).includes(EXPOSURE_ALIASES[v] ?? v);
   const list = MCP_EXPOSURES.join("、");
-  if (exposure !== undefined && !valid(exposure)) return `exposure 应为 ${list} 之一`;
+  if (exposure !== undefined && !valid(exposure)) return fill(msg.exposure, { list });
   if (toolExposure !== undefined) {
-    if (!isRecord(toolExposure)) return "toolExposure 应把工具名映射到暴露方式";
+    if (!isRecord(toolExposure)) return msg.toolExposureObject;
     for (const [tool, v] of Object.entries(toolExposure))
-      if (!valid(v)) return `toolExposure “${tool}” 应为 ${list} 之一`;
+      if (!valid(v)) return fill(msg.toolExposure, { tool, list });
   }
   return null;
 }
@@ -138,45 +140,44 @@ export function validateServer(
   raw: unknown,
   global = true,
 ): { transport: McpTransport } | { error: string } {
-  const fail = (m: string) => ({ error: `服务器“${name}”：${m}` });
-  if (!validServerName(name)) return { error: `服务器名“${name}”无效：只能使用字母、数字、_ 和 -` };
-  if (!isRecord(raw)) return fail("应为对象");
+  const fail = (m: string) => ({ error: fill(msg.server, { name, message: m }) });
+  if (!validServerName(name)) return { error: fill(msg.serverName, { name }) };
+  if (!isRecord(raw)) return fail(msg.entryObject);
   const base = checkBase(raw);
   if (base) return fail(base);
   const { type, url, command } = raw;
-  if (type === "sse") return fail("不支持旧的 SSE 传输，请改用 Streamable HTTP 地址");
+  if (type === "sse") return fail(msg.sse);
   let transport: McpTransport;
   if (
     typeof url === "string" &&
     (type === undefined || type === "http" || type === "streamable-http")
   ) {
     const parsed = canParseUrl(url);
-    if (!parsed || !/^https?:$/.test(parsed.protocol)) return fail("url 应为 http 或 https 地址");
-    if (raw.headers !== undefined && !isStringRecord(raw.headers))
-      return fail("headers 应把名称映射到字符串");
+    if (!parsed || !/^https?:$/.test(parsed.protocol)) return fail(msg.url);
+    if (raw.headers !== undefined && !isStringRecord(raw.headers)) return fail(msg.headers);
     const oauth = checkOAuth(raw.oauth);
     if (oauth) return fail(oauth);
     transport = "http";
   } else if (typeof command === "string" && (type === undefined || type === "stdio")) {
     const { args, env, cwd } = raw;
     if (args !== undefined && !(Array.isArray(args) && args.every((a) => typeof a === "string")))
-      return fail("args 应为字符串数组");
-    if (env !== undefined && !isStringRecord(env)) return fail("env 应把名称映射到字符串");
-    if (cwd !== undefined && typeof cwd !== "string") return fail("cwd 应为字符串");
+      return fail(msg.args);
+    if (env !== undefined && !isStringRecord(env)) return fail(msg.env);
+    if (cwd !== undefined && typeof cwd !== "string") return fail(msg.cwd);
     transport = "stdio";
   } else {
-    return fail("需要 command（本地程序）或 url（Streamable HTTP）");
+    return fail(msg.commandOrUrl);
   }
   const exposure = checkExposures(raw);
   if (exposure) return fail(exposure);
   if (transport === "http" && raw.auth !== undefined) {
-    if (!global) return fail("auth 只能写在用户级 mcp.json 中");
+    if (!global) return fail(msg.authGlobal);
     const auth = raw.auth;
     if (!isRecord(auth) || typeof auth.provider !== "string" || !auth.provider)
-      return fail("auth.provider 应为模型渠道名");
+      return fail(msg.authProvider);
     const parsed = new URL(url as string);
     if (parsed.protocol !== "https:" && !LOOPBACK_HOSTS.includes(parsed.hostname))
-      return fail("使用 auth 时 url 应为 https，或 localhost、127.0.0.1、[::1] 上的 http");
+      return fail(msg.authHttps);
   }
   return { transport };
 }
@@ -211,10 +212,10 @@ export function parseMcpDocument(text: string | null): McpDocument {
   try {
     root = JSON.parse(text.replace(/^\uFEFF/, ""));
   } catch (e) {
-    throw new Error(`mcp.json 不是有效的 JSON：${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(fill(msg.fileJson, { message: e instanceof Error ? e.message : String(e) }));
   }
   if (!isRecord(root) || (root.mcpServers !== undefined && !isRecord(root.mcpServers)))
-    throw new Error("mcp.json 应为带 mcpServers 对象的 JSON 对象");
+    throw new Error(msg.fileShape);
   return { root, indent: /^([ \t]+)\S/m.exec(text)?.[1] || "  " };
 }
 
@@ -243,7 +244,7 @@ export function listServers(doc: McpDocument): McpServerView[] {
     let error = "error" in result ? result.error : null;
     if (!error) {
       const clash = seen.get(serverNamespace(name));
-      if (clash) error = `服务器“${name}”与“${clash}”冲突（名字只差 - 与 _）`;
+      if (clash) error = fill(msg.clash, { name, other: clash });
       else seen.set(serverNamespace(name), name);
     }
     const rec = isRecord(entry) ? entry : {};
@@ -266,10 +267,9 @@ export function listServers(doc: McpDocument): McpServerView[] {
 /** 与其他服务器的名字冲突（相同或只差 - 与 _）；`except` 是正在编辑的原名 */
 export function nameConflict(doc: McpDocument, name: string, except?: string): string | null {
   const names = Object.keys(serversOf(doc)).filter((other) => other !== except);
-  if (names.includes(name)) return `已有名为“${name}”的服务器`;
+  if (names.includes(name)) return fill(msg.exists, { name });
   for (const other of names) {
-    if (serverNamespace(other) === serverNamespace(name))
-      return `与已有的服务器“${other}”冲突（名字只差 - 与 _）`;
+    if (serverNamespace(other) === serverNamespace(name)) return fill(msg.clashExisting, { other });
   }
   return null;
 }
@@ -307,7 +307,7 @@ export function setServer(
 export function removeServer(text: string | null, name: string): string {
   const doc = parseMcpDocument(text);
   const servers = serversOf(doc);
-  if (!(name in servers)) throw new Error(`mcp.json 中没有服务器“${name}”`);
+  if (!(name in servers)) throw new Error(fill(msg.missing, { name }));
   delete servers[name];
   return serializeMcpDocument(doc);
 }
@@ -316,7 +316,7 @@ export function removeServer(text: string | null, name: string): string {
 export function setServerEnabled(text: string | null, name: string, enabled: boolean): string {
   const doc = parseMcpDocument(text);
   const entry = serversOf(doc)[name];
-  if (!isRecord(entry)) throw new Error(`mcp.json 中没有服务器“${name}”`);
+  if (!isRecord(entry)) throw new Error(fill(msg.missing, { name }));
   if (enabled) delete entry.enabled;
   else entry.enabled = false;
   return serializeMcpDocument(doc);
@@ -339,9 +339,8 @@ function fromVsCode(name: string, entry: Obj, notes: string[]): Obj {
   if (out.type === "stdio" || out.type === "http") delete out.type;
   const dropped = VSCODE_ONLY_KEYS.filter((k) => k in out);
   for (const k of dropped) delete out[k];
-  if (dropped.length) notes.push(`“${name}”去掉了 Core 不支持的字段：${dropped.join("、")}`);
-  if (/\$\{input:/.test(JSON.stringify(out)))
-    notes.push(`“${name}”用到了 VS Code 的 \${input:…} 变量，请改成实际的值或 \${环境变量}`);
+  if (dropped.length) notes.push(fill(msg.dropped, { name, keys: dropped.join("、") }));
+  if (/\$\{input:/.test(JSON.stringify(out))) notes.push(fill(msg.vscodeInput, { name }));
   return out;
 }
 
@@ -355,7 +354,7 @@ const looksLikeEntry = (v: unknown): boolean =>
  */
 export function parsePastedServers(input: string): PastedServers {
   const text = input.trim().replace(/,\s*$/, "");
-  if (!text) throw new Error("请粘贴 JSON 配置");
+  if (!text) throw new Error(msg.pasteEmpty);
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -364,10 +363,10 @@ export function parsePastedServers(input: string): PastedServers {
       // 复制的片段常常是 `"name": { … }`，补上外层花括号再试
       value = JSON.parse(`{${text}}`);
     } catch {
-      throw new Error(`不是有效的 JSON：${e instanceof Error ? e.message : String(e)}`);
+      throw new Error(fill(msg.pasteJson, { message: e instanceof Error ? e.message : String(e) }));
     }
   }
-  if (!isRecord(value)) throw new Error("应为 JSON 对象");
+  if (!isRecord(value)) throw new Error(msg.pasteObject);
   const notes: string[] = [];
   if (looksLikeEntry(value)) return { servers: [["", { ...value }]], notes };
   let map: unknown;
@@ -381,13 +380,13 @@ export function parsePastedServers(input: string): PastedServers {
     vscode = true;
   } else if (Object.values(value).length > 0 && Object.values(value).every(looksLikeEntry))
     map = value;
-  if (!isRecord(map)) throw new Error("没有找到服务器配置（mcpServers、servers 或单个条目）");
+  if (!isRecord(map)) throw new Error(msg.pasteNotFound);
   const servers: [string, Obj][] = [];
   for (const [name, entry] of Object.entries(map)) {
-    if (!isRecord(entry)) throw new Error(`服务器“${name}”应为对象`);
+    if (!isRecord(entry)) throw new Error(fill(msg.pasteEntry, { name }));
     servers.push([name, vscode ? fromVsCode(name, entry, notes) : { ...entry }]);
   }
-  if (servers.length === 0) throw new Error("配置里没有服务器");
+  if (servers.length === 0) throw new Error(msg.pasteNone);
   return { servers, notes };
 }
 
@@ -415,7 +414,7 @@ export interface McpListResult {
 
 /** 解析 `mcp list --json` 的输出（失败时退出码为 1，输出仍是 JSON）；输出不是预期格式时抛出中文错误 */
 export function parseMcpList(out: CliOutput): McpListResult {
-  if (out.timedOut) throw new Error("测试连接超时");
+  if (out.timedOut) throw new Error(msg.listTimeout);
   const start = out.stdout.indexOf("{");
   let value: unknown;
   try {
@@ -426,7 +425,7 @@ export function parseMcpList(out: CliOutput): McpListResult {
   if (!isRecord(value) || !Array.isArray(value.servers)) {
     const detail = (out.stderr || out.stdout).trim().split("\n").slice(-3).join("\n");
     throw new Error(
-      detail ? `测试连接失败：${detail}` : `测试连接失败（退出码 ${out.code ?? "无"}）`,
+      detail ? fill(msg.listFailed, { detail }) : fill(msg.listExit, { code: out.code ?? "-" }),
     );
   }
   const str = (v: unknown) => (typeof v === "string" ? v : "");
@@ -464,7 +463,7 @@ export function parsePairs(
     if (!line) continue;
     const at = line.indexOf(separator);
     const key = at > 0 ? line.slice(0, at).trim() : "";
-    if (!key) throw new Error(`${label}第 ${i + 1} 行应为“名称${separator}值”`);
+    if (!key) throw new Error(fill(msg.pair, { label, line: i + 1, separator }));
     out[key] = line.slice(at + 1).trim();
   }
   return out;
@@ -501,7 +500,7 @@ export function splitCommandLine(line: string): string[] {
       has = false;
     } else cur += ch;
   }
-  if (quote) throw new Error("命令中的引号不配对");
+  if (quote) throw new Error(msg.quote);
   if (has || cur) out.push(cur);
   return out;
 }

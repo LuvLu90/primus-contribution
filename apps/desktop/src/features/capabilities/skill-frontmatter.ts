@@ -7,6 +7,11 @@
 // 嵌套的映射 / 列表只跳过）。遇到 Core 会报错的写法（普通标量里的 `: `、重复的键、制表符缩进）同样报错；
 // 少数 Core 能接受而这里不认识的写法会被拒绝（宁可不装，也不装一个 Core 读不出描述的技能）。
 
+import { strings } from "@/lib/strings";
+import { fill } from "./ui";
+
+const msg = strings.capabilityChecks.skill;
+
 export interface SkillCheck {
   /** 生效的名称：frontmatter 的 name，缺省为目录名 */
   name: string;
@@ -68,10 +73,10 @@ function doubleQuoted(body: string): string {
     else if (n === "u" || n === "x" || n === "U") {
       const len = n === "x" ? 2 : n === "u" ? 4 : 8;
       const hex = body.slice(i + 1, i + 1 + len);
-      if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length !== len) throw new YamlError("无效的转义");
+      if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length !== len) throw new YamlError(msg.yamlEscape);
       out += String.fromCodePoint(Number.parseInt(hex, 16));
       i += len;
-    } else throw new YamlError("无效的转义");
+    } else throw new YamlError(msg.yamlEscape);
   }
   return out;
 }
@@ -79,7 +84,7 @@ function doubleQuoted(body: string): string {
 /** 块标量（| 或 >）：收集缩进更深的行 */
 function blockScalar(header: string, lines: string[], start: number): [string, number] {
   const m = /^([|>])([-+]?)(\d?)([-+]?)\s*(#.*)?$/.exec(header);
-  if (!m) throw new YamlError("无法解析的块标量");
+  if (!m) throw new YamlError(msg.yamlBlock);
   const folded = m[1] === ">";
   const chomp = m[2] || m[4];
   const body: string[] = [];
@@ -135,19 +140,19 @@ export function parseYamlSubset(yaml: string): Record<string, unknown> {
       i++;
       continue;
     }
-    if (/^\t/.test(line)) throw new YamlError("不能用制表符缩进");
-    if (indentOf(line) > 0) throw new YamlError(`第 ${i + 1} 行缩进不正确`);
-    if (line.startsWith("---") || line.startsWith("...")) throw new YamlError("不支持多个文档");
+    if (/^\t/.test(line)) throw new YamlError(msg.yamlTab);
+    if (indentOf(line) > 0) throw new YamlError(fill(msg.yamlIndent, { line: i + 1 }));
+    if (line.startsWith("---") || line.startsWith("...")) throw new YamlError(msg.yamlDocuments);
     const m =
       /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s:#'"[\]{},&*!|>%@`-][^:#]*?|-[^\s:][^:#]*?)\s*:(?:\s+(.*))?$/.exec(
         line,
       );
-    if (!m?.[1]) throw new YamlError(`第 ${i + 1} 行不是“键: 值”`);
+    if (!m?.[1]) throw new YamlError(fill(msg.yamlPair, { line: i + 1 }));
     let key = m[1];
     if (key.startsWith('"')) key = doubleQuoted(key.slice(1, -1));
     else if (key.startsWith("'")) key = key.slice(1, -1).replace(/''/g, "'");
     key = key.trim();
-    if (Object.hasOwn(out, key)) throw new YamlError(`键 ${key} 重复`);
+    if (Object.hasOwn(out, key)) throw new YamlError(fill(msg.yamlDuplicate, { key }));
     const rest = (m[2] ?? "").trim();
     i++;
     if (rest === "" || rest.startsWith("#")) {
@@ -159,7 +164,7 @@ export function parseYamlSubset(yaml: string): Record<string, unknown> {
           i++;
           continue;
         }
-        if (/^\t/.test(l)) throw new YamlError("不能用制表符缩进");
+        if (/^\t/.test(l)) throw new YamlError(msg.yamlTab);
         if (indentOf(l) > 0 || /^- /.test(l) || l === "-") {
           nested = true;
           i++;
@@ -178,13 +183,13 @@ export function parseYamlSubset(yaml: string): Record<string, unknown> {
     }
     if (rest.startsWith('"')) {
       const q = /^"((?:[^"\\]|\\.)*)"\s*(#.*)?$/.exec(rest);
-      if (!q) throw new YamlError(`键 ${key} 的引号没有闭合`);
+      if (!q) throw new YamlError(fill(msg.yamlQuote, { key }));
       out[key] = doubleQuoted(q[1] ?? "");
       continue;
     }
     if (rest.startsWith("'")) {
       const q = /^'((?:[^']|'')*)'\s*(#.*)?$/.exec(rest);
-      if (!q) throw new YamlError(`键 ${key} 的引号没有闭合`);
+      if (!q) throw new YamlError(fill(msg.yamlQuote, { key }));
       out[key] = (q[1] ?? "").replace(/''/g, "'");
       continue;
     }
@@ -192,7 +197,7 @@ export function parseYamlSubset(yaml: string): Record<string, unknown> {
       out[key] = rest.startsWith("[") ? [] : {};
       continue;
     }
-    if (/^[&*!%@`]/.test(rest)) throw new YamlError(`键 ${key} 的值无法解析`);
+    if (/^[&*!%@`]/.test(rest)) throw new YamlError(fill(msg.yamlValue, { key }));
     // 普通标量：去掉行尾注释，可以跨行（缩进的续行用空格连接）
     let text = rest.replace(/\s+#.*$/, "");
     while (i < lines.length) {
@@ -213,7 +218,7 @@ export function parseYamlSubset(yaml: string): Record<string, unknown> {
       text += `${text.endsWith("\n") ? "" : " "}${l.trim().replace(/\s+#.*$/, "")}`;
       i++;
     }
-    if (/:\s|:$/.test(text)) throw new YamlError(`键 ${key} 的值里有“: ”，请加引号`);
+    if (/:\s|:$/.test(text)) throw new YamlError(fill(msg.yamlColon, { key }));
     out[key] = plainValue(text.trim());
   }
   return out;
@@ -222,10 +227,10 @@ export function parseYamlSubset(yaml: string): Record<string, unknown> {
 /** 名称规则（Core 的 validateName，只告警） */
 export function nameWarnings(name: string): string[] {
   const w: string[] = [];
-  if (name.length > MAX_NAME_LENGTH) w.push(`名称超过 ${MAX_NAME_LENGTH} 个字符`);
-  if (!/^[a-z0-9-]+$/.test(name)) w.push("名称只应包含小写字母、数字和连字符");
-  if (name.startsWith("-") || name.endsWith("-")) w.push("名称不应以连字符开头或结尾");
-  if (name.includes("--")) w.push("名称不应包含连续的连字符");
+  if (name.length > MAX_NAME_LENGTH) w.push(fill(msg.nameLength, { n: MAX_NAME_LENGTH }));
+  if (!/^[a-z0-9-]+$/.test(name)) w.push(msg.nameChars);
+  if (name.startsWith("-") || name.endsWith("-")) w.push(msg.nameHyphenEdge);
+  if (name.includes("--")) w.push(msg.nameHyphenRun);
   return w;
 }
 
@@ -240,7 +245,7 @@ export function checkSkill(content: string, dirName: string): SkillCheck {
       return {
         name: dirName,
         description: null,
-        errors: [`frontmatter 无法解析：${e instanceof Error ? e.message : String(e)}`],
+        errors: [fill(msg.frontmatter, { message: e instanceof Error ? e.message : String(e) })],
         warnings: [],
       };
     }
@@ -249,10 +254,9 @@ export function checkSkill(content: string, dirName: string): SkillCheck {
   const description = typeof data.description === "string" ? data.description : null;
   const errors: string[] = [];
   const warnings = nameWarnings(name);
-  if (description === null || description.trim() === "")
-    errors.push("缺少 description，Core 不会加载");
+  if (description === null || description.trim() === "") errors.push(msg.noDescription);
   else if (description.length > MAX_DESCRIPTION_LENGTH)
-    warnings.push(`description 超过 ${MAX_DESCRIPTION_LENGTH} 个字符`);
+    warnings.push(fill(msg.descriptionLength, { n: MAX_DESCRIPTION_LENGTH }));
   return { name, description, errors, warnings };
 }
 
