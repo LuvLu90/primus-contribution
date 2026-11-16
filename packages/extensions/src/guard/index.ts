@@ -121,7 +121,8 @@ export function insideWorkspace(
 ): boolean {
   const norm = (p: string) => (platform === "win32" ? p.toLowerCase() : p);
   const rel = relative(norm(realPath(cwd, real)), norm(realPath(resolve(cwd, target), real)));
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  const parentStep = rel === ".." || rel.startsWith("../") || rel.startsWith("..\\");
+  return rel === "" || (!parentStep && !isAbsolute(rel));
 }
 
 /** 是否是已存在的目录（跟随链接）；不存在或读不了时为 false */
@@ -137,7 +138,8 @@ function isDirectory(p: string): boolean {
 function within(root: string, p: string, platform: NodeJS.Platform): boolean {
   const norm = (x: string) => (platform === "win32" ? x.toLowerCase() : x);
   const rel = relative(norm(resolve(root)), norm(resolve(p)));
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  const parentStep = rel === ".." || rel.startsWith("../") || rel.startsWith("..\\");
+  return rel === "" || (!parentStep && !isAbsolute(rel));
 }
 
 /** 机密路径：`.env*`、`.git/` 内部、`~/.ssh`。不论位置（含技能目录）一律受保护 */

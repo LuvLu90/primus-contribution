@@ -143,6 +143,9 @@ describe("primus-guard 权限判断", () => {
     expect(isProtectedPath("/work/proj/.git/config", env, "linux", "/home/u")).toBe(true);
     expect(isProtectedPath("/home/u/.ssh/id_rsa", env, "linux", "/home/u")).toBe(true);
     expect(isProtectedPath("/opt/Primus/data/x.json", env, "linux", "/home/u")).toBe(true);
+    // 以 `..` 开头的文件名仍在目录内，不是父级遍历
+    expect(isProtectedPath("/home/u/.ssh/..key", env, "linux", "/home/u")).toBe(true);
+    expect(isProtectedPath("/opt/Primus/data/..x", env, "linux", "/home/u")).toBe(true);
     expect(isProtectedPath("/work/proj/src/env.ts", env, "linux", "/home/u")).toBe(false);
     // 默认对话工作区 users/<SID>/chat 不算 App 数据；其中的 .env、.git 仍受保护，其他用户的 chat 仍受保护
     const chat = "/opt/Primus/data/users/S-1/chat";
