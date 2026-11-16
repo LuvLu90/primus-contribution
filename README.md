@@ -56,7 +56,7 @@ primus/
 │  ├─ extensions/          第一方 Core 扩展 → primus-bundle.js
 │  ├─ protocol/            RPC 与 primus:* 数据的 TS 类型
 │  └─ ui/                  共享 UI 组件
-├─ agent-core/             Agent Core 完整源码（git subtree 引入，当前 v1.4.0；改动见 agent-core/PATCHES.md）
+├─ agent-core/             Agent Core 完整源码（git subtree 引入，当前 v1.5.2；改动见 agent-core/PATCHES.md）
 ├─ e2e/                    WebdriverIO + tauri-driver
 ├─ assets/                项目 logo 源图（logo.png，1024×1024 透明 PNG）
 ├─ scripts/                build-core.mjs、检查脚本、MSI 构建脚本
