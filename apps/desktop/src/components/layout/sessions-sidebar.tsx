@@ -71,7 +71,7 @@ export function SessionsSidebar({ width }: { width: number }) {
                 <GlassPopoverItem
                   icon={<Icon name="puzzle" />}
                   label={t.menuCapabilities}
-                  onSelect={() => router.push("/capabilities/")}
+                  onSelect={() => router.push("/settings/?group=capabilities")}
                 />
                 <GlassPopoverSeparator />
                 <GlassPopoverItem
