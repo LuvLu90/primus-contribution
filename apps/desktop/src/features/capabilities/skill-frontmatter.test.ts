@@ -2,13 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   checkSkill,
   extractFrontmatter,
-  parseYamlSubset,
+  parseFrontmatter,
   suggestDirName,
   validDirName,
 } from "./skill-frontmatter";
 
+/** 按 SKILL.md 的样子包一层 frontmatter 再解析 */
+const parseYaml = (yaml: string) =>
+  parseFrontmatter(`---\n${yaml}\n---\nbody`) as Record<string, unknown>;
+
 /**
- * 与 Core 所用的 YAML 解析器（agent-core 依赖的 yaml 包）逐例核对过的结果：[frontmatter, 期望]，
+ * Core 所用的 YAML 解析器（agent-core 依赖的 yaml 包，同一版本）的结果：[frontmatter, 期望]，
  * 期望为 null 表示 Core 解析失败。name / description / disable-model-invocation 以外的键不比较。
  */
 const CASES: [string, { name?: unknown; description?: unknown; d?: unknown } | null][] = [
@@ -192,34 +196,38 @@ const CASES: [string, { name?: unknown; description?: unknown; d?: unknown } | n
       d: null,
     },
   ],
-  ["description: ok\n---", null],
+  // frontmatter 在第一个 `\n---` 处结束，后面的不再是 YAML
+  ["description: ok\n---", { name: null, description: "ok", d: null }],
   ["description: @at", null],
 ];
 
-describe("技能 frontmatter（YAML 子集）", () => {
+describe("技能 frontmatter（Core 的取法与 YAML 解析器）", () => {
   it.each(CASES)("与 Core 的解析结果一致：%j", (yaml, expected) => {
     if (expected === null) {
-      expect(() => parseYamlSubset(yaml)).toThrow();
+      expect(() => parseYaml(yaml)).toThrow();
       return;
     }
-    const data = parseYamlSubset(yaml);
+    const data = parseYaml(yaml);
     expect(data.name ?? null).toEqual(expected.name ?? null);
     expect(data.description ?? null).toEqual(expected.description ?? null);
     expect(data["disable-model-invocation"] ?? null).toEqual(expected.d ?? null);
   });
 
-  it("不认识的写法拒绝（宁可不装）：整体缩进、多行单引号", () => {
-    expect(() => parseYamlSubset("  description: x")).toThrow();
-    expect(() => parseYamlSubset("description: 'a\n  b'")).toThrow();
+  it("子集解析器不认识、Core 能读的写法现在照常接受", () => {
+    expect(parseYaml("description: 'a\n  b'").description).toBe("a b");
+    expect(parseYaml("{ description: x, name: y }")).toEqual({ description: "x", name: "y" });
+    expect(parseYaml("description: &d x\nname: *d")).toEqual({ description: "x", name: "x" });
   });
 
   it("frontmatter 的边界与 Core 一致", () => {
     expect(extractFrontmatter("\uFEFF---\r\nname: a\r\n---\r\nbody")).toBe("name: a");
     expect(extractFrontmatter("# 标题\n---\nname: a\n---")).toBeNull();
     expect(extractFrontmatter("---\nname: a")).toBeNull();
+    expect(parseFrontmatter("---\n---\nbody")).toEqual({});
+    expect(parseFrontmatter("---\n~\n---")).toEqual({});
   });
 
-  it("缺 description 阻止安装；名称与长度只告警；name 缺省用目录名", () => {
+  it("缺 description 时 Core 不加载；名称与长度只告警；name 缺省用目录名", () => {
     const ok = checkSkill("---\nname: pdf-tools\ndescription: 处理 PDF\n---\n", "dir");
     expect(ok).toEqual({ name: "pdf-tools", description: "处理 PDF", errors: [], warnings: [] });
     const noDesc = checkSkill("---\nname: a\n---\n", "dir");
@@ -231,6 +239,8 @@ describe("技能 frontmatter（YAML 子集）", () => {
     expect(warn.errors).toEqual([]);
     expect(warn.warnings).toHaveLength(2);
     expect(checkSkill("---\ndescription: d\n---", "From-Dir").name).toBe("From-Dir");
+    expect(checkSkill("---\nname: 3\ndescription: d\n---", "From-Dir").name).toBe("From-Dir");
+    expect(checkSkill("---\n- a\n- b\n---", "x").errors).toHaveLength(1);
     const bad = checkSkill("---\ndescription: a: b\n---", "x");
     expect(bad.errors[0]).toMatch(/无法解析/);
   });
@@ -241,15 +251,5 @@ describe("技能 frontmatter（YAML 子集）", () => {
     for (const ok of ["pdf", "a.b", "my_skill-2"]) expect(validDirName(ok)).toBe(true);
     for (const bad of ["", ".x", "a/b", "con", "x.", "名", "a b", "x".repeat(65)])
       expect(validDirName(bad)).toBe(false);
-  });
-
-  it("长空白串不会让解析卡住（不可信来源的技能文件）", () => {
-    const spaces = " ".repeat(60_000);
-    const t0 = performance.now();
-    expect(() => parseYamlSubset(`a${spaces}x`)).toThrow();
-    expect(parseYamlSubset(`description: a${spaces}x`).description).toBe(`a${spaces}x`);
-    expect(parseYamlSubset(`description: a${spaces}# c`).description).toBe("a");
-    expect(performance.now() - t0).toBeLessThan(1000);
-    expect(parseYamlSubset('"quoted key" : v')).toEqual({ "quoted key": "v" });
   });
 });

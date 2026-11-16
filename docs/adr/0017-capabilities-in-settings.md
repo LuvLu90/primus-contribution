@@ -24,7 +24,7 @@
   - GitHub：接受仓库、`tree/<ref>/<路径>`、`blob/<ref>/<路径>`（取所在目录）链接，从 `https://codeload.github.com/<owner>/<repo>/zip/<ref>`（缺省 `HEAD`）下载，只走 https，重定向只允许留在 `codeload.github.com`，120 秒超时。
   - zip：薄壳自带的读取器（基于已在依赖树中的 `flate2`），拒绝绝对路径、`..`、盘符、设备名等危险条目名，校验 CRC，跳过符号链接；压缩包最大 64 MiB、最多 5,000 个条目、单个文件 32 MiB、合计 256 MiB。
   - 本地文件夹：逐个复制，不跟随也不复制链接，跳过 `.git`，上限同 zip。
-- 前端按 Core 的规则解析 frontmatter（YAML 常见写法的子集）：缺少 `description` 的技能 Core 不加载，阻止安装；名称与长度问题 Core 只告警，这里也只提示。
+- frontmatter 按 Core 的做法解析：取法照搬 `agent-core/packages/coding-agent/src/utils/frontmatter.ts`，YAML 用 Core 同一个解析器（`yaml` 包，版本与 agent-core 锁定的一致，`pnpm check:versions` 核对）；校验照搬 `core/skills.ts` 的 `loadSkillFromFile`：缺少 `description` 或 YAML 无效的技能 Core 不加载，界面标出；名称与长度问题 Core 只告警，这里也只提示。
 - 启停写 Core `settings.json` 的 `skills` 数组：停用加入 `-<技能文件绝对路径>`（与 Core 的精确排除一致），启用删掉指向它的精确排除；通配写法不改写。新会话生效。
 - 删除只限 `skills/` 的直接子项；是链接 / 目录联接时只删链接本身。`~/.agents/skills` 的技能只能启停。
 
@@ -47,6 +47,5 @@
 - 不改 `agent-core/`；Core 原生的技能与 MCP 行为不变。
 - 已知取舍：
   - 启停只认精确排除，用户手写的通配规则不改写，界面显示的启用状态只按精确规则判断。
-  - YAML 子集可能拒绝少数 Core 能接受的 frontmatter 写法（宁可不装，也不装一个 Core 读不出描述的技能）。
   - `mcp.json` 的 `env` / `headers` 明文保存，界面提示改用 `${环境变量}` 引用。
   - 一次暂存只安装一个技能，同一仓库的多个技能需各读取一次。
