@@ -9,6 +9,7 @@ use std::path::Path;
 
 use crate::paths::RepairChoice;
 
+pub(crate) mod proxy;
 pub(crate) mod speech;
 pub(crate) mod webview_permissions;
 
