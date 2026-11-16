@@ -1,0 +1,291 @@
+import { describe, expect, it } from "vitest";
+import {
+  formatPairs,
+  joinCommandLine,
+  listServers,
+  nameConflict,
+  parseMcpDocument,
+  parseMcpList,
+  parsePairs,
+  parsePastedServers,
+  removeServer,
+  setServer,
+  setServerEnabled,
+  splitCommandLine,
+  validateServer,
+} from "./mcp-config";
+
+const err = (name: string, raw: unknown, global?: boolean) => {
+  const r = validateServer(name, raw, global);
+  return "error" in r ? r.error : null;
+};
+
+describe("validateServer（与 Core 规则一致）", () => {
+  it("接受 stdio 与 HTTP 条目，识别传输方式", () => {
+    expect(validateServer("fs", { command: "npx", args: ["-y", "x"] })).toEqual({
+      transport: "stdio",
+    });
+    expect(validateServer("docs", { url: "https://e.com/mcp", type: "streamable-http" })).toEqual({
+      transport: "http",
+    });
+    expect(validateServer("a_b-1", { type: "stdio", command: "x", env: { A: "1" } })).toEqual({
+      transport: "stdio",
+    });
+  });
+
+  it("拒绝 Core 会拒绝的条目", () => {
+    expect(err("a b", { command: "x" })).toContain("服务器名");
+    expect(err("a", [])).toContain("应为对象");
+    expect(err("a", { url: "https://x", type: "sse" })).toContain("SSE");
+    expect(err("a", { url: "ftp://x" })).toContain("http 或 https");
+    expect(err("a", { url: "https://x", headers: { A: 1 } })).toContain("headers");
+    expect(err("a", { command: "x", args: "y" })).toContain("args");
+    expect(err("a", { command: "x", env: [] })).toContain("env");
+    expect(err("a", { command: "x", cwd: 1 })).toContain("cwd");
+    expect(err("a", { command: "x", enabled: "no" })).toContain("enabled");
+    expect(err("a", { command: "x", timeout: 0 })).toContain("timeout");
+    expect(err("a", { command: "x", description: 1 })).toContain("description");
+    expect(err("a", { args: [] })).toContain("command");
+    expect(err("a", { url: "https://x", type: "stdio" })).toContain("command");
+    expect(err("a", { command: "x", exposure: "all" })).toContain("exposure");
+    expect(err("a", { command: "x", exposure: "codemode-deferred" })).toBeNull();
+    expect(err("a", { command: "x", toolExposure: { t: "bad" } })).toContain("toolExposure");
+  });
+
+  it("oauth 与 auth 的检查", () => {
+    const http = (extra: object) => ({ url: "https://x/mcp", ...extra });
+    expect(err("a", http({ oauth: { callbackPort: 70000 } }))).toContain("callbackPort");
+    expect(err("a", http({ oauth: { callbackUrl: "https://localhost/cb" } }))).toContain(
+      "callbackUrl",
+    );
+    expect(
+      err("a", http({ oauth: { callbackUrl: "http://localhost:8080/cb", callbackPort: 9 } })),
+    ).toContain("端口不一致");
+    expect(err("a", http({ oauth: { clientName: " " } }))).toContain("clientName");
+    expect(err("a", http({ oauth: { clientRegistration: "x" } }))).toContain("clientRegistration");
+    expect(err("a", http({ oauth: { clientRegistration: "cimd", clientId: "c" } }))).toContain(
+      "cimd",
+    );
+    expect(
+      err("a", http({ oauth: { clientRegistration: "cimd", callbackUrl: "http://localhost/cb" } })),
+    ).toContain("/callback");
+    expect(
+      err(
+        "a",
+        http({ oauth: { clientRegistration: "cimd", callbackUrl: "http://127.0.0.1:5/callback" } }),
+      ),
+    ).toBeNull();
+    expect(err("a", http({ oauth: { authServerMetadataUrl: "http://e.com" } }))).toContain(
+      "authServerMetadataUrl",
+    );
+    expect(err("a", http({ auth: { provider: "" } }))).toContain("auth.provider");
+    expect(err("a", { url: "http://e.com", auth: { provider: "p" } })).toContain("https");
+    expect(err("a", { url: "http://localhost:3/m", auth: { provider: "p" } })).toBeNull();
+    expect(err("a", http({ auth: { provider: "p" } }), false)).toContain("用户级");
+  });
+});
+
+const FILE = `{
+    "autoEnableCodemode": false,
+    "mcpServers": {
+        "fs": { "command": "npx", "args": ["-y", "server-fs"], "custom": 1 },
+        "docs": { "url": "https://e.com/mcp", "enabled": false, "exposure": "direct" },
+        "my-tool": { "command": "a" },
+        "my_tool": { "command": "b" },
+        "bad": { "type": "sse", "url": "https://x" }
+    }
+}
+`;
+
+describe("mcp.json 修改", () => {
+  it("列出服务器：目标、启用、暴露方式、冲突与错误", () => {
+    const list = listServers(parseMcpDocument(FILE));
+    expect(list.map((s) => s.name)).toEqual(["fs", "docs", "my-tool", "my_tool", "bad"]);
+    expect(list[0]).toMatchObject({
+      transport: "stdio",
+      target: "npx -y server-fs",
+      enabled: true,
+      exposure: "codemode",
+      error: null,
+    });
+    expect(list[1]).toMatchObject({ transport: "http", enabled: false, exposure: "direct" });
+    expect(list[3]?.error).toContain("冲突");
+    expect(list[4]?.error).toContain("SSE");
+  });
+
+  it("文件不存在或为空时视为空配置；格式错误时报错", () => {
+    expect(listServers(parseMcpDocument(null))).toEqual([]);
+    expect(() => parseMcpDocument("[1]")).toThrow("mcpServers");
+    expect(() => parseMcpDocument('{"mcpServers": []}')).toThrow("mcpServers");
+    expect(() => parseMcpDocument("{")).toThrow("JSON");
+  });
+
+  it("添加、改名（留在原位置）、删除、启停都保留缩进与其他内容", () => {
+    const added = setServer(FILE, "new", { url: "https://n.com/mcp" });
+    expect(added).toContain('\n    "autoEnableCodemode": false');
+    expect(Object.keys(JSON.parse(added).mcpServers).at(-1)).toBe("new");
+    expect(JSON.parse(added).mcpServers.fs.custom).toBe(1);
+
+    const renamed = setServer(FILE, "files", { command: "npx" }, "fs");
+    expect(Object.keys(JSON.parse(renamed).mcpServers)[0]).toBe("files");
+    expect(JSON.parse(renamed).mcpServers.fs).toBeUndefined();
+
+    expect(() => setServer(FILE, "docs", { command: "x" })).toThrow("已有名为");
+    expect(() => setServer(FILE, "f-s", { command: "x" }, "docs")).not.toThrow();
+    expect(() => setServer(FILE, "my_tool", { command: "x" }, "fs")).toThrow("已有名为");
+    expect(() => setServer(FILE, "x", { command: 1 })).toThrow("command");
+
+    const removed = removeServer(FILE, "docs");
+    expect(JSON.parse(removed).mcpServers.docs).toBeUndefined();
+    expect(() => removeServer(FILE, "none")).toThrow("没有服务器");
+
+    const enabled = setServerEnabled(FILE, "docs", true);
+    expect("enabled" in JSON.parse(enabled).mcpServers.docs).toBe(false);
+    const disabled = setServerEnabled(FILE, "fs", false);
+    expect(JSON.parse(disabled).mcpServers.fs.enabled).toBe(false);
+
+    // 没有文件时用两个空格
+    expect(setServer(null, "a", { command: "x" })).toBe(
+      '{\n  "mcpServers": {\n    "a": {\n      "command": "x"\n    }\n  }\n}\n',
+    );
+    // 制表符缩进
+    expect(setServer('{\n\t"mcpServers": {}\n}', "a", { command: "x" })).toContain(
+      '\n\t"mcpServers"',
+    );
+  });
+
+  it("nameConflict 忽略正在编辑的条目", () => {
+    const doc = parseMcpDocument(FILE);
+    expect(nameConflict(doc, "fs", "fs")).toBeNull();
+    expect(nameConflict(doc, "fs")).toContain("已有名为");
+    expect(nameConflict(doc, "my-tool", "fs")).toContain("已有名为");
+  });
+});
+
+describe("粘贴格式", () => {
+  it("Claude Desktop / Core 的 mcpServers", () => {
+    const r = parsePastedServers(
+      '{"mcpServers": {"fs": {"command": "npx", "args": ["x"]}, "d": {"url": "https://d"}}}',
+    );
+    expect(r.servers.map(([n]) => n)).toEqual(["fs", "d"]);
+    expect(r.notes).toEqual([]);
+  });
+
+  it("VS Code 的 servers 与 settings.json 的 mcp.servers：去掉 type 与不支持的字段，提示 input 变量", () => {
+    // VS Code 的输入变量 `${input:tok}`
+    const input = ["$", "{input:tok}"].join("");
+    const r = parsePastedServers(
+      JSON.stringify({
+        servers: {
+          gh: { type: "http", url: "https://g", headers: { A: input } },
+          fs: { type: "stdio", command: "x", envFile: ".env" },
+        },
+        inputs: [],
+      }),
+    );
+    expect(r.servers).toEqual([
+      ["gh", { url: "https://g", headers: { A: input } }],
+      ["fs", { command: "x" }],
+    ]);
+    expect(r.notes.join("\n")).toContain("envFile");
+    expect(r.notes.join("\n")).toContain("input:");
+    const s = parsePastedServers(
+      '{"mcp": {"servers": {"a": {"type": "sse", "url": "https://a"}}}}',
+    );
+    expect(s.servers[0]?.[1]).toEqual({ type: "sse", url: "https://a" });
+  });
+
+  it("单条：带名字、不带名字、缺外层花括号与末尾逗号", () => {
+    expect(parsePastedServers('{"fs": {"command": "npx"}}').servers).toEqual([
+      ["fs", { command: "npx" }],
+    ]);
+    expect(parsePastedServers('{"url": "https://x"}').servers).toEqual([
+      ["", { url: "https://x" }],
+    ]);
+    expect(parsePastedServers('"fs": {"command": "npx"},').servers).toEqual([
+      ["fs", { command: "npx" }],
+    ]);
+  });
+
+  it("不认识的格式报错", () => {
+    expect(() => parsePastedServers("")).toThrow("请粘贴");
+    expect(() => parsePastedServers("nope")).toThrow("JSON");
+    expect(() => parsePastedServers("[1]")).toThrow("JSON 对象");
+    expect(() => parsePastedServers('{"a": 1}')).toThrow("没有找到");
+    expect(() => parsePastedServers('{"mcpServers": {}}')).toThrow("没有服务器");
+    expect(() => parsePastedServers('{"mcpServers": {"a": 1}}')).toThrow("应为对象");
+  });
+});
+
+describe("parseMcpList", () => {
+  const out = (stdout: string, code = 0, stderr = "") => ({
+    code,
+    stdout,
+    stderr,
+    timedOut: false,
+  });
+
+  it("解析 JSON 输出（失败退出码 1 时也解析）", () => {
+    const r = parseMcpList(
+      out(
+        JSON.stringify({
+          servers: [
+            {
+              name: "fs",
+              scope: "global",
+              source: "/x/mcp.json",
+              enabled: true,
+              exposure: "codemode",
+              transport: "npx",
+              state: "connected",
+              tools: ["read", 1],
+            },
+            {
+              name: "d",
+              scope: "global",
+              source: "/x",
+              enabled: true,
+              exposure: "direct",
+              transport: "https://d",
+              state: "needs-auth",
+              tools: [],
+              error: "401",
+            },
+          ],
+          errors: ["/x: bad"],
+        }),
+        1,
+      ),
+    );
+    expect(r.servers[0]?.tools).toEqual(["read"]);
+    expect(r.servers[1]).toMatchObject({ state: "needs-auth", error: "401" });
+    expect(r.errors).toEqual(["/x: bad"]);
+  });
+
+  it("前面有其他输出时从第一个花括号开始；不是 JSON 时带上 stderr 报错；超时", () => {
+    expect(parseMcpList(out('warn\n{"servers": [], "errors": []}')).servers).toEqual([]);
+    expect(() => parseMcpList(out("", 1, "boom"))).toThrow("boom");
+    expect(() => parseMcpList(out("", 2))).toThrow("退出码 2");
+    expect(() => parseMcpList({ ...out(""), timedOut: true, code: null })).toThrow("超时");
+  });
+});
+
+describe("表单辅助", () => {
+  it("键值对", () => {
+    expect(parsePairs("A=1\n\n B = x=y ", "=", "环境变量")).toEqual({ A: "1", B: "x=y" });
+    expect(parsePairs("Authorization: Bearer x", ":", "请求头")).toEqual({
+      Authorization: "Bearer x",
+    });
+    expect(() => parsePairs("=1", "=", "环境变量")).toThrow("第 1 行");
+    expect(formatPairs({ A: "1" }, "=")).toBe("A=1");
+    expect(formatPairs({ A: "1" }, ":")).toBe("A: 1");
+    expect(formatPairs(undefined, ":")).toBe("");
+  });
+
+  it("命令行拆分与拼接互逆", () => {
+    expect(splitCommandLine(` npx -y "@a/b c" '' x`)).toEqual(["npx", "-y", "@a/b c", "", "x"]);
+    expect(() => splitCommandLine('a "b')).toThrow("引号");
+    const parts = ["C:\\Program Files\\node.exe", 'say "hi"', "", "-y"];
+    expect(splitCommandLine(joinCommandLine(parts))).toEqual(parts);
+  });
+});
