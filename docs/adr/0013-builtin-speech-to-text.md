@@ -34,6 +34,6 @@
 ## 影响
 
 - 约束 C1（对话模型只支持两种协议）不涉及语音识别：这里不引入任何第三方 SDK，只用 HTTPS 与 WebSocket 直接调用。
-- 新增 Rust 依赖 tokio-tungstenite（WebSocket，rustls，系统证书库校验）；HTTPS 沿用 reqwest。两者都跟随系统代理：WebSocket 用 hyper-util 的系统代理识别（与 reqwest 相同：环境变量、Windows“代理服务器”设置），经 HTTP 代理的 CONNECT 隧道连接；SOCKS 代理不支持，直连。
+- 新增 Rust 依赖 tokio-tungstenite（WebSocket，rustls，系统证书库校验）；HTTPS 沿用 reqwest。两者都直连百炼、不走任何代理（ADR 0015 修订：原先跟随系统代理，经代理时无法正常使用）。
 - 密钥随客户端分发，理论上可被逆向取出；风险由“免费额度用完即停”兜底（不会产生费用）。如需更换密钥，更新 Secret 后重新发版。
 - 联调：`PRIMUS_ASR_KEY=… cargo run -p primus-asr --example live -- 录音.wav [模型 ID…]` 逐款识别一段 16 kHz WAV。

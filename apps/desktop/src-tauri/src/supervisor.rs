@@ -4,7 +4,8 @@
 //! - 启动参数（第 5.3 节）：`node.exe <agent-core>/rpc-entry.js [--session <文件>] --approve|--no-approve
 //!   -e <agent-core>/extensions/primus-bundle.js`，工作目录为项目目录。
 //! - 环境变量（第 4.4 节）：`PRIMUS_CODING_AGENT_DIR`、`PRIMUS_CODING_AGENT_SESSION_DIR`、`TEMP`/`TMP` 指向
-//!   `data/users/<SID>`，`PRIMUS_SKIP_VERSION_CHECK=1`、`PRIMUS_TELEMETRY`、`PRIMUS_OFFLINE`，并清空 `NODE_OPTIONS`。
+//!   `data/users/<SID>`，`PRIMUS_SKIP_VERSION_CHECK=1`、`PRIMUS_TELEMETRY`、`PRIMUS_OFFLINE`，并清空 `NODE_OPTIONS`；
+//!   开着 Windows 系统代理时另设 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`（`platform::proxy`）。
 //!   其余环境变量（如 `PATH`）照常继承，工具命令需要它们。
 //! - 内置 Python（ADR 0010）：`resources/runtime/python` 存在时把它与用户包的 `bin/` 放到 `PATH` 最前，
 //!   `PIP_TARGET` / `PRIMUS_PYTHON_PACKAGES` 指向 `data/users/<SID>/python/site-packages`，`PIP_CACHE_DIR` 也在数据目录（约束 C2）。
@@ -288,6 +289,8 @@ pub(crate) fn build_command(
     if let Some(python) = layout.bundled_python() {
         apply_python_env(&mut cmd, python, paths, std::env::var_os("PATH").as_deref());
     }
+    // 有 Windows 系统代理时 Core 走代理，没有时直连（ADR 0015）
+    crate::platform::proxy::apply_core_proxy_env(&mut cmd);
 
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
