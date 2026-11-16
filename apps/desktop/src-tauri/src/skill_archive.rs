@@ -119,9 +119,7 @@ fn read_central_directory(data: &[u8]) -> Result<Vec<Entry>, ArchiveError> {
         return Err(invalid("不支持 ZIP64 格式"));
     }
     if usize::from(count) > MAX_ENTRIES {
-        return Err(ArchiveError::TooLarge(format!(
-            "条目超过 {MAX_ENTRIES} 个"
-        )));
+        return Err(ArchiveError::TooLarge(format!("条目超过 {MAX_ENTRIES} 个")));
     }
     let start = cd_offset as usize;
     let end = start
@@ -155,7 +153,9 @@ fn read_central_directory(data: &[u8]) -> Result<Vec<Entry>, ArchiveError> {
             return Err(invalid("不支持 ZIP64 格式"));
         }
         let name = std::str::from_utf8(name_bytes)
-            .map_err(|_| ArchiveError::UnsafeName(String::from_utf8_lossy(name_bytes).into_owned()))?
+            .map_err(|_| {
+                ArchiveError::UnsafeName(String::from_utf8_lossy(name_bytes).into_owned())
+            })?
             .to_owned();
         // 创建系统为 Unix（3）时外部属性高 16 位是文件类型：0o120000 为符号链接
         let unix_mode = if made_by >> 8 == 3 { external >> 16 } else { 0 };
@@ -180,10 +180,14 @@ fn read_central_directory(data: &[u8]) -> Result<Vec<Entry>, ArchiveError> {
 /// Windows 保留的设备名（不区分大小写，带扩展名也算）。
 fn is_reserved_windows_name(part: &str) -> bool {
     let stem = part.split('.').next().unwrap_or("").to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
-        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.len() == 4
-            && stem[3..].chars().all(|c| c.is_ascii_digit() || "¹²³".contains(c)))
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+        && stem.len() == 4
+        && stem[3..]
+            .chars()
+            .all(|c| c.is_ascii_digit() || "¹²³".contains(c)))
 }
 
 /// 校验条目名并拆成路径段；目录条目末尾的 `/` 去掉。不安全时返回 None。
@@ -194,9 +198,9 @@ pub(crate) fn safe_parts(name: &str) -> Option<Vec<&str>> {
     }
     let mut parts = Vec::new();
     for part in trimmed.split('/') {
-        let bad_char = part.chars().any(|c| {
-            c.is_control() || matches!(c, '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*')
-        });
+        let bad_char = part
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*'));
         if part.is_empty()
             || part == "."
             || part == ".."
@@ -364,10 +368,8 @@ pub(crate) mod tests {
             let mut crc = flate2::Crc::new();
             crc.update(body);
             let stored = if deflate {
-                let mut e = flate2::write::DeflateEncoder::new(
-                    Vec::new(),
-                    flate2::Compression::default(),
-                );
+                let mut e =
+                    flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
                 e.write_all(body).unwrap();
                 e.finish().unwrap()
             } else {
@@ -439,7 +441,13 @@ pub(crate) mod tests {
         let zip = ZipBuilder::new()
             .entry("repo-main/", b"", false, 0o040_755, None)
             .file("repo-main/SKILL.md", b"---\nname: x\n---\n")
-            .entry("repo-main/scripts/run.ps1", b"Write-Host hi", false, 0, None)
+            .entry(
+                "repo-main/scripts/run.ps1",
+                b"Write-Host hi",
+                false,
+                0,
+                None,
+            )
             .finish();
         let dir = temp("ok");
         let out = extract_zip(&zip, &dir).unwrap();
@@ -483,7 +491,10 @@ pub(crate) mod tests {
                 matches!(extract_zip(&zip, &dir), Err(ArchiveError::UnsafeName(_))),
                 "{name}"
             );
-            assert!(!dir.join("ok.md").exists(), "{name}：不合格时一个文件也不写");
+            assert!(
+                !dir.join("ok.md").exists(),
+                "{name}：不合格时一个文件也不写"
+            );
             std::fs::remove_dir_all(dir).unwrap();
         }
         assert!(safe_parts("a/b.md").is_some());
@@ -512,7 +523,13 @@ pub(crate) mod tests {
             .finish();
         let dir = temp("link");
         let out = extract_zip(&zip, &dir).unwrap();
-        assert_eq!(out, Extracted { files: 1, skipped_links: 1 });
+        assert_eq!(
+            out,
+            Extracted {
+                files: 1,
+                skipped_links: 1
+            }
+        );
         assert!(std::fs::symlink_metadata(dir.join("s/link")).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -545,7 +562,13 @@ pub(crate) mod tests {
         // 中央目录声明超过单文件上限：解压前拒绝
         let dir = temp("big");
         let zip = ZipBuilder::new()
-            .entry("a.md", b"x", false, 0, Some((0, (MAX_FILE_BYTES + 1) as u32)))
+            .entry(
+                "a.md",
+                b"x",
+                false,
+                0,
+                Some((0, (MAX_FILE_BYTES + 1) as u32)),
+            )
             .finish();
         assert!(matches!(
             extract_zip(&zip, &dir),

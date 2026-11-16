@@ -148,7 +148,13 @@ fn discover(root: &Path, mode: Mode) -> Vec<PathBuf> {
     out
 }
 
-fn walk(dir: &Path, root: &Path, mode: Mode, out: &mut Vec<PathBuf>, visited: &mut HashSet<PathBuf>) {
+fn walk(
+    dir: &Path,
+    root: &Path,
+    mode: Mode,
+    out: &mut Vec<PathBuf>,
+    visited: &mut HashSet<PathBuf>,
+) {
     if let Ok(real) = dir.canonicalize()
         && !visited.insert(real)
     {
@@ -331,10 +337,20 @@ pub(crate) fn list(
     settings: &Map<String, Value>,
 ) -> Vec<SkillInfo> {
     let user_root = user_skills_dir(core_dir);
-    let mut roots = vec![(user_root.clone(), Mode::Core, SkillScope::User, core_dir.to_path_buf())];
+    let mut roots = vec![(
+        user_root.clone(),
+        Mode::Core,
+        SkillScope::User,
+        core_dir.to_path_buf(),
+    )];
     if let Some(home) = home {
         let agents = home.join(".agents");
-        roots.push((agents.join("skills"), Mode::Agents, SkillScope::Agents, agents));
+        roots.push((
+            agents.join("skills"),
+            Mode::Agents,
+            SkillScope::Agents,
+            agents,
+        ));
     }
     let mut out = Vec::new();
     for (root, mode, scope, base) in roots {
@@ -346,7 +362,11 @@ pub(crate) fn list(
                 root.clone()
             };
             // 删除对象：用户目录下的直接子项（技能目录或单文件技能）
-            let top = if is_skill_md { dir.clone() } else { file.clone() };
+            let top = if is_skill_md {
+                dir.clone()
+            } else {
+                file.clone()
+            };
             let deletable = scope == SkillScope::User && top.parent() == Some(user_root.as_path());
             // frontmatter 没写 name 时 Core 用技能文件所在目录的名字
             let dir_name = file
@@ -649,10 +669,7 @@ fn finish_stage(
             truncated = true;
             break;
         }
-        let rel = dir
-            .strip_prefix(root)
-            .map(posix)
-            .unwrap_or_default();
+        let rel = dir.strip_prefix(root).map(posix).unwrap_or_default();
         let dir_name = if rel.is_empty() {
             label.to_owned()
         } else {
@@ -699,7 +716,9 @@ pub(crate) fn install(
     overwrite: bool,
 ) -> Result<PathBuf, SkillError> {
     if !valid_dir_name(name) {
-        return Err(invalid("技能名称只能包含字母、数字、-、_ 和 .，且不超过 64 个字符"));
+        return Err(invalid(
+            "技能名称只能包含字母、数字、-、_ 和 .，且不超过 64 个字符",
+        ));
     }
     let stage = stage_dir(tmp_dir, stage_id)?;
     let base = stage.join(STAGE_ROOT);
@@ -903,13 +922,21 @@ mod tests {
         let file = core.join("skills/review/SKILL.md");
         let mut s = Map::new();
         assert!(apply_enabled(&mut s, &file, &core, false).unwrap());
-        assert_eq!(s["skills"], serde_json::json!(["-/data/core/skills/review/SKILL.md"]));
+        assert_eq!(
+            s["skills"],
+            serde_json::json!(["-/data/core/skills/review/SKILL.md"])
+        );
         assert!(is_disabled(&s, &file, &core));
         assert!(!apply_enabled(&mut s, &file, &core, false).unwrap());
         // 其他写法（相对路径、目录）也认，启用时一并删掉；其他条目保留
         s.insert(
             "skills".into(),
-            serde_json::json!(["-skills/review", "./extra", "-./skills/review/SKILL.md", "!x/*"]),
+            serde_json::json!([
+                "-skills/review",
+                "./extra",
+                "-./skills/review/SKILL.md",
+                "!x/*"
+            ]),
         );
         assert!(is_disabled(&s, &file, &core));
         assert!(apply_enabled(&mut s, &file, &core, true).unwrap());
@@ -1025,14 +1052,40 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&target, core.join("skills/linked")).unwrap();
         let file = |p: &Path| p.to_string_lossy().into_owned();
-        assert!(delete(&core, Some(&home), &file(&home.join(".agents/skills/b/SKILL.md"))).is_err());
-        assert!(delete(&core, Some(&home), &file(&core.join("skills/g/inner/SKILL.md"))).is_err());
-        assert!(delete(&core, Some(&home), &file(&core.join("skills/../x/SKILL.md"))).is_err());
+        assert!(
+            delete(
+                &core,
+                Some(&home),
+                &file(&home.join(".agents/skills/b/SKILL.md"))
+            )
+            .is_err()
+        );
+        assert!(
+            delete(
+                &core,
+                Some(&home),
+                &file(&core.join("skills/g/inner/SKILL.md"))
+            )
+            .is_err()
+        );
+        assert!(
+            delete(
+                &core,
+                Some(&home),
+                &file(&core.join("skills/../x/SKILL.md"))
+            )
+            .is_err()
+        );
         delete(&core, Some(&home), &file(&core.join("skills/a/SKILL.md"))).unwrap();
         assert!(!core.join("skills/a").exists());
         #[cfg(unix)]
         {
-            delete(&core, Some(&home), &file(&core.join("skills/linked/SKILL.md"))).unwrap();
+            delete(
+                &core,
+                Some(&home),
+                &file(&core.join("skills/linked/SKILL.md")),
+            )
+            .unwrap();
             assert!(target.join("SKILL.md").is_file(), "只删链接，不动目标");
         }
         std::fs::remove_dir_all(root).unwrap();
@@ -1051,11 +1104,21 @@ mod tests {
         );
         assert_eq!(
             p("https://github.com/o/r/tree/main/skills/pdf"),
-            Some(("o".into(), "r".into(), Some("main".into()), Some("skills/pdf".into())))
+            Some((
+                "o".into(),
+                "r".into(),
+                Some("main".into()),
+                Some("skills/pdf".into())
+            ))
         );
         assert_eq!(
             p("https://github.com/o/r/blob/v1/skills/pdf/SKILL.md?plain=1"),
-            Some(("o".into(), "r".into(), Some("v1".into()), Some("skills/pdf".into())))
+            Some((
+                "o".into(),
+                "r".into(),
+                Some("v1".into()),
+                Some("skills/pdf".into())
+            ))
         );
         for bad in [
             "http://github.com/o/r",
@@ -1083,7 +1146,17 @@ mod tests {
         for ok in ["pdf", "my-skill_2", "a.b"] {
             assert!(valid_dir_name(ok), "{ok}");
         }
-        for bad in ["", ".hidden", "a/b", "a\\b", "..", "con", "名字", "a b", &"x".repeat(65)] {
+        for bad in [
+            "",
+            ".hidden",
+            "a/b",
+            "a\\b",
+            "..",
+            "con",
+            "名字",
+            "a b",
+            &"x".repeat(65),
+        ] {
             assert!(!valid_dir_name(bad), "{bad}");
         }
     }

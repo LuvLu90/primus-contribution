@@ -1246,7 +1246,10 @@ pub(crate) fn skill_discard(
 
 /// 删除用户目录下的技能（链接只删链接本身）。
 #[tauri::command(async)]
-pub(crate) fn skill_delete(paths: State<'_, DataPaths>, file: String) -> Result<(), CapabilityError> {
+pub(crate) fn skill_delete(
+    paths: State<'_, DataPaths>,
+    file: String,
+) -> Result<(), CapabilityError> {
     Ok(crate::skills::delete(
         &paths.core_dir(),
         crate::skills::home_dir().as_deref(),
@@ -1264,7 +1267,8 @@ pub(crate) fn skill_set_enabled(
     let core = paths.core_dir();
     let (path, base, _, _) =
         crate::skills::locate(&core, crate::skills::home_dir().as_deref(), &file)?;
-    let mut settings = crate::core_config::read_settings_strict(&core).map_err(|e| e.to_string())?;
+    let mut settings =
+        crate::core_config::read_settings_strict(&core).map_err(|e| e.to_string())?;
     if crate::skills::apply_enabled(&mut settings, &path, &base, enabled)? {
         crate::core_config::write_settings(&core, &settings).map_err(|e| e.to_string())?;
     }
@@ -1286,7 +1290,11 @@ pub(crate) fn mcp_config_write(
     text: String,
     version: String,
 ) -> Result<String, CapabilityError> {
-    Ok(crate::mcp_config::write(&paths.core_dir(), &text, &version)?)
+    Ok(crate::mcp_config::write(
+        &paths.core_dir(),
+        &text,
+        &version,
+    )?)
 }
 
 /// `mcp list --json` 的时限：逐个连接已启用的服务器（连接测试）。

@@ -951,10 +951,7 @@ impl Supervisor {
         if !self.layout.cli.is_file() {
             return Err(SupervisorError::MissingFile(self.layout.cli.clone()));
         }
-        run_with_timeout(
-            build_cli_command(&self.layout, &self.paths, args),
-            timeout,
-        )
+        run_with_timeout(build_cli_command(&self.layout, &self.paths, args), timeout)
     }
 
     fn launch(&self, key: &str, opts: &LaunchOptions) -> Result<CoreProcess, SupervisorError> {

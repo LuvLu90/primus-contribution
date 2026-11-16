@@ -64,7 +64,12 @@ pub(crate) fn config_path(core_dir: &Path) -> PathBuf {
 
 fn version_of(bytes: Option<&[u8]>) -> String {
     bytes
-        .map(|b| Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect())
+        .map(|b| {
+            Sha256::digest(b)
+                .iter()
+                .map(|x| format!("{x:02x}"))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
