@@ -142,8 +142,7 @@ export function createTauriPlatform(): Platform {
     previewServe: (path) => call("previewServe", { path }),
     skillsList: () => call("skillsList"),
     skillStage: (source) => call("skillStage", { source }),
-    skillInstall: (stageId, path, name, overwrite) =>
-      call("skillInstall", { stageId, path, name, overwrite }),
+    skillInstall: (stageId, name, overwrite) => call("skillInstall", { stageId, name, overwrite }),
     skillDiscard: (stageId) => call("skillDiscard", { stageId }),
     skillDelete: (file) => call("skillDelete", { file }),
     skillSetEnabled: (file, enabled) => call("skillSetEnabled", { file, enabled }),

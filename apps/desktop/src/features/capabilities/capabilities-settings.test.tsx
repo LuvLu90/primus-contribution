@@ -46,7 +46,7 @@ describe("设置·能力中心·技能", () => {
     );
   });
 
-  it("GitHub 链接安装：缺 description 的技能不能选，同名时确认替换", async () => {
+  it("GitHub 链接安装：整个仓库装入，列出全部技能并标出 Core 不加载的；同名时确认替换", async () => {
     const platform = setup();
     const install = vi.spyOn(platform, "skillInstall");
     fireEvent.change(screen.getByLabelText(ts.githubLabel), {
@@ -54,21 +54,23 @@ describe("设置·能力中心·技能", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: ts.githubRead }));
     const dialog = await screen.findByRole("dialog", { name: ts.dialog.title });
-    const radios = within(dialog).getAllByRole("radio") as HTMLInputElement[];
-    expect(radios[0]?.checked).toBe(true);
-    expect(radios[1]?.disabled).toBe(true);
-    expect(dialog.textContent).toContain("缺少 description");
+    expect(within(dialog).queryByRole("radio")).toBeNull();
+    const items = within(dialog).getAllByRole("listitem");
+    expect(items.map((li) => li.textContent?.includes("web-search") ?? false)).toEqual([
+      true,
+      false,
+    ]);
+    expect(items[1]?.textContent).toContain(ts.dialog.blocked);
+    expect(items[1]?.textContent).toContain("缺少 description");
+    expect(dialog.textContent).toContain("1 个会被 Core 加载");
+    const input = within(dialog).getByLabelText(new RegExp(ts.dialog.dirName)) as HTMLInputElement;
+    expect(input.value).toBe("skills");
+    fireEvent.change(input, { target: { value: "acme" } });
     fireEvent.click(within(dialog).getByRole("button", { name: ts.dialog.install }));
-    await waitFor(() =>
-      expect(install).toHaveBeenCalledWith(
-        expect.any(String),
-        "skills/web-search",
-        "web-search",
-        false,
-      ),
-    );
-    expect(await screen.findByText(`已安装“web-search”`)).toBeTruthy();
-    await row(ts.installedTitle, "web-search");
+    await waitFor(() => expect(install).toHaveBeenCalledWith(expect.any(String), "acme", false));
+    expect(await screen.findByText("已安装“acme”（1 个技能）")).toBeTruthy();
+    const ws = await row(ts.installedTitle, "web-search");
+    expect(ws.textContent).toContain("来自 acme");
 
     // 同名：先以 exists 拒绝，确认后带 overwrite 重试
     fireEvent.change(screen.getByLabelText(ts.githubLabel), {
@@ -76,12 +78,38 @@ describe("设置·能力中心·技能", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: ts.githubRead }));
     const second = await screen.findByRole("dialog", { name: ts.dialog.title });
+    expect(
+      (within(second).getByLabelText(new RegExp(ts.dialog.dirName)) as HTMLInputElement).value,
+    ).toBe("pdf");
     fireEvent.click(within(second).getByRole("button", { name: ts.dialog.install }));
     const confirm = await screen.findByRole("dialog", { name: "替换已有的技能“pdf”？" });
     fireEvent.click(within(confirm).getByRole("button", { name: ts.overwrite.confirm }));
-    await waitFor(() =>
-      expect(install).toHaveBeenLastCalledWith(expect.any(String), "", "pdf", true),
-    );
+    await waitFor(() => expect(install).toHaveBeenLastCalledWith(expect.any(String), "pdf", true));
+  });
+
+  it("来源中没有 Core 能加载的技能时不能安装；与已安装的技能同名时提示", async () => {
+    setup({
+      skillStage: async () => ({
+        stageId: "s",
+        label: "repo",
+        candidates: [
+          { path: "a", dirName: "a", content: "---\nname: a\n---\n" },
+          { path: "b", dirName: "b", content: "---\nname: pdf\ndescription: d\n---\n" },
+        ],
+        skippedLinks: 0,
+        truncated: false,
+      }),
+    });
+    fireEvent.change(screen.getByLabelText(ts.githubLabel), {
+      target: { value: "https://github.com/acme/skills" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: ts.githubRead }));
+    const dialog = await screen.findByRole("dialog", { name: ts.dialog.title });
+    expect(dialog.textContent).toContain("与已安装的技能“pdf”同名");
+    const input = within(dialog).getByLabelText(new RegExp(ts.dialog.dirName));
+    // 装成 pdf 会替换掉已安装的 pdf：不再提示同名
+    fireEvent.change(input, { target: { value: "pdf" } });
+    expect(dialog.textContent).not.toContain("同名");
   });
 
   it("取消安装时放弃暂存；目录名无效时不能安装", async () => {

@@ -49,6 +49,7 @@ const SEED_SKILLS: SkillInfo[] = [
     enabled: true,
     deletable: true,
     link: false,
+    package: null,
   },
   {
     dirName: "release-notes",
@@ -59,6 +60,7 @@ const SEED_SKILLS: SkillInfo[] = [
     enabled: true,
     deletable: false,
     link: false,
+    package: null,
   },
 ];
 
@@ -123,7 +125,10 @@ export function createMockCapabilities(options: MockCapabilitiesOptions = {}): C
     return skill;
   };
 
-  const stageCandidates = (source: SkillSource): SkillCandidate[] => {
+  /** 暂存结果：来源名与其中的技能 */
+  const stageCandidates = (
+    source: SkillSource,
+  ): { label: string; candidates: SkillCandidate[] } => {
     if (source.kind === "github") {
       const m = GITHUB.exec(source.url.trim());
       if (!m) throw new PlatformError("请输入 GitHub 仓库链接，例如 https://github.com/owner/repo");
@@ -131,70 +136,95 @@ export function createMockCapabilities(options: MockCapabilitiesOptions = {}): C
       const sub = m[4]?.replace(/^\/+|\/+$/g, "");
       if (sub) {
         const dir = lastSegment(m[3] === "blob" ? sub.replace(/\/[^/]*$/, "") : sub);
-        return [{ path: "", dirName: dir, content: skillMd(dir, `来自 ${repo} 的示例技能。`) }];
+        return {
+          label: dir,
+          candidates: [
+            { path: "", dirName: dir, content: skillMd(dir, `来自 ${repo} 的示例技能。`) },
+          ],
+        };
       }
-      // 仓库根目录：示例仓库里有两个技能，其中一个缺少 description（界面应阻止安装）
-      return [
-        {
-          path: "skills/web-search",
-          dirName: "web-search",
-          content: skillMd("web-search", "搜索网页并总结结果。"),
-        },
-        {
-          path: "skills/broken",
-          dirName: "broken",
-          content: "---\nname: broken\n---\n\n没有 description。\n",
-        },
-      ];
+      // 仓库根目录：示例仓库里有两个技能，其中一个缺少 description（Core 不会加载它，界面标出）
+      return {
+        label: repo,
+        candidates: [
+          {
+            path: "skills/web-search",
+            dirName: "web-search",
+            content: skillMd("web-search", "搜索网页并总结结果。"),
+          },
+          {
+            path: "skills/broken",
+            dirName: "broken",
+            content: "---\nname: broken\n---\n\n没有 description。\n",
+          },
+        ],
+      };
     }
     if (source.kind === "zip") {
       if (!/\.zip$/i.test(source.path)) throw new PlatformError("请选择 .zip 文件");
       const dir = lastSegment(source.path.replace(/\.zip$/i, ""));
-      return [{ path: "", dirName: dir, content: skillMd(dir, "从压缩包安装的示例技能。") }];
+      return {
+        label: dir,
+        candidates: [{ path: "", dirName: dir, content: skillMd(dir, "从压缩包安装的示例技能。") }],
+      };
     }
     const dir = lastSegment(source.path);
-    return [{ path: "", dirName: dir, content: skillMd(dir, "从本地文件夹安装的示例技能。") }];
+    return {
+      label: dir,
+      candidates: [
+        { path: "", dirName: dir, content: skillMd(dir, "从本地文件夹安装的示例技能。") },
+      ],
+    };
   };
 
   return {
     skillsList: async () => structuredClone(skills),
 
     skillStage: async (source): Promise<SkillStage> => {
-      const candidates = stageCandidates(source);
+      const { label, candidates } = stageCandidates(source);
       const stageId = `stage-${++stageSeq}`;
       stages.set(stageId, candidates);
       return {
         stageId,
+        label,
         candidates: structuredClone(candidates),
         skippedLinks: 0,
         truncated: false,
       };
     },
 
-    skillInstall: async (stageId, path, name, overwrite) => {
+    // 与薄壳一样整个来源装进 skills/<name>，其中的技能全部列出
+    skillInstall: async (stageId, name, overwrite) => {
       const candidates = stages.get(stageId);
       if (!candidates) throw new PlatformError("暂存已失效，请重新选择来源");
-      const candidate = candidates.find((c) => c.path === path);
-      if (!candidate) throw new PlatformError("暂存中没有这个技能");
       if (!validDir(name)) throw new PlatformError("技能目录名无效");
-      const dir = `${USER_SKILLS}\\${name}`;
-      const existing = skills.findIndex((s) => s.dir.toLowerCase() === dir.toLowerCase());
-      if (existing >= 0 && !overwrite)
+      const top = `${USER_SKILLS}\\${name}`;
+      const inTop = (s: SkillInfo) =>
+        s.scope === "user" &&
+        (s.dir.toLowerCase() === top.toLowerCase() ||
+          s.dir.toLowerCase().startsWith(`${top.toLowerCase()}\\`));
+      if (skills.some(inTop) && !overwrite)
         throw new PlatformError(`已有同名技能“${name}”`, SKILL_EXISTS);
-      const info: SkillInfo = {
-        dirName: name,
-        file: `${dir}\\SKILL.md`,
-        dir,
-        scope: "user",
-        content: candidate.content,
-        enabled: existing >= 0 ? (skills[existing]?.enabled ?? true) : true,
-        deletable: true,
-        link: false,
-      };
-      if (existing >= 0) skills.splice(existing, 1, info);
-      else skills.push(info);
+      for (let i = skills.length - 1; i >= 0; i--) {
+        const s = skills[i];
+        if (s && inTop(s)) skills.splice(i, 1);
+      }
+      for (const c of candidates) {
+        const dir = c.path ? `${top}\\${c.path.replace(/\//g, "\\")}` : top;
+        skills.push({
+          dirName: c.path ? c.dirName : name,
+          file: `${dir}\\SKILL.md`,
+          dir,
+          scope: "user",
+          content: c.content,
+          enabled: true,
+          deletable: true,
+          link: false,
+          package: c.path ? name : null,
+        });
+      }
       stages.delete(stageId);
-      return info.file;
+      return top;
     },
 
     skillDiscard: async (stageId) => {

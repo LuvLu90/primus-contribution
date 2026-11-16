@@ -26,6 +26,7 @@ mod session_index;
 mod sessions;
 mod shell_detect;
 mod skill_archive;
+mod skill_discovery;
 mod skills;
 mod supervisor;
 mod tray;

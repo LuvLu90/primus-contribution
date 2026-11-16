@@ -32,9 +32,10 @@ import {
   primaryButtonClass,
 } from "./ui";
 
-// 能力中心·技能（ADR 0017）：安装（GitHub 链接 / zip / 本地文件夹 → 暂存 → 选一个技能 → 安装，同名时确认替换）、
-// 列出 Core 用户目录 `skills/` 与 `~/.agents/skills` 中的技能、启停（写 Core 设置）与删除（只限用户目录）。
-// frontmatter 的校验与 Core 一致：缺 description 的技能 Core 不加载，阻止安装；名称问题只提示。
+// 能力中心·技能（ADR 0017）：安装（GitHub 链接 / zip / 本地文件夹 → 暂存，按 Core 的规则列出其中的全部技能 →
+// 整个来源装进 `skills/<目录名>`，同名时确认替换）、列出 Core 用户目录 `skills/` 与 `~/.agents/skills` 中的技能、
+// 启停（写 Core 设置）与删除（只限用户目录）。frontmatter 的解析与校验与 Core 一致：缺 description 的技能 Core
+// 不加载，标出来；名称问题只提示。
 
 const t = strings.settings.capabilities;
 const ts = t.skills;
@@ -221,10 +222,11 @@ export function SkillsSettings() {
       {stage && (
         <InstallDialog
           stage={stage}
+          installed={skills ?? []}
           onClose={(installed) => {
             setStage(null);
             if (installed) {
-              setNotice(fill(td.installed, { name: installed }));
+              setNotice(fill(td.installed, installed));
               setGithub("");
             }
             void reload();
@@ -244,6 +246,9 @@ export function SkillsSettings() {
             {pendingDelete?.link
               ? ts.deleteLinkDescription
               : fill(ts.deleteDescription, { dir: pendingDelete?.dir ?? "" })}
+            {pendingDelete?.package
+              ? ` ${fill(ts.deletePackageNote, { name: pendingDelete.package })}`
+              : null}
           </GlassDialogDescription>
           <div className="mt-5 flex justify-end gap-2 text-sm">
             <GlassDialogClose asChild>
@@ -297,6 +302,13 @@ function SkillRow({
           ) : (
             <Badge>{ts.scopeUser}</Badge>
           )}
+          {skill.package && (
+            <Tooltip content={fill(ts.packageHint, { name: skill.package })}>
+              <span>
+                <Badge>{fill(ts.package, { name: skill.package })}</Badge>
+              </span>
+            </Tooltip>
+          )}
           {skill.link && <Badge>{ts.link}</Badge>}
         </p>
         <p className="mt-0.5 line-clamp-2 text-xs text-muted">
@@ -331,49 +343,57 @@ function SkillRow({
   );
 }
 
-/** 暂存后的选择与安装：选一个技能、确认目录名，同名时再确认替换。关闭时放弃暂存（安装成功后薄壳已删除暂存） */
+/** 暂存后的确认与安装：列出来源中的全部技能（Core 是否加载、告警），确认目录名，同名时再确认替换。
+ * 关闭时放弃暂存（安装成功后薄壳已删除暂存） */
 function InstallDialog({
   stage,
+  installed,
   onClose,
 }: {
   stage: SkillStage;
-  onClose: (installed: string | null) => void;
+  /** 已安装的技能：提示同名（Core 只加载其中一个） */
+  installed: SkillInfo[];
+  onClose: (installed: { name: string; n: number } | null) => void;
 }) {
   const candidates = stage.candidates.map((c) => ({
     ...c,
     check: checkSkill(c.content, c.dirName),
   }));
-  const firstOk = candidates.find((c) => c.check.errors.length === 0);
-  const [selected, setSelected] = useState<string | null>(firstOk?.path ?? null);
-  const [dirNames, setDirNames] = useState<Record<string, string>>(() =>
-    Object.fromEntries(
-      candidates.map((c) => [c.path, suggestDirName(c.check.name) || suggestDirName(c.dirName)]),
-    ),
+  const loadable = candidates.filter((c) => c.check.errors.length === 0);
+  const rootSkill = candidates.length === 1 && candidates[0]?.path === "";
+  const [dirName, setDirName] = useState(
+    () =>
+      suggestDirName(rootSkill ? (candidates[0]?.check.name ?? "") : stage.label) ||
+      suggestDirName(stage.label),
   );
   const [installing, setInstalling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [overwrite, setOverwrite] = useState<string | null>(null);
-  const groupName = useId();
-
-  const current = candidates.find((c) => c.path === selected) ?? null;
-  const dirName = current ? (dirNames[current.path] ?? "") : "";
   const dirValid = validDirName(dirName);
+  // 同名提示：不算会被这次安装替换掉的同名文件夹里的技能
+  const replacedDir = (s: SkillInfo) =>
+    s.scope === "user" && (s.package ?? s.dirName).toLowerCase() === dirName.toLowerCase();
+  const installedNames = new Map(
+    installed
+      .filter((s) => s.content !== null && !replacedDir(s))
+      .map((s) => [checkSkill(s.content ?? "", s.dirName).name, s] as const),
+  );
 
-  const close = (installed: string | null) => {
-    if (installed === null)
+  const close = (done: { name: string; n: number } | null) => {
+    if (done === null)
       void getPlatform()
         .then((p) => p.skillDiscard(stage.stageId))
         .catch(() => {});
-    onClose(installed);
+    onClose(done);
   };
 
   const install = async (force: boolean) => {
-    if (!current || !dirValid) return;
+    if (!dirValid || loadable.length === 0) return;
     setInstalling(true);
     setError(null);
     try {
-      await (await getPlatform()).skillInstall(stage.stageId, current.path, dirName, force);
-      onClose(current.check.name);
+      await (await getPlatform()).skillInstall(stage.stageId, dirName, force);
+      onClose({ name: dirName, n: loadable.length });
     } catch (e) {
       if (e instanceof PlatformError && e.code === SKILL_EXISTS) setOverwrite(dirName);
       else setError(errorText(e, td.installFailed));
@@ -389,6 +409,7 @@ function InstallDialog({
           <GlassDialogTitle>{td.title}</GlassDialogTitle>
           <GlassDialogDescription>
             {td.description} {fill(td.found, { n: stage.candidates.length })}
+            {fill(td.willLoad, { n: loadable.length })}
           </GlassDialogDescription>
           {(stage.truncated || stage.skippedLinks > 0) && (
             <p className="mt-2 text-xs text-muted">
@@ -402,60 +423,49 @@ function InstallDialog({
           >
             {candidates.map((c) => {
               const blocked = c.check.errors.length > 0;
+              const same = installedNames.get(c.check.name);
               return (
-                <li key={c.path}>
-                  <label
-                    className={cn(
-                      "flex cursor-pointer gap-3 rounded-xl px-3 py-2 ring-1 ring-transparent hover:bg-hover",
-                      selected === c.path && "ring-border",
-                      blocked && "cursor-not-allowed opacity-70",
-                    )}
-                  >
-                    <input
-                      type="radio"
-                      name={groupName}
-                      className="mt-1"
-                      checked={selected === c.path}
-                      disabled={blocked || installing}
-                      onChange={() => setSelected(c.path)}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium">{c.check.name}</span>
-                      <span className="block truncate text-xs text-muted">{c.path || td.root}</span>
-                      {c.check.description && (
-                        <span className="mt-0.5 line-clamp-2 block text-xs text-muted">
-                          {c.check.description}
-                        </span>
-                      )}
-                      {blocked && (
-                        <span className="mt-0.5 block text-xs text-danger">
-                          {td.blocked}：{c.check.errors.join("；")}
-                        </span>
-                      )}
-                      {c.check.warnings.map((w) => (
-                        <span key={w} className="mt-0.5 block text-xs text-muted">
-                          {w}
-                        </span>
-                      ))}
+                <li key={c.path} className="rounded-xl px-3 py-2 ring-1 ring-border">
+                  <span className="block truncate text-sm font-medium">{c.check.name}</span>
+                  <span className="block truncate text-xs text-muted">{c.path || td.root}</span>
+                  {c.check.description && (
+                    <span className="mt-0.5 line-clamp-2 block text-xs text-muted">
+                      {c.check.description}
                     </span>
-                  </label>
+                  )}
+                  {blocked && (
+                    <span className="mt-0.5 block text-xs text-danger">
+                      {td.blocked}：{c.check.errors.join("；")}
+                    </span>
+                  )}
+                  {[
+                    ...c.check.warnings,
+                    ...(same && !blocked ? [fill(td.sameName, { name: c.check.name })] : []),
+                  ].map((w) => (
+                    <span key={w} className="mt-0.5 block text-xs text-muted">
+                      {w}
+                    </span>
+                  ))}
                 </li>
               );
             })}
           </ul>
-          {current && (
-            <label className="mt-3 flex flex-col gap-1 text-sm">
-              <span className="text-xs text-muted">{td.dirName}</span>
-              <input
-                value={dirName}
-                aria-invalid={!dirValid}
-                disabled={installing}
-                spellCheck={false}
-                onChange={(e) => setDirNames((d) => ({ ...d, [current.path]: e.target.value }))}
-                className={inputClass}
-              />
-              {!dirValid && <span className="text-xs text-danger">{td.dirNameInvalid}</span>}
-            </label>
+          <label className="mt-3 flex flex-col gap-1 text-sm">
+            <span className="text-xs text-muted">{td.dirName}</span>
+            <input
+              value={dirName}
+              aria-invalid={!dirValid}
+              disabled={installing}
+              spellCheck={false}
+              onChange={(e) => setDirName(e.target.value)}
+              className={inputClass}
+            />
+            {!dirValid && <span className="text-xs text-danger">{td.dirNameInvalid}</span>}
+          </label>
+          {loadable.length === 0 && (
+            <p role="alert" className="mt-3 text-sm text-danger">
+              {td.nothingLoadable}
+            </p>
           )}
           {error && (
             <p role="alert" className="mt-3 whitespace-pre-wrap break-words text-sm text-danger">
@@ -473,7 +483,7 @@ function InstallDialog({
             </button>
             <button
               type="button"
-              disabled={!current || !dirValid || installing}
+              disabled={!dirValid || loadable.length === 0 || installing}
               onClick={() => void install(false)}
               className={primaryButtonClass}
             >

@@ -371,16 +371,16 @@ export interface Platform {
   previewServe(path: string): Promise<string>;
   /** 能力中心·技能（ADR 0017）：Core 用户目录 `skills/` 与 `~/.agents/skills` 中的技能 */
   skillsList(): Promise<SkillInfo[]>;
-  /** 把来源（GitHub 链接 / 本地 zip / 本地文件夹）解到暂存目录，列出其中的技能 */
+  /** 把来源（GitHub 链接 / 本地 zip / 本地文件夹）解到暂存目录，按 Core 加载 `skills/<名称>/` 的规则列出其中的全部技能 */
   skillStage(source: SkillSource): Promise<SkillStage>;
   /**
-   * 把暂存中的候选技能装进 `skills/<name>`；已有同名技能时以 code `exists` 拒绝，用户确认后带 `overwrite` 重试。
-   * 返回技能文件路径；成功后这次暂存删除
+   * 把暂存的整个来源装进 `skills/<name>`，其中的技能 Core 全部按自己的规则加载；已有同名目录时以 code `exists`
+   * 拒绝，用户确认后带 `overwrite` 重试。返回安装后的目录；成功后这次暂存删除
    */
-  skillInstall(stageId: string, path: string, name: string, overwrite: boolean): Promise<string>;
+  skillInstall(stageId: string, name: string, overwrite: boolean): Promise<string>;
   /** 放弃一次暂存 */
   skillDiscard(stageId: string): Promise<void>;
-  /** 删除能力中心安装的技能（链接只删链接本身） */
+  /** 删除 Core 用户目录 `skills/` 里的技能（链接只删链接本身；所在顶层目录里的最后一个技能删掉时顶层目录一并删除） */
   skillDelete(file: string): Promise<void>;
   /** 启用或停用技能（写 Core 设置，新会话生效） */
   skillSetEnabled(file: string, enabled: boolean): Promise<void>;
@@ -429,9 +429,12 @@ export interface SkillInfo {
   /** 技能文件开头（最多 64 KiB），用于解析 frontmatter；读不了时为 null */
   content: string | null;
   enabled: boolean;
+  /** `skills/` 里的技能，且路径中间没有经过链接 */
   deletable: boolean;
-  /** 目录本身是链接 / 目录联接（删除只删链接） */
+  /** 技能目录（或单文件）本身是链接 / 目录联接（删除只删链接） */
   link: boolean;
+  /** 技能不是 `skills/` 的直接子项时，它所在的顶层目录名（一次安装的仓库 / 压缩包 / 文件夹）；否则为 null */
+  package: string | null;
 }
 
 /** 技能的安装来源 */
@@ -440,7 +443,7 @@ export type SkillSource =
   | { kind: "zip"; path: string }
   | { kind: "folder"; path: string };
 
-/** 暂存中找到的候选技能 */
+/** 暂存中找到的技能（安装时一起装入） */
 export interface SkillCandidate {
   /** 相对暂存根目录的路径；根目录本身是技能时为空串 */
   path: string;
@@ -452,6 +455,8 @@ export interface SkillCandidate {
 /** `skillStage` 的结果 */
 export interface SkillStage {
   stageId: string;
+  /** 来源名（仓库名、链接里的子目录名、压缩包或文件夹名），用来建议安装目录名 */
+  label: string;
   candidates: SkillCandidate[];
   /** 跳过的符号链接数 */
   skippedLinks: number;

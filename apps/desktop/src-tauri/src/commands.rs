@@ -1181,7 +1181,7 @@ pub(crate) fn skills_list(paths: State<'_, DataPaths>) -> Vec<crate::skills::Ski
     )
 }
 
-/// 把来源解到暂存目录，列出其中的技能供选择（GitHub 链接经 codeload 下载 zip）。
+/// 把来源解到暂存目录，按 Core 的规则列出其中的全部技能（GitHub 链接经 codeload 下载 zip）。
 #[tauri::command]
 pub(crate) async fn skill_stage(
     paths: State<'_, DataPaths>,
@@ -1215,24 +1215,23 @@ pub(crate) async fn skill_stage(
     }
 }
 
-/// 把暂存中的候选技能装进用户目录（`overwrite` 为假且已有同名目录时以 code `exists` 拒绝）；返回技能文件路径。
+/// 把暂存的整个来源装进用户目录 `skills/<name>`，其中的技能由 Core 按自己的规则全部加载（`overwrite` 为假且
+/// 已有同名目录时以 code `exists` 拒绝）；返回安装后的目录。
 #[tauri::command(async)]
 pub(crate) fn skill_install(
     paths: State<'_, DataPaths>,
     stage_id: String,
-    path: String,
     name: String,
     overwrite: bool,
 ) -> Result<String, CapabilityError> {
-    let file = crate::skills::install(
+    let dir = crate::skills::install(
         &paths.core_dir(),
         &paths.tmp_dir(),
         &stage_id,
-        &path,
         &name,
         overwrite,
     )?;
-    Ok(file.to_string_lossy().into_owned())
+    Ok(dir.to_string_lossy().into_owned())
 }
 
 /// 放弃一次暂存（取消安装）。

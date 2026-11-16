@@ -1,16 +1,18 @@
 //! 能力中心·技能（ADR 0017）：列出、安装（GitHub 链接 / 本地 zip / 本地文件夹）、删除、启用与停用。
 //!
-//! - 列出：Core 的用户级技能目录 `<Core 用户目录>/skills` 与总会加载的 `~/.agents/skills`，按 agent-core 的发现规则
-//!   （含 `SKILL.md` 的目录是一个技能且不再往下找；跳过 `.` 开头与 `node_modules`；跟随链接；`skills/` 根目录下
-//!   直接的 `*.md` 各是一个技能，`.agents/skills` 反过来只认子目录里的 `*.md`）。技能文件内容交给前端解析 frontmatter。
+//! - 发现规则与 Core 相同，见 [`crate::skill_discovery`]（含 `SKILL.md` 的目录是一个技能且不再往下找；跳过 `.` 开头
+//!   与 `node_modules`；跟随链接；读 `.gitignore` / `.ignore` / `.fdignore`；`skills/` 根目录下直接的 `*.md` 各是
+//!   一个技能，`.agents/skills` 反过来只认子目录里的 `*.md`）。技能文件内容交给前端解析 frontmatter。
 //! - 安装：来源先解到暂存目录 `<数据目录>/tmp/skill-stage/<编号>`（zip 经 [`crate::skill_archive`]；文件夹逐个复制，
-//!   不跟随、不复制链接；同样的数量与大小上限），列出其中的技能供选择，再整目录改名进 `<Core 用户目录>/skills/<名称>`。
-//!   同名目录已存在时返回 [`SkillError::Exists`]，用户确认后覆盖（旧目录先移走，新目录就位后再删除）。
-//! - 删除：只删 `<Core 用户目录>/skills` 的直接子项；是链接 / 目录联接时只删链接本身，不动目标。
+//!   不跟随、不复制链接；同样的数量与大小上限），按 Core 加载 `skills/<名称>/` 的方式列出其中的全部技能，再把整个
+//!   来源目录改名进 `<Core 用户目录>/skills/<名称>`：一个仓库 / 压缩包 / 文件夹里有几个技能，Core 就加载几个，
+//!   与把它直接放进 `skills/` 相同。同名目录已存在时返回 [`SkillError::Exists`]，用户确认后覆盖（旧目录先移走，
+//!   新目录就位后再删除）。
+//! - 删除：只删 `<Core 用户目录>/skills` 里的技能（技能目录，或根目录下的单个 `*.md`）；是链接 / 目录联接时只删
+//!   链接本身，不动目标；路径中间经过链接的不能删。删掉的是它所在顶层目录里最后一个技能时，顶层目录一并删除。
 //! - 启停：Core 设置 `settings.json` 的 `skills` 中的 `-<技能文件绝对路径>`（与 Core 的精确模式一致，
 //!   路径用 `/`）；启用即删掉指向该技能的 `-` 精确模式。`!` 通配排除不改写，只按精确模式判断。
 
-use std::collections::HashSet;
 use std::fmt;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -21,6 +23,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::skill_archive::{self, ArchiveError, MAX_ENTRIES, MAX_FILE_BYTES, MAX_TOTAL_BYTES};
+use crate::skill_discovery::{self, Mode};
 
 /// 技能文件读给前端的最多字节数（frontmatter 在开头，足够解析）。
 const SKILL_FILE_LIMIT: u64 = 64 * 1024;
@@ -101,13 +104,15 @@ pub(crate) struct SkillInfo {
     /// 技能文件开头（最多 64 KiB），前端解析 frontmatter；读不了时为 None
     pub(crate) content: Option<String>,
     pub(crate) enabled: bool,
-    /// 能否删除：用户目录下的直接子项
+    /// 能否删除：用户目录里的技能，且路径中间没有经过链接
     pub(crate) deletable: bool,
-    /// 目录（或单文件）本身是链接 / 目录联接
+    /// 技能目录（或单文件）本身是链接 / 目录联接
     pub(crate) link: bool,
+    /// 技能不是用户目录的直接子项时，它所在的顶层目录名（一次安装的仓库 / 压缩包 / 文件夹）
+    pub(crate) package: Option<String>,
 }
 
-/// 暂存目录里找到的一个候选技能。
+/// 暂存目录里找到的一个技能（安装时与其余技能一起装入）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SkillCandidate {
@@ -124,72 +129,13 @@ pub(crate) struct SkillCandidate {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SkillStage {
     pub(crate) stage_id: String,
+    /// 来源名（仓库名、链接里的子目录名、压缩包或文件夹名），界面据此建议安装目录名
+    pub(crate) label: String,
     pub(crate) candidates: Vec<SkillCandidate>,
     /// 跳过的符号链接数
     pub(crate) skipped_links: usize,
     /// 候选超过上限时只列出前 [`MAX_CANDIDATES`] 个
     pub(crate) truncated: bool,
-}
-
-/// Core 的发现方式（与 agent-core 的 `collectSkillEntries` 一致）。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    /// `skills/`：根目录下直接的 `*.md` 各是一个技能
-    Core,
-    /// `.agents/skills`：根目录下的 `*.md` 不算，子目录里（没有 `SKILL.md` 时）的 `*.md` 各是一个技能
-    Agents,
-}
-
-/// 按 Core 的规则找出 `root` 下的技能文件（`SKILL.md` 或单个 `*.md`）。
-fn discover(root: &Path, mode: Mode) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut visited = HashSet::new();
-    walk(root, root, mode, &mut out, &mut visited);
-    out
-}
-
-fn walk(
-    dir: &Path,
-    root: &Path,
-    mode: Mode,
-    out: &mut Vec<PathBuf>,
-    visited: &mut HashSet<PathBuf>,
-) {
-    if let Ok(real) = dir.canonicalize()
-        && !visited.insert(real)
-    {
-        return;
-    }
-    let skill = dir.join("SKILL.md");
-    if skill.is_file() {
-        out.push(skill);
-        return;
-    }
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = read.flatten().collect();
-    entries.sort_by_key(|e| e.file_name());
-    for entry in entries {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') || name == "node_modules" {
-            continue;
-        }
-        let path = entry.path();
-        // 跟随链接（Core 也跟随）；断开的链接跳过
-        let Ok(meta) = std::fs::metadata(&path) else {
-            continue;
-        };
-        let md_counts = match mode {
-            Mode::Core => dir == root,
-            Mode::Agents => dir != root,
-        };
-        if meta.is_file() && md_counts && name.ends_with(".md") {
-            out.push(path);
-        } else if meta.is_dir() {
-            walk(&path, root, mode, out, visited);
-        }
-    }
 }
 
 /// 读文件开头最多 `limit` 字节（按 UTF-8 宽松解码）。
@@ -330,6 +276,34 @@ fn is_link(path: &Path) -> bool {
     })
 }
 
+/// 技能的删除对象：`SKILL.md` 的技能是它所在的目录，单个 `*.md` 的技能是文件本身。
+fn skill_target(file: &Path) -> PathBuf {
+    if file.file_name().is_some_and(|n| n == "SKILL.md") {
+        file.parent().unwrap_or(file).to_path_buf()
+    } else {
+        file.to_path_buf()
+    }
+}
+
+/// `target` 在 `root` 里的位置：返回（顶层目录项，中间是否经过链接）。`target` 不在 `root` 里或就是 `root` 时为 None。
+fn placement(root: &Path, target: &Path) -> Option<(PathBuf, bool)> {
+    let rel = target.strip_prefix(root).ok()?;
+    let mut parts = rel.components();
+    let top = root.join(parts.next()?);
+    // 顶层与目标之间的各级（不含目标本身）
+    let mut cur = top.clone();
+    let mut through_link = false;
+    let rest: Vec<_> = parts.collect();
+    if !rest.is_empty() {
+        through_link |= is_link(&cur);
+        for c in &rest[..rest.len() - 1] {
+            cur.push(c);
+            through_link |= is_link(&cur);
+        }
+    }
+    Some((top, through_link))
+}
+
 /// 列出技能：用户级目录在前，`~/.agents/skills` 在后（与 Core 加载顺序一致）。
 pub(crate) fn list(
     core_dir: &Path,
@@ -354,20 +328,18 @@ pub(crate) fn list(
     }
     let mut out = Vec::new();
     for (root, mode, scope, base) in roots {
-        for file in discover(&root, mode) {
-            let is_skill_md = file.file_name().is_some_and(|n| n == "SKILL.md");
-            let dir = if is_skill_md {
-                file.parent().unwrap_or(&root).to_path_buf()
-            } else {
-                root.clone()
-            };
-            // 删除对象：用户目录下的直接子项（技能目录或单文件技能）
-            let top = if is_skill_md {
-                dir.clone()
-            } else {
-                file.clone()
-            };
-            let deletable = scope == SkillScope::User && top.parent() == Some(user_root.as_path());
+        for file in skill_discovery::collect(&root, mode) {
+            // Core 的 baseDir：技能文件所在目录
+            let dir = file.parent().unwrap_or(&root).to_path_buf();
+            let target = skill_target(&file);
+            let placed = placement(&root, &target);
+            let deletable =
+                scope == SkillScope::User && placed.as_ref().is_some_and(|(_, link)| !link);
+            let package = placed
+                .as_ref()
+                .filter(|(top, _)| scope == SkillScope::User && *top != target)
+                .and_then(|(top, _)| top.file_name())
+                .map(|n| n.to_string_lossy().into_owned());
             // frontmatter 没写 name 时 Core 用技能文件所在目录的名字
             let dir_name = file
                 .parent()
@@ -382,7 +354,8 @@ pub(crate) fn list(
                 dir: dir.to_string_lossy().into_owned(),
                 scope,
                 deletable,
-                link: is_link(&top),
+                link: is_link(&target),
+                package,
             });
         }
     }
@@ -406,22 +379,28 @@ pub(crate) fn locate(
         SkillScope::User => core_dir.to_path_buf(),
         SkillScope::Agents => home.map(|h| h.join(".agents")).unwrap_or_default(),
     };
-    let top = if path.file_name().is_some_and(|n| n == "SKILL.md") {
-        PathBuf::from(&found.dir)
-    } else {
-        path.clone()
-    };
-    Ok((path, base, top, found.scope))
+    let target = skill_target(&path);
+    Ok((path, base, target, found.scope))
 }
 
-/// 删除用户目录下的技能（目录或单文件）。链接 / 目录联接只删链接本身。
+/// 删除用户目录里的技能（技能目录或单文件）。链接 / 目录联接只删链接本身；路径中间经过链接的不删。
+/// 删掉的是所在顶层目录里最后一个技能时，顶层目录一并删除（安装时整个装进来的仓库 / 压缩包 / 文件夹）。
 pub(crate) fn delete(core_dir: &Path, home: Option<&Path>, file: &str) -> Result<(), SkillError> {
-    let (_, _, top, scope) = locate(core_dir, home, file)?;
+    let (_, _, target, scope) = locate(core_dir, home, file)?;
     let root = user_skills_dir(core_dir);
-    if scope != SkillScope::User || top.parent() != Some(root.as_path()) {
-        return Err(invalid("只能删除能力中心安装的技能"));
+    let placed = placement(&root, &target);
+    let Some((top, false)) = placed.filter(|_| scope == SkillScope::User) else {
+        return Err(invalid("只能删除能力中心技能目录里的技能"));
+    };
+    remove_entry(&target)?;
+    if top != target && top.is_dir() && !is_link(&top) {
+        let remaining = skill_discovery::collect(&root, Mode::Core)
+            .iter()
+            .any(|f| f.starts_with(&top));
+        if !remaining {
+            remove_entry(&top)?;
+        }
     }
-    remove_entry(&top)?;
     Ok(())
 }
 
@@ -650,20 +629,16 @@ fn single_top_dir(dir: &Path) -> Option<PathBuf> {
     Some(first.path())
 }
 
-/// 在暂存根目录里找技能，组成暂存结果；一个都没有时报错（暂存目录由调用方删除）。
+/// 按 Core 加载 `skills/<名称>/` 的方式在暂存根目录里找技能，组成暂存结果；一个都没有时报错（暂存目录由调用方删除）。
 fn finish_stage(
     id: &str,
     root: &Path,
     label: &str,
     skipped_links: usize,
 ) -> Result<SkillStage, SkillError> {
-    // 安装的是整个技能目录：只认带 SKILL.md 的目录（单个 *.md 技能没有目录可装）
     let mut candidates = Vec::new();
     let mut truncated = false;
-    for file in discover(root, Mode::Agents) {
-        if file.file_name().is_none_or(|n| n != "SKILL.md") {
-            continue;
-        }
+    for file in skill_discovery::collect_as_installed(root) {
         let Some(dir) = file.parent() else { continue };
         if candidates.len() >= MAX_CANDIDATES {
             truncated = true;
@@ -688,6 +663,7 @@ fn finish_stage(
     }
     Ok(SkillStage {
         stage_id: id.to_owned(),
+        label: label.to_owned(),
         candidates,
         skipped_links,
         truncated,
@@ -705,13 +681,12 @@ pub(crate) fn valid_dir_name(name: &str) -> bool {
         && skill_archive::safe_parts(name).is_some_and(|p| p.len() == 1)
 }
 
-/// 把暂存里的候选技能装进用户目录 `<Core 用户目录>/skills/<name>`。`overwrite` 为假且目标已存在时返回
-/// [`SkillError::Exists`]。成功后删除这次暂存，返回技能文件路径。
+/// 把暂存的整个来源目录装进用户目录 `<Core 用户目录>/skills/<name>`：其中的技能 Core 全部按自己的规则加载。
+/// `overwrite` 为假且目标已存在时返回 [`SkillError::Exists`]。成功后删除这次暂存，返回安装后的目录。
 pub(crate) fn install(
     core_dir: &Path,
     tmp_dir: &Path,
     stage_id: &str,
-    path: &str,
     name: &str,
     overwrite: bool,
 ) -> Result<PathBuf, SkillError> {
@@ -721,18 +696,9 @@ pub(crate) fn install(
         ));
     }
     let stage = stage_dir(tmp_dir, stage_id)?;
-    let base = stage.join(STAGE_ROOT);
-    // 候选路径必须是 finish_stage 列出的：在暂存根目录内、带 SKILL.md
-    let source = if path.is_empty() {
-        base.clone()
-    } else {
-        let parts = skill_archive::safe_parts(path).ok_or_else(|| invalid("技能路径无效"))?;
-        let mut p = base.clone();
-        p.extend(parts);
-        p
-    };
-    if is_link(&source) || !source.join("SKILL.md").is_file() {
-        return Err(invalid("暂存中没有这个技能"));
+    let source = stage.join(STAGE_ROOT);
+    if is_link(&source) || skill_discovery::collect_as_installed(&source).is_empty() {
+        return Err(invalid("暂存中没有技能"));
     }
     let root = user_skills_dir(core_dir);
     std::fs::create_dir_all(&root)?;
@@ -741,7 +707,7 @@ pub(crate) fn install(
     if exists && !overwrite {
         return Err(SkillError::Exists(name.to_owned()));
     }
-    // 先把新目录移到用户目录旁的临时名，再换下旧目录，失败时尽量还原
+    // 先把新目录移到用户目录里的临时名（`.` 开头，Core 不加载），再换下旧目录，失败时尽量还原
     let incoming = root.join(format!(".{name}.installing-{stage_id}"));
     move_dir(&source, &incoming)?;
     let old = root.join(format!(".{name}.replaced-{stage_id}"));
@@ -760,7 +726,7 @@ pub(crate) fn install(
         let _ = remove_entry(&old);
     }
     let _ = remove_entry(&stage);
-    Ok(target.join("SKILL.md"))
+    Ok(target)
 }
 
 /// 移动目录：同一卷上直接改名，否则复制后删除源目录。
@@ -887,6 +853,8 @@ mod tests {
         write(&core.join("skills/single.md"), SKILL);
         write(&core.join("skills/group/inner/SKILL.md"), SKILL);
         write(&core.join("skills/group/notes.md"), "not a skill");
+        write(&core.join("skills/group/build/copy/SKILL.md"), SKILL);
+        write(&core.join("skills/group/.gitignore"), "build/\n");
         write(&core.join("skills/.hidden/SKILL.md"), SKILL);
         write(&core.join("skills/node_modules/x/SKILL.md"), SKILL);
         write(&home.join(".agents/skills/lint/SKILL.md"), SKILL);
@@ -900,16 +868,24 @@ mod tests {
         let list = list(&core, Some(&home), &settings);
         let names: Vec<_> = list
             .iter()
-            .map(|s| (s.dir_name.as_str(), s.scope, s.enabled, s.deletable))
+            .map(|s| {
+                (
+                    s.dir_name.as_str(),
+                    s.scope,
+                    s.enabled,
+                    s.deletable,
+                    s.package.as_deref(),
+                )
+            })
             .collect();
         assert_eq!(
             names,
             vec![
-                ("inner", SkillScope::User, true, false),
-                ("review", SkillScope::User, true, true),
-                ("skills", SkillScope::User, false, true),
-                ("lint", SkillScope::Agents, true, false),
-                ("sub", SkillScope::Agents, true, false),
+                ("inner", SkillScope::User, true, true, Some("group")),
+                ("review", SkillScope::User, true, true, None),
+                ("skills", SkillScope::User, false, true, None),
+                ("lint", SkillScope::Agents, true, false, None),
+                ("sub", SkillScope::Agents, true, false, None),
             ]
         );
         assert_eq!(list[1].content.as_deref(), Some(SKILL));
@@ -953,31 +929,51 @@ mod tests {
     }
 
     #[test]
-    fn installs_from_zip_with_conflict_confirmation() {
+    fn installs_every_skill_of_a_zip_with_conflict_confirmation() {
         let root = temp("install");
         let core = root.join("core");
         let tmp = root.join("tmp");
         let zip = ZipBuilder::new()
             .file("skills-main/README.md", "readme")
+            .file("skills-main/.gitignore", "fixtures/\n")
             .file("skills-main/a/SKILL.md", SKILL)
             .file("skills-main/a/scripts/run.ps1", "x")
             .file("skills-main/b/c/SKILL.md", SKILL)
+            .file("skills-main/fixtures/f/SKILL.md", SKILL)
             .finish();
         let stage = stage_zip(&tmp, &zip, "skills", None).unwrap();
+        assert_eq!(stage.label, "skills");
         let paths: Vec<_> = stage.candidates.iter().map(|c| c.path.as_str()).collect();
-        assert_eq!(paths, ["a", "b/c"]);
+        assert_eq!(paths, ["a", "b/c"], "被 .gitignore 忽略的与 Core 一样不算");
         assert_eq!(stage.candidates[1].dir_name, "c");
-        let file = install(&core, &tmp, &stage.stage_id, "a", "demo", false).unwrap();
-        assert_eq!(file, core.join("skills/demo/SKILL.md"));
-        assert!(core.join("skills/demo/scripts/run.ps1").is_file());
+        let dir = install(&core, &tmp, &stage.stage_id, "demo", false).unwrap();
+        assert_eq!(dir, core.join("skills/demo"));
+        assert!(core.join("skills/demo/a/scripts/run.ps1").is_file());
+        // 装进去的技能与 Core 从 skills/ 加载到的一致
+        let loaded: Vec<_> = list(&core, None, &Map::new())
+            .into_iter()
+            .map(|s| (s.dir_name, s.package))
+            .collect();
+        assert_eq!(
+            loaded,
+            [
+                ("a".to_owned(), Some("demo".to_owned())),
+                ("c".to_owned(), Some("demo".to_owned()))
+            ]
+        );
         // 安装后暂存删除
-        assert!(install(&core, &tmp, &stage.stage_id, "b/c", "c", false).is_err());
+        assert!(install(&core, &tmp, &stage.stage_id, "other", false).is_err());
 
-        let stage = stage_zip(&tmp, &zip, "skills", None).unwrap();
-        let err = install(&core, &tmp, &stage.stage_id, "b/c", "demo", false).unwrap_err();
+        let single = ZipBuilder::new().file("x-main/SKILL.md", SKILL).finish();
+        let stage = stage_zip(&tmp, &single, "x", None).unwrap();
+        let err = install(&core, &tmp, &stage.stage_id, "demo", false).unwrap_err();
         assert_eq!(err.code(), Some("exists"));
-        install(&core, &tmp, &stage.stage_id, "b/c", "demo", true).unwrap();
-        assert!(!core.join("skills/demo/scripts").exists(), "覆盖后是新内容");
+        install(&core, &tmp, &stage.stage_id, "demo", true).unwrap();
+        assert!(
+            core.join("skills/demo/SKILL.md").is_file(),
+            "覆盖后是新内容"
+        );
+        assert!(!core.join("skills/demo/a").exists());
         let leftovers: Vec<_> = std::fs::read_dir(core.join("skills"))
             .unwrap()
             .flatten()
@@ -999,21 +995,24 @@ mod tests {
         assert_eq!(stage.candidates.len(), 1);
         assert_eq!(stage.candidates[0].path, "");
         assert_eq!(stage.candidates[0].dir_name, "pdf");
+        assert_eq!(stage.label, "pdf");
         discard(&tmp, &stage.stage_id).unwrap();
         assert!(discard(&tmp, &stage.stage_id).is_err());
         assert!(discard(&tmp, "../x").is_err());
         assert!(stage_zip(&tmp, &zip, "repo", Some("skills/none")).is_err());
+        let stage = stage_zip(&tmp, &zip, "repo", Some("skills")).unwrap();
+        assert_eq!(stage.candidates.len(), 2);
         let single = ZipBuilder::new().file("x-main/SKILL.md", SKILL).finish();
         let stage = stage_zip(&tmp, &single, "x", None).unwrap();
         assert_eq!(stage.candidates[0].path, "");
         let core = root.join("core");
-        install(&core, &tmp, &stage.stage_id, "", "x", false).unwrap();
+        install(&core, &tmp, &stage.stage_id, "x", false).unwrap();
         assert!(core.join("skills/x/SKILL.md").is_file());
         // 没有技能：报错并删除暂存
         let none = ZipBuilder::new().file("a/readme.md", "x").finish();
         assert!(stage_zip(&tmp, &none, "a", None).is_err());
         let left = std::fs::read_dir(stage_root(&tmp)).unwrap().count();
-        assert_eq!(left, 0);
+        assert_eq!(left, 1, "只剩下没安装的 skills 暂存");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1046,9 +1045,12 @@ mod tests {
         let home = root.join("home");
         write(&core.join("skills/a/SKILL.md"), SKILL);
         write(&core.join("skills/g/inner/SKILL.md"), SKILL);
+        write(&core.join("skills/g/other/SKILL.md"), SKILL);
+        write(&core.join("skills/g/README.md"), "readme");
         write(&home.join(".agents/skills/b/SKILL.md"), SKILL);
         let target = root.join("elsewhere");
         write(&target.join("SKILL.md"), SKILL);
+        write(&target.join("deep/x/SKILL.md"), SKILL);
         #[cfg(unix)]
         std::os::unix::fs::symlink(&target, core.join("skills/linked")).unwrap();
         let file = |p: &Path| p.to_string_lossy().into_owned();
@@ -1064,20 +1066,28 @@ mod tests {
             delete(
                 &core,
                 Some(&home),
-                &file(&core.join("skills/g/inner/SKILL.md"))
-            )
-            .is_err()
-        );
-        assert!(
-            delete(
-                &core,
-                Some(&home),
                 &file(&core.join("skills/../x/SKILL.md"))
             )
             .is_err()
         );
         delete(&core, Some(&home), &file(&core.join("skills/a/SKILL.md"))).unwrap();
         assert!(!core.join("skills/a").exists());
+        // 一次安装里的某个技能：只删它的目录；删掉最后一个时整个顶层目录一起删
+        delete(
+            &core,
+            Some(&home),
+            &file(&core.join("skills/g/inner/SKILL.md")),
+        )
+        .unwrap();
+        assert!(!core.join("skills/g/inner").exists());
+        assert!(core.join("skills/g/README.md").is_file());
+        delete(
+            &core,
+            Some(&home),
+            &file(&core.join("skills/g/other/SKILL.md")),
+        )
+        .unwrap();
+        assert!(!core.join("skills/g").exists());
         #[cfg(unix)]
         {
             delete(
@@ -1087,6 +1097,16 @@ mod tests {
             )
             .unwrap();
             assert!(target.join("SKILL.md").is_file(), "只删链接，不动目标");
+            // 经过链接的子目录：不能删（会删到链接目标里）
+            let nested = root.join("elsewhere2");
+            write(&nested.join("deep/x/SKILL.md"), SKILL);
+            std::os::unix::fs::symlink(&nested, core.join("skills/linked2")).unwrap();
+            let listed = list(&core, Some(&home), &Map::new());
+            let x = listed.iter().find(|s| s.dir_name == "x").unwrap();
+            assert_eq!(x.package.as_deref(), Some("linked2"));
+            assert!(!x.deletable);
+            assert!(delete(&core, Some(&home), &x.file).is_err());
+            assert!(nested.join("deep/x/SKILL.md").is_file());
         }
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -19,28 +19,36 @@ describe("mock 能力中心", () => {
     expect((await platform.mcpConfigRead()).text).toContain("filesystem");
   });
 
-  it("技能：暂存、安装、同名需确认覆盖、启停、只删用户目录下的技能", async () => {
+  it("技能：暂存、整个来源安装、同名需确认覆盖、启停、只删用户目录下的技能", async () => {
     const c = createMockCapabilities();
     await expect(c.skillStage({ kind: "github", url: "https://gitlab.com/a/b" })).rejects.toThrow(
       "GitHub",
     );
     const repo = await c.skillStage({ kind: "github", url: "https://github.com/acme/skills" });
+    expect(repo.label).toBe("skills");
     expect(repo.candidates.map((x) => x.dirName)).toEqual(["web-search", "broken"]);
+    // 一次装入仓库里的全部技能
+    expect(await c.skillInstall(repo.stageId, "acme", false)).toMatch(/skills\\acme$/);
+    const installed = (await c.skillsList()).filter((s) => s.package === "acme");
+    expect(installed.map((s) => s.dirName)).toEqual(["web-search", "broken"]);
+    expect(installed[0]?.file).toMatch(/skills\\acme\\skills\\web-search\\SKILL\.md$/);
+
     const sub = await c.skillStage({
       kind: "github",
       url: "https://github.com/acme/skills/blob/main/skills/pdf/SKILL.md",
     });
-    expect(sub.candidates).toMatchObject([{ path: "", dirName: "pdf" }]);
-    expect(await codeOf(c.skillInstall(sub.stageId, "", "pdf", false))).toBe(SKILL_EXISTS);
-    await c.skillInstall(sub.stageId, "", "pdf", true);
+    expect(sub).toMatchObject({ label: "pdf", candidates: [{ path: "", dirName: "pdf" }] });
+    expect(await codeOf(c.skillInstall(sub.stageId, "pdf", false))).toBe(SKILL_EXISTS);
+    await c.skillInstall(sub.stageId, "pdf", true);
     // 安装后暂存删除
-    await expect(c.skillInstall(sub.stageId, "", "pdf", true)).rejects.toThrow("暂存");
+    await expect(c.skillInstall(sub.stageId, "pdf", true)).rejects.toThrow("暂存");
 
     await expect(c.skillStage({ kind: "zip", path: "C:\\a\\x.txt" })).rejects.toThrow(".zip");
     const zip = await c.skillStage({ kind: "zip", path: "C:\\a\\my-skill.zip" });
     expect(zip.candidates[0]?.dirName).toBe("my-skill");
-    await expect(c.skillInstall(zip.stageId, "", "../x", false)).rejects.toThrow("目录名");
-    const file = await c.skillInstall(zip.stageId, "", "my-skill", false);
+    await expect(c.skillInstall(zip.stageId, "../x", false)).rejects.toThrow("目录名");
+    expect(await c.skillInstall(zip.stageId, "my-skill", false)).toMatch(/skills\\my-skill$/);
+    const file = (await c.skillsList()).find((s) => s.dirName === "my-skill")?.file ?? "";
     expect(file).toMatch(/skills\\my-skill\\SKILL\.md$/);
 
     const folder = await c.skillStage({ kind: "folder", path: "D:\\work\\notes\\" });
