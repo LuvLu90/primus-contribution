@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -12,9 +12,13 @@ import {
   decidePlan,
   describeCall,
   insideWorkspace,
+  insideLoadedSkill,
   isAlwaysAskCommand,
   isProtectedPath,
+  isUserMcpConfig,
+  loadedSkillDirs,
   MODE_COMMAND,
+  MODES,
   MODE_WIDGET,
   needsApproval,
   PLAN_ASK_PREFIX,
@@ -493,5 +497,207 @@ describe("primus-guard 计划模式（只读）", () => {
     expect(c.ui.select).toHaveBeenCalledTimes(2);
     expect(c.ui.select.mock.calls[1]?.[1]).toEqual([CHOICES.allow, CHOICES.deny]);
     expect(state.alwaysAllowed.size).toBe(0);
+  });
+});
+
+/**
+ * 临时的数据目录：<root>/data/users/S-1/core 下有技能 skills/foo（含指向 auth.json 的链接）、mcp.json、mcp-auth.json，
+ * 另有一个不在数据目录内的外部技能目录 <root>/ext-skill
+ */
+function skillFixture() {
+  const root = mkdtempSync(join(tmpdir(), "guard-skill-"));
+  const core = join(root, "data", "users", "S-1", "core");
+  const skill = join(core, "skills", "foo");
+  const ext = join(root, "ext-skill");
+  const ws = join(root, "ws");
+  for (const d of [skill, join(skill, "refs"), ext, ws]) mkdirSync(d, { recursive: true });
+  for (const [f, text] of [
+    [join(skill, "SKILL.md"), "---\nname: foo\ndescription: x\n---\n"],
+    [join(skill, "refs", "a.md"), "a"],
+    [join(skill, ".env"), "SECRET=1"],
+    [join(ext, "SKILL.md"), "x"],
+    [join(core, "auth.json"), "{}"],
+    [join(core, "mcp.json"), "{}"],
+    [join(core, "mcp-auth.json"), "{}"],
+  ] as const)
+    writeFileSync(f, text);
+  // 技能目录里指向数据目录其他文件的链接：真实路径在技能目录外，不能借此读取
+  symlinkSync(core, join(skill, "escape"), "junction");
+  const env = { PRIMUS_CODING_AGENT_DIR: core };
+  const ge = { platform: process.platform, home: join(root, "home"), env, skillDirs: [skill, ext] };
+  return { root, core, skill, ext, ws, env, ge };
+}
+
+describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
+  it("从 before_agent_start 的 systemPromptOptions.skills 取技能目录", () => {
+    expect(
+      loadedSkillDirs({
+        systemPromptOptions: { skills: [{ baseDir: "/a" }, { baseDir: "" }, {}, null] },
+      }),
+    ).toEqual(["/a"]);
+    expect(loadedSkillDirs({})).toEqual([]);
+    expect(loadedSkillDirs(undefined)).toEqual([]);
+  });
+
+  it("已加载技能目录内的读取在所有权限模式与计划模式下放行", () => {
+    const f = skillFixture();
+    try {
+      const read = (path: string) => ({ toolName: "read", input: { path } });
+      for (const mode of MODES) {
+        for (const p of [join(f.skill, "SKILL.md"), join(f.skill, "refs", "a.md"), f.skill]) {
+          expect(decide(mode, read(p), f.ws, undefined, f.ge), `${mode} ${p}`).toBe("allow");
+          expect(decide(mode, { toolName: "ls", input: { path: p } }, f.ws, undefined, f.ge)).toBe(
+            "allow",
+          );
+        }
+        // 数据目录外的技能目录：工作区外也放行
+        expect(decide(mode, read(join(f.ext, "SKILL.md")), f.ws, undefined, f.ge)).toBe("allow");
+      }
+      // 计划模式：读取交给常规规则（decidePlan 返回 undefined），结果同样放行
+      expect(decidePlan(read(join(f.skill, "SKILL.md")), undefined, f.ws, f.ge)).toBe(undefined);
+      // 未加载技能时仍是受保护路径
+      const none = { ...f.ge, skillDirs: [] };
+      expect(decide("full", read(join(f.skill, "SKILL.md")), f.ws, undefined, none)).toBe("ask");
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("技能目录：.. 与符号链接逃不出去，修改照旧拒绝，.env 仍受保护", () => {
+    const f = skillFixture();
+    try {
+      const read = (path: string) => ({ toolName: "read", input: { path } });
+      for (const mode of MODES) {
+        expect(
+          decide(mode, read(join(f.skill, "..", "..", "auth.json")), f.ws, undefined, f.ge),
+        ).toBe("ask");
+        expect(decide(mode, read(`${f.skill}/../../mcp-auth.json`), f.ws, undefined, f.ge)).toBe(
+          "ask",
+        );
+        expect(
+          decide(mode, read(join(f.skill, "escape", "auth.json")), f.ws, undefined, f.ge),
+        ).toBe("ask");
+        expect(decide(mode, read(join(f.skill, ".env")), f.ws, undefined, f.ge)).toBe("ask");
+        for (const tool of ["write", "edit"])
+          expect(
+            decide(
+              mode,
+              { toolName: tool, input: { path: join(f.skill, "SKILL.md") } },
+              f.ws,
+              undefined,
+              f.ge,
+            ),
+          ).toBe("deny");
+      }
+      expect(insideLoadedSkill(join(f.skill, "escape", "auth.json"), f.ge)).toBe(false);
+      expect(insideLoadedSkill(join(f.skill, "refs", "a.md"), f.ge)).toBe(true);
+      // 技能目录包含 Core 用户目录或数据目录（配置错误）时不放开
+      const wide = { ...f.ge, skillDirs: [join(f.core, "..", "..", "..")] };
+      expect(insideLoadedSkill(join(f.core, "auth.json"), wide)).toBe(false);
+      expect(insideLoadedSkill(join(f.core, "auth.json"), { ...f.ge, skillDirs: [f.core] })).toBe(
+        false,
+      );
+      expect(
+        insideLoadedSkill(join(f.core, "auth.json"), { ...f.ge, skillDirs: ["relative"] }),
+      ).toBe(false);
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "win32")("Windows 上技能目录比较不区分大小写", () => {
+    const ge = {
+      platform: "win32" as const,
+      home: "C:\\Users\\u",
+      env: { PRIMUS_CODING_AGENT_DIR: "C:\\Primus\\data\\users\\S-1\\core" },
+      skillDirs: ["C:\\Primus\\data\\users\\S-1\\core\\skills\\foo"],
+      real: (p: string) => p,
+    };
+    expect(insideLoadedSkill("c:\\primus\\DATA\\users\\s-1\\core\\skills\\FOO\\SKILL.md", ge)).toBe(
+      true,
+    );
+  });
+
+  it("用户级 mcp.json：完全访问放行，询问 / 自动编辑询问，计划模式拒绝修改；mcp-auth.json 仍受保护", () => {
+    const f = skillFixture();
+    try {
+      const mcp = join(f.core, "mcp.json");
+      const call = (toolName: string, path = mcp) => ({ toolName, input: { path } });
+      expect(isUserMcpConfig(mcp, f.ge)).toBe(true);
+      for (const tool of ["write", "edit", "read"]) {
+        expect(decide("full", call(tool), f.ws, undefined, f.ge)).toBe("allow");
+        expect(decide("ask", call(tool), f.ws, undefined, f.ge)).toBe("ask");
+        expect(decide("edit", call(tool), f.ws, undefined, f.ge)).toBe("ask");
+      }
+      expect(decidePlan(call("write"), undefined, f.ws, f.ge)).toBe("deny");
+      expect(decidePlan(call("edit"), undefined, f.ws, f.ge)).toBe("deny");
+      for (const mode of MODES) {
+        expect(
+          decide(mode, call("write", join(f.core, "mcp-auth.json")), f.ws, undefined, f.ge),
+        ).toBe("deny");
+        expect(
+          decide(mode, call("read", join(f.core, "mcp-auth.json")), f.ws, undefined, f.ge),
+        ).toBe("ask");
+        expect(decide(mode, call("write", join(f.core, "auth.json")), f.ws, undefined, f.ge)).toBe(
+          "deny",
+        );
+        // 经技能目录里的链接到达 mcp.json：不是确切路径，按数据目录拒绝
+        expect(
+          decide(mode, call("write", join(f.skill, "escape", "mcp.json")), f.ws, undefined, f.ge),
+        ).toBe("deny");
+      }
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("mcp.json 本身是指向其他文件的符号链接时不算用户级 MCP 配置", () => {
+    const f = skillFixture();
+    try {
+      const mcp = join(f.core, "mcp.json");
+      rmSync(mcp);
+      try {
+        symlinkSync(join(f.core, "auth.json"), mcp);
+      } catch (err) {
+        // Windows 无开发者模式时不能创建文件符号链接
+        if ((err as NodeJS.ErrnoException).code === "EPERM") return;
+        throw err;
+      }
+      expect(isUserMcpConfig(mcp, f.ge)).toBe(false);
+      expect(
+        decide("full", { toolName: "write", input: { path: mcp } }, f.ws, undefined, f.ge),
+      ).toBe("deny");
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("扩展：before_agent_start 记下技能目录后，读取技能文件不弹确认（含计划模式）", async () => {
+    const f = skillFixture();
+    vi.stubEnv("PRIMUS_CODING_AGENT_DIR", f.core);
+    try {
+      const gate = createPlanGate();
+      const { guard, state } = createGuard("ask", gate);
+      const { pi, handlers } = fakePi();
+      guard(pi);
+      const read = { toolName: "read", input: { path: join(f.skill, "SKILL.md") } };
+      const before = ctx(CHOICES.deny);
+      expect(await handlers.tool_call?.(read, before)).toMatchObject({ block: true });
+      expect(before.ui.select).toHaveBeenCalled();
+      await handlers.before_agent_start?.(
+        { systemPromptOptions: { skills: [{ name: "foo", baseDir: f.skill }] } },
+        ctx(),
+      );
+      expect(state.skillDirs).toEqual([f.skill]);
+      for (const readOnly of [false, true]) {
+        gate.readOnly = readOnly;
+        const c = ctx(CHOICES.deny);
+        expect(await handlers.tool_call?.(read, c)).toBe(undefined);
+        expect(c.ui.select).not.toHaveBeenCalled();
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(f.root, { recursive: true, force: true });
+    }
   });
 });

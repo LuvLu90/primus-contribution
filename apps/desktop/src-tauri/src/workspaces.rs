@@ -5,7 +5,8 @@
 //! 按最近打开时间倒序，最多保留 [`MAX_RECENT`] 个；同一目录按 [`crate::platform::path_key`] 去重
 //! （Windows 不区分大小写、`/` 与 `\` 等价、忽略末尾分隔符）。写入先写临时文件再改名，不会留下半个文件。
 //!
-//! 信任：首次打开时需要用户确认（[`WorkspaceInfo::needs_trust`]）；选择“信任”时记下 `.primus/` 的内容指纹，
+//! 信任：首次打开时需要用户确认（[`WorkspaceInfo::needs_trust`]）；选择“信任”时记下项目资源的内容指纹
+//! （`.primus/`，以及 Core 在信任后会加载技能的 `.agents/skills`，见 [`agents_skill_dirs`]），
 //! 之后内容变化则视为未信任，下次打开时重新确认。会话以 `--approve` 启动只看 [`Workspaces::approved`]。
 
 use std::io;
@@ -45,7 +46,10 @@ pub(crate) struct TrustDetails {
     pub(crate) skills: Vec<String>,
     /// `.primus/mcp.json` 中的服务器名；文件存在但无法解析或过大时为 `["mcp.json"]`
     pub(crate) mcp_servers: Vec<String>,
-    /// 此刻 `.primus/` 的内容指纹，`workspace_trust` 信任时必须原样带回；
+    /// 工作区及上级目录（到 Git 仓库根为止）`.agents/skills` 中 Core 会加载的技能，
+    /// 带相对工作区的目录前缀（如 `.agents/skills/review`、`../.agents/skills/lint`）
+    pub(crate) agents_skills: Vec<String>,
+    /// 此刻项目资源（`.primus/` 与 `.agents/skills`）的内容指纹，`workspace_trust` 信任时必须原样带回；
     /// 内容过多或无法完整读取时为 None，此时不能信任
     pub(crate) fingerprint: Option<String>,
 }
@@ -54,7 +58,7 @@ pub(crate) struct TrustDetails {
 pub(crate) const AGENTS_MD_LIMIT: usize = 64 * 1024;
 /// `.primus/mcp.json` 最多读取的字节数，超过时只显示文件名。
 const MCP_JSON_LIMIT: u64 = 1024 * 1024;
-/// 计算 `.primus/` 指纹时最多计入的文件数与总字节数；超出则指纹不完整，不能信任。
+/// 计算指纹时最多计入的文件数与总字节数（`.primus/` 与各 `.agents/skills` 合计）；超出则指纹不完整，不能信任。
 const HASH_MAX_FILES: usize = 20_000;
 const HASH_MAX_BYTES: u64 = 512 * 1024 * 1024;
 /// 扩展目录中 `package.json` 最多读取的字节数，超过时报错。
@@ -108,7 +112,10 @@ impl std::fmt::Display for WorkspaceError {
             Self::Unknown(p) => write!(f, "不是已打开过的工作区：{p}"),
             Self::TrustChanged => write!(f, "项目内容在确认后发生了变化，请重新查看后再决定"),
             Self::Changing => write!(f, "项目内容在读取期间发生了变化，请重新打开"),
-            Self::Incomplete => write!(f, "项目的 .primus 内容过多或无法完整读取，不能信任"),
+            Self::Incomplete => write!(
+                f,
+                "项目的 .primus 或 .agents/skills 内容过多或无法完整读取，不能信任"
+            ),
             Self::Read(p, e) => write!(f, "读取 {} 失败：{e}", p.display()),
             Self::Io(e) => write!(f, "无法保存工作区列表：{e}"),
         }
@@ -302,8 +309,10 @@ struct HashItem {
     file: Option<PathBuf>,
 }
 
-/// `.primus/` 的内容指纹（SHA-256）：按相对路径排序，依次计入路径、符号链接目标、长度与内容。
-/// 跟随符号链接（Core 加载扩展与技能时也跟随），按规范路径防止循环。目录不存在时为空集合的指纹。
+/// 项目资源的内容指纹（SHA-256）：先是 `.primus/`，按相对路径排序，依次计入路径、符号链接目标、长度与内容；
+/// 再按 [`agents_skill_dirs`] 的顺序计入每个存在的 `.agents/skills`（目录层级 + 同样的条目）。
+/// 跟随符号链接（Core 加载扩展与技能时也跟随），按规范路径防止循环。都不存在时为空集合的指纹；
+/// 没有 `.agents/skills` 时与只算 `.primus/` 的旧指纹相同，已信任的工作区不必重新确认。
 /// 任何目录或文件读取失败、断开的链接、超过 [`HASH_MAX_FILES`] / [`HASH_MAX_BYTES`] 时返回 None：
 /// 不完整的指纹无法代表全部内容，不能用于信任。
 fn primus_hash(workspace: &Path) -> Option<String> {
@@ -317,10 +326,40 @@ fn primus_hash(workspace: &Path) -> Option<String> {
             walk_hash(&root, "", &mut items, &mut visited)?;
         }
     }
-    items.sort_by(|a, b| a.rel.cmp(&b.rel));
     let mut hasher = Sha256::new();
     let mut budget = HASH_MAX_BYTES;
-    for item in &items {
+    let mut files = items.len();
+    hash_items(&mut hasher, &mut items, &mut budget)?;
+    for (depth, dir) in agents_skill_dirs(workspace) {
+        // 与 Core 一致：读不了的目录 Core 不加载任何技能，这里也不计入；之后能读了，指纹随之变化
+        if std::fs::read_dir(&dir).is_err() {
+            continue;
+        }
+        let mut items = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        walk_hash(&dir, "", &mut items, &mut visited)?;
+        files += items.len();
+        if files > HASH_MAX_FILES {
+            return None;
+        }
+        // 文件名不含 NUL：以 NUL 开头的分段标记不会与 `.primus/` 的条目混淆
+        hasher.update(b"\0agents-skills\0");
+        hasher.update(u64::try_from(depth).unwrap_or(u64::MAX).to_le_bytes());
+        hash_items(&mut hasher, &mut items, &mut budget)?;
+    }
+    Some(
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+    )
+}
+
+/// 把一组条目按相对路径排序后计入指纹；`budget` 为剩余可读字节数，超出或读取失败时返回 None。
+fn hash_items(hasher: &mut Sha256, items: &mut [HashItem], budget: &mut u64) -> Option<()> {
+    items.sort_by(|a, b| a.rel.cmp(&b.rel));
+    for item in items.iter() {
         hasher.update(item.rel.as_bytes());
         hasher.update([0]);
         if let Some(target) = &item.link {
@@ -334,10 +373,10 @@ fn primus_hash(workspace: &Path) -> Option<String> {
                 let file = open_regular(path).ok()?;
                 let len = file.metadata().ok()?.len();
                 // 先看长度再读：超出预算时不读内容，指纹作废
-                budget = budget.checked_sub(len)?;
+                *budget = budget.checked_sub(len)?;
                 hasher.update(b"file:");
                 hasher.update(len.to_le_bytes());
-                let copied = io::copy(&mut io::Read::take(file, len), &mut hasher).ok()?;
+                let copied = io::copy(&mut io::Read::take(file, len), hasher).ok()?;
                 if copied != len {
                     return None;
                 }
@@ -345,13 +384,44 @@ fn primus_hash(workspace: &Path) -> Option<String> {
         }
         hasher.update([0]);
     }
-    Some(
-        hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect(),
-    )
+    Some(())
+}
+
+/// 信任后 Core 会加载技能的 `.agents/skills` 目录（与 agent-core 的发现规则一致）：从工作区起逐级往上，
+/// 每级一个 `<目录>/.agents/skills`，到 Git 仓库根（含 `.git` 的目录，含该级）为止；不在仓库内时一直到根目录。
+/// 用户级的 `~/.agents/skills` 不论信任与否都会加载，不算项目内容，跳过。返回（层级，目录），工作区本身为 0 级。
+fn agents_skill_dirs(workspace: &Path) -> Vec<(usize, PathBuf)> {
+    let start = workspace.to_path_buf();
+    let git_root = start.ancestors().find(|d| d.join(".git").exists());
+    let user_dir = home_dir().map(|h| h.join(".agents").join("skills"));
+    let user_key = user_dir
+        .as_deref()
+        .map(|p| crate::platform::path_key(&p.to_string_lossy()));
+    let mut dirs = Vec::new();
+    for (depth, dir) in start.ancestors().enumerate() {
+        let skills = dir.join(".agents").join("skills");
+        if user_key.as_deref() != Some(crate::platform::path_key(&skills.to_string_lossy()).as_str())
+        {
+            dirs.push((depth, skills));
+        }
+        if git_root == Some(dir) {
+            break;
+        }
+    }
+    dirs
+}
+
+/// 用户主目录，与 Core 一致：优先 `HOME`，Windows 上再取 `USERPROFILE`。
+fn home_dir() -> Option<PathBuf> {
+    let from = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
+    from("HOME")
+        .or_else(|| if cfg!(windows) { from("USERPROFILE") } else { None })
+        .map(PathBuf::from)
+}
+
+/// `.agents/skills` 在信任确认里显示的前缀：相对工作区，如 `.agents/skills`、`../.agents/skills`。
+fn agents_skill_label(depth: usize) -> String {
+    format!("{}.agents/skills", "../".repeat(depth))
 }
 
 fn walk_hash(
@@ -445,9 +515,23 @@ pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
     let skill_dir = primus.join("skills");
     let mut skills = Vec::new();
     let mut visited = std::collections::HashSet::new();
-    list_skills(&skill_dir, "", true, &mut skills, &mut visited)
+    list_skills(&skill_dir, "", SkillLayout::Primus, &mut skills, &mut visited)
         .map_err(|e| WorkspaceError::Read(skill_dir, e))?;
     skills.sort();
+    let mut agents_skills = Vec::new();
+    for (depth, dir) in agents_skill_dirs(root) {
+        // 与指纹一致：读不了的目录 Core 不加载，不列出
+        if std::fs::read_dir(&dir).is_err() {
+            continue;
+        }
+        let mut found = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        list_skills(&dir, "", SkillLayout::Agents, &mut found, &mut visited)
+            .map_err(|e| WorkspaceError::Read(dir.clone(), e))?;
+        found.sort();
+        let label = agents_skill_label(depth);
+        agents_skills.extend(found.into_iter().map(|s| format!("{label}/{s}")));
+    }
     // 列表读完后再取一次指纹：两次不一致说明读取期间内容在变，展示的可能不是指纹对应的内容
     if primus_hash(root) != fingerprint {
         return Err(WorkspaceError::Changing);
@@ -458,6 +542,7 @@ pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
         extensions,
         skills,
         mcp_servers,
+        agents_skills,
         fingerprint,
         path,
     })
@@ -573,12 +658,20 @@ fn has_pi_extensions(manifest: &Path) -> io::Result<bool> {
         .unwrap_or(false))
 }
 
+/// 技能目录的布局：`.primus/skills` 中根目录下直接的 `*.md` 各是一个技能；`.agents/skills` 中反过来，
+/// 根目录下的 `*.md` 不算，子目录里（没有 `SKILL.md` 时）的 `*.md` 各是一个技能。
+#[derive(Clone, Copy)]
+enum SkillLayout {
+    Primus,
+    Agents,
+}
+
 /// Core 会加载的技能（与 agent-core 的发现规则一致）：含 `SKILL.md` 的目录是一个技能且不再往下找；
-/// 否则根目录下直接的 `*.md` 各是一个技能，并递归子目录（跳过隐藏项与 `node_modules`，跟随符号链接）。
+/// 否则按 [`SkillLayout`] 计入 `*.md`，并递归子目录（跳过隐藏项与 `node_modules`，跟随符号链接）。
 fn list_skills(
     dir: &Path,
     rel: &str,
-    root_files: bool,
+    layout: SkillLayout,
     out: &mut Vec<String>,
     visited: &mut std::collections::HashSet<PathBuf>,
 ) -> io::Result<()> {
@@ -616,9 +709,13 @@ fn list_skills(
         } else {
             format!("{rel}/{name}")
         };
+        let md_counts = match layout {
+            SkillLayout::Primus => rel.is_empty(),
+            SkillLayout::Agents => !rel.is_empty(),
+        };
         if meta.is_dir() {
-            list_skills(&path, &child, false, out, visited)?;
-        } else if root_files && name.ends_with(".md") {
+            list_skills(&path, &child, layout, out, visited)?;
+        } else if md_counts && name.ends_with(".md") {
             out.push(child);
         }
     }
@@ -791,6 +888,84 @@ mod tests {
         std::fs::create_dir_all(proj.join(".primus/skills/s")).unwrap();
         std::fs::write(proj.join(".primus/skills/s/SKILL.md"), "x").unwrap();
         assert!(!ws.approved(&path));
+    }
+
+    #[test]
+    fn agents_skills_up_to_git_root_are_listed_and_fingerprinted() {
+        let root = temp_dir("agents");
+        let repo = root.join("repo");
+        let proj = repo.join("sub");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(proj.join(".agents/skills/review")).unwrap();
+        std::fs::create_dir_all(proj.join(".agents/skills/group")).unwrap();
+        std::fs::create_dir_all(repo.join(".agents/skills/lint")).unwrap();
+        std::fs::create_dir_all(root.join(".agents/skills/outside")).unwrap();
+        std::fs::write(proj.join(".agents/skills/review/SKILL.md"), "r").unwrap();
+        // .agents/skills 根目录下的 *.md 不是技能，子目录里的才是
+        std::fs::write(proj.join(".agents/skills/notes.md"), "n").unwrap();
+        std::fs::write(proj.join(".agents/skills/group/x.md"), "x").unwrap();
+        std::fs::write(repo.join(".agents/skills/lint/SKILL.md"), "l").unwrap();
+        std::fs::write(root.join(".agents/skills/outside/SKILL.md"), "o").unwrap();
+        let path = proj.to_string_lossy().into_owned();
+
+        let d = inspect(&path).unwrap();
+        assert_eq!(
+            d.agents_skills,
+            vec![
+                ".agents/skills/group/x.md",
+                ".agents/skills/review",
+                "../.agents/skills/lint",
+            ]
+        );
+        assert!(d.skills.is_empty());
+
+        let ws = Workspaces::new(&root.join("app"));
+        ws.open(&path).unwrap();
+        trust_now(&ws, &path);
+        assert!(ws.approved(&path));
+        // Git 仓库根以上的 .agents/skills Core 不加载：变化不影响信任
+        std::fs::write(root.join(".agents/skills/outside/SKILL.md"), "changed").unwrap();
+        assert!(ws.approved(&path));
+        // 工作区与上级（仓库内）的技能变化、新增都要重新确认
+        std::fs::write(repo.join(".agents/skills/lint/SKILL.md"), "changed").unwrap();
+        assert!(!ws.approved(&path));
+        trust_now(&ws, &path);
+        std::fs::create_dir_all(proj.join(".agents/skills/new")).unwrap();
+        std::fs::write(proj.join(".agents/skills/new/SKILL.md"), "n").unwrap();
+        assert!(!ws.approved(&path));
+        trust_now(&ws, &path);
+        assert!(ws.approved(&path));
+        // .agents/skills 是文件时 Core 不加载，也不计入
+        std::fs::remove_dir_all(repo.join(".agents")).unwrap();
+        trust_now(&ws, &path);
+        std::fs::create_dir_all(repo.join(".agents")).unwrap();
+        std::fs::write(repo.join(".agents/skills"), "file").unwrap();
+        assert!(ws.approved(&path));
+    }
+
+    #[test]
+    fn fingerprint_without_agents_skills_is_unchanged() {
+        // 没有 .agents/skills 时指纹只由 .primus/ 决定（升级前已信任的工作区不必重新确认）
+        let root = temp_dir("compat");
+        let proj = root.join("proj");
+        std::fs::create_dir_all(proj.join(".git")).unwrap();
+        std::fs::create_dir_all(proj.join(".primus/extensions")).unwrap();
+        std::fs::write(proj.join(".primus/extensions/a.js"), "one").unwrap();
+        let mut items = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        walk_hash(&proj.join(".primus"), "", &mut items, &mut visited).unwrap();
+        let mut hasher = Sha256::new();
+        let mut budget = HASH_MAX_BYTES;
+        hash_items(&mut hasher, &mut items, &mut budget).unwrap();
+        let primus_only: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(primus_hash(&proj), Some(primus_only.clone()));
+        std::fs::create_dir_all(proj.join(".agents/skills")).unwrap();
+        // 空的 .agents/skills 也计入（目录存在本身是内容的一部分）
+        assert_ne!(primus_hash(&proj), Some(primus_only));
     }
 
     #[test]
