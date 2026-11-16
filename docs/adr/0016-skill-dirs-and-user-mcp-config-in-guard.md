@@ -16,7 +16,7 @@
 - 受保护路径拆为两类：**机密路径**（`.env*`、`.git/` 内部、`~/.ssh`，`isSecretPath`）与 **App 数据目录**（`isAppDataPath`）。`isProtectedPath` 仍是两者之和，计划模式的命令检查与预览工具照旧使用。
 - `decide()` 对 read / grep / find / ls / write / edit 的路径按以下顺序判断（解析后的路径与跟随符号链接后的真实路径都检查）：
   1. 机密路径：写入拒绝、读取询问。不论位置，技能目录内的 `.env` 也一样。
-  2. 用户级 MCP 配置（`isUserMcpConfig`）：解析后的路径正是 `<agentDir>/mcp.json`，且真实路径是 agentDir 真实路径下的 `mcp.json`。读写按权限模式：完全访问放行，询问 / 自动编辑询问；计划模式下修改由 `decidePlan` 拒绝。`mcp.json` 本身是符号链接（可能指向 `auth.json`）或经其他链接到达时不算，按 App 数据目录处理。
+  2. 用户级 MCP 配置（`isUserMcpConfig`）：解析后的路径（`..` 按字面消去，与 Core 打开的路径相同）正是 `<agentDir>/mcp.json`，`mcp.json` 本身不是符号链接（`lstat`；还不存在时可以新建），且真实路径是 agentDir 真实路径下的 `mcp.json`。第一条保证除 agentDir 自身外不经过任何目录，别处指向 agentDir 的链接 / 目录联接到达的路径不算。agentDir（`PRIMUS_CODING_AGENT_DIR`）由 App 设置，属于可信配置：它自身路径里的链接（macOS 的 `/var` → `/private/var`、安装路径中的目录联接，或 agentDir 本身就是链接）是平台 / 安装层面的，允许；此时绕开它直接用真实目录的路径不算。读写按权限模式：完全访问放行，询问 / 自动编辑询问；计划模式下修改由 `decidePlan` 拒绝。`mcp.json` 本身是符号链接（可能指向 `auth.json`）或经其他链接到达时不算，按 App 数据目录处理。
   3. 已加载技能目录内的读取（`insideLoadedSkill`）：任何权限模式（含计划模式）都放行。技能目录取自每轮开始的 `before_agent_start` 事件 `systemPromptOptions.skills[].baseDir`，只读、不改提示词；`/reload` 后下一轮生效。解析后的路径须在技能目录内，真实路径须在技能目录的真实路径内，`..` 与指向外部的链接 / 目录联接逃不出去。技能目录是根目录、或包含 Core 用户目录、App 数据目录、用户主目录时不放行（配置错误的技能不能把整块数据放开；两边都按解析路径与真实路径比较，经链接 / 目录联接也能识别）。`grep` 会递归读取目录内全部文件的内容（含隐藏文件，例如技能目录里的 `.env`），只对技能目录内的单个文件放行，对目录按常规规则判断；`ls`、`find` 只返回名字。技能目录内的写入不放行。
   4. App 数据目录：写入拒绝、读取询问。
   5. 其余按权限模式与工作区内外判断（不变）。

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -505,7 +505,9 @@ describe("primus-guard 计划模式（只读）", () => {
  * 另有一个不在数据目录内的外部技能目录 <root>/ext-skill
  */
 function skillFixture() {
-  const root = mkdtempSync(join(tmpdir(), "guard-skill-"));
+  // 取真实路径（macOS 的 /var → /private/var、Windows 的 8.3 短名）：经链接到达数据目录的用例按真实路径落到
+  // 数据目录内，各平台结果一致；agentDir 经平台链接配置的情形由专门的用例覆盖
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "guard-skill-")));
   const core = join(root, "data", "users", "S-1", "core");
   const skill = join(core, "skills", "foo");
   const ext = join(root, "ext-skill");
@@ -677,6 +679,65 @@ describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
       rmSync(mcp);
       try {
         symlinkSync(join(f.core, "auth.json"), mcp);
+      } catch (err) {
+        // Windows 无开发者模式时不能创建文件符号链接
+        if ((err as NodeJS.ErrnoException).code === "EPERM") return;
+        throw err;
+      }
+      expect(isUserMcpConfig(mcp, f.ge)).toBe(false);
+      expect(
+        decide("full", { toolName: "write", input: { path: mcp } }, f.ws, undefined, f.ge),
+      ).toBe("deny");
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("mcp.json 经别处的链接到达时不算；agentDir 自身路径里的链接（平台 / 安装层面）不影响", () => {
+    const f = skillFixture();
+    try {
+      const write = (path: string, ge = f.ge) =>
+        decide("full", { toolName: "write", input: { path } }, f.ws, undefined, ge);
+      // 另一个指向 agentDir 的目录链接：真实路径相同，但不是 agentDir 的确切路径，按数据目录拒绝
+      const alias = join(f.root, "alias");
+      symlinkSync(f.core, alias, "junction");
+      expect(isUserMcpConfig(join(alias, "mcp.json"), f.ge)).toBe(false);
+      expect(write(join(alias, "mcp.json"))).toBe("deny");
+      // `..` 按字面消去后正是 agentDir/mcp.json：Core 打开的也是这个路径
+      expect(isUserMcpConfig(join(f.core, "skills", "..", "mcp.json"), f.ge)).toBe(true);
+
+      // agentDir 经上级的目录链接配置（如 macOS 的 /var → /private/var、安装路径里的目录联接）：仍然识别
+      const dataLink = join(f.root, "data-link");
+      symlinkSync(join(f.root, "data"), dataLink, "junction");
+      const linkedCore = join(dataLink, "users", "S-1", "core");
+      const viaParent = { ...f.ge, env: { PRIMUS_CODING_AGENT_DIR: linkedCore } };
+      expect(isUserMcpConfig(join(linkedCore, "mcp.json"), viaParent)).toBe(true);
+      expect(write(join(linkedCore, "mcp.json"), viaParent)).toBe("allow");
+
+      // agentDir 本身是链接（core-link → core）：App 设置的可信配置，同样识别
+      const coreLink = join(f.root, "data", "users", "S-1", "core-link");
+      symlinkSync(f.core, coreLink, "junction");
+      const viaSelf = { ...f.ge, env: { PRIMUS_CODING_AGENT_DIR: coreLink } };
+      expect(isUserMcpConfig(join(coreLink, "mcp.json"), viaSelf)).toBe(true);
+      expect(write(join(coreLink, "mcp.json"), viaSelf)).toBe("allow");
+      // 此时绕开配置的 agentDir 直接用真实目录：不是确切路径，不算
+      expect(isUserMcpConfig(join(f.core, "mcp.json"), viaSelf)).toBe(false);
+
+      // 还不存在的 mcp.json（新建）：算
+      rmSync(join(f.core, "mcp.json"));
+      expect(isUserMcpConfig(join(f.core, "mcp.json"), f.ge)).toBe(true);
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("mcp.json 是悬空的符号链接时不算（目标之后才出现，可能是任意文件）", () => {
+    const f = skillFixture();
+    try {
+      const mcp = join(f.core, "mcp.json");
+      rmSync(mcp);
+      try {
+        symlinkSync(join(f.core, "later.json"), mcp);
       } catch (err) {
         // Windows 无开发者模式时不能创建文件符号链接
         if ((err as NodeJS.ErrnoException).code === "EPERM") return;

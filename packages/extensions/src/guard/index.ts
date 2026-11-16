@@ -193,9 +193,14 @@ export function isProtectedPath(
 }
 
 /**
- * 是否正是用户级 MCP 配置 `<agentDir>/mcp.json`（ADR 0016）：解析后的路径必须就是它，真实路径必须是
- * agentDir 的真实路径下的 `mcp.json`。mcp.json 本身是符号链接（可能指向 auth.json 等）或经别处的链接到达时都不算，
- * 按 App 数据目录处理。
+ * 是否正是用户级 MCP 配置 `<agentDir>/mcp.json`（ADR 0016）。三条都满足才算：
+ * 1. 解析后的路径（`..` 按字面消去，与 Core 打开的路径相同）正是 `<agentDir>/mcp.json`：除 agentDir 自身的
+ *    各级目录外不经过任何目录，所以不会经由别处指向 agentDir 的链接 / 目录联接到达；
+ * 2. mcp.json 本身不是符号链接（可能指向 auth.json 等）；还不存在（新建）时可以；
+ * 3. 真实路径是 agentDir 真实路径下的 `mcp.json`（再防一道，例如不算符号链接的重解析点）。
+ * agentDir（PRIMUS_CODING_AGENT_DIR）由 App 设置，属于可信配置：它自身路径里的链接（macOS 的 `/var`、
+ * 安装路径里的目录联接，或 agentDir 本身就是链接）是平台 / 安装层面的，不影响判断。
+ * 不满足时按 App 数据目录处理。
  */
 export function isUserMcpConfig(abs: string, ge: GuardEnv): boolean {
   const agentDir = agentDirOf(ge.env);
@@ -204,7 +209,13 @@ export function isUserMcpConfig(abs: string, ge: GuardEnv): boolean {
     ge.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
   const file = join(agentDir, "mcp.json");
   if (!eq(resolve(abs), file)) return false;
-  return eq(realPath(abs, ge.real), join(realPath(agentDir, ge.real), "mcp.json"));
+  try {
+    if (lstatSync(file).isSymbolicLink()) return false;
+  } catch (err) {
+    // 不存在时是新建；其他错误（无权限、上级不是目录等）无法确认，不算
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") return false;
+  }
+  return eq(realPath(file, ge.real), join(realPath(agentDir, ge.real), "mcp.json"));
 }
 
 /**
