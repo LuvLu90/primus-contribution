@@ -163,19 +163,58 @@ function dataDirOf(env: Record<string, string | undefined>): string | undefined 
   return basename(data).toLowerCase() === "data" ? data : undefined;
 }
 
-/** App 数据目录内（默认对话工作区 `data\users\<SID>\chat` 除外） */
+/** 平台 / 安装层面的目录（App 数据目录、Core 用户目录）的真实路径缓存：会话内不会变，只缓存已存在的目录 */
+const realDirCache = new Map<string, string>();
+
+/** 目录的真实路径；用默认的 realpath 且目录存在时缓存（测试替换 real 时不缓存） */
+function realDir(dir: string, real?: (p: string) => string): string {
+  if (real) return realPath(dir, real);
+  const cached = realDirCache.get(dir);
+  if (cached !== undefined) return cached;
+  const r = realPath(dir);
+  if (isDirectory(dir)) realDirCache.set(dir, r);
+  return r;
+}
+
+/**
+ * App 数据目录的比较根：数据目录本身与其真实路径、Core 用户目录的真实路径（它自身是链接、指向数据目录外时），
+ * 以及要排除的默认对话工作区——按数据目录的字面路径与真实路径各一份（不取 chat 自身的真实路径：
+ * chat 是指向 core 等目录的链接时不能借此把它们排除在外）。未配置时为 undefined。
+ */
+function appDataRoots(
+  env: Record<string, string | undefined>,
+  real?: (p: string) => string,
+): { data: string[]; chat: string[] } | undefined {
+  const data = dataDirOf(env);
+  const coreDir = agentDirOf(env);
+  if (!data || !coreDir) return undefined;
+  const dataReal = realDir(data, real);
+  // 例外：users\<SID>\chat 是未选工作区时对话的默认工作区（薄壳 sessions.rs 的 DEFAULT_WORKSPACE_DIR），
+  // 属于用户自己的文件，不算 App 数据；其中的 .env*、.git 仍按机密路径保护
+  const chat = resolve(coreDir, "..", "chat");
+  return {
+    data: [data, dataReal, realDir(coreDir, real)],
+    chat: [chat, join(dataReal, relative(data, chat))],
+  };
+}
+
+/**
+ * App 数据目录内（默认对话工作区 `data\users\<SID>\chat` 除外）。数据目录按字面路径与真实路径都比较：
+ * 数据目录在平台链接下（macOS 的 /var → /private/var、安装路径里的目录联接）时，经真实路径给出的
+ * auth.json、mcp.json 同样识别。调用方另把 `abs` 的真实路径也传进来比较。
+ */
 function isAppDataPath(
   abs: string,
   env: Record<string, string | undefined>,
   platform: NodeJS.Platform,
+  real?: (p: string) => string,
 ): boolean {
-  const data = dataDirOf(env);
-  const coreDir = agentDirOf(env);
-  if (!data || !coreDir) return false;
-  // 例外：users\<SID>\chat 是未选工作区时对话的默认工作区（薄壳 sessions.rs 的 DEFAULT_WORKSPACE_DIR），
-  // 属于用户自己的文件，不算 App 数据；其中的 .env*、.git 仍按机密路径保护
-  const chat = resolve(coreDir, "..", "chat");
-  return within(data, abs, platform) && !within(chat, abs, platform);
+  const roots = appDataRoots(env, real);
+  if (!roots) return false;
+  return (
+    roots.data.some((d) => within(d, abs, platform)) &&
+    !roots.chat.some((c) => within(c, abs, platform))
+  );
 }
 
 /**
@@ -188,8 +227,9 @@ export function isProtectedPath(
   env: Record<string, string | undefined> = process.env,
   platform: NodeJS.Platform = process.platform,
   home: string = homedir(),
+  real?: (p: string) => string,
 ): boolean {
-  return isSecretPath(abs, platform, home) || isAppDataPath(abs, env, platform);
+  return isSecretPath(abs, platform, home) || isAppDataPath(abs, env, platform, real);
 }
 
 /**
@@ -317,7 +357,10 @@ export function decide(
     // grep 会递归读取目录里的文件内容（含隐藏文件，如技能目录里的 .env），只对单个文件放行
     if (isRead && insideLoadedSkill(abs, ge) && (call.toolName !== "grep" || !isDirectory(real)))
       return "allow";
-    if (isAppDataPath(abs, ge.env, ge.platform) || isAppDataPath(real, ge.env, ge.platform))
+    if (
+      isAppDataPath(abs, ge.env, ge.platform, ge.real) ||
+      isAppDataPath(real, ge.env, ge.platform, ge.real)
+    )
       return isEdit ? "deny" : "ask";
   }
   const command = call.input?.command;
@@ -401,8 +444,8 @@ export function commandTouchesProtected(
     try {
       const abs = resolveToolPath(w, cwd, ge.platform, ge.home);
       return (
-        isProtectedPath(abs, ge.env, ge.platform, ge.home) ||
-        isProtectedPath(realPath(abs, ge.real), ge.env, ge.platform, ge.home)
+        isProtectedPath(abs, ge.env, ge.platform, ge.home, ge.real) ||
+        isProtectedPath(realPath(abs, ge.real), ge.env, ge.platform, ge.home, ge.real)
       );
     } catch {
       return false;

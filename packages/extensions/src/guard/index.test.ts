@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createPlanGate } from "../plan/gate.ts";
 import {
@@ -726,6 +726,76 @@ describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
       // 还不存在的 mcp.json（新建）：算
       rmSync(join(f.core, "mcp.json"));
       expect(isUserMcpConfig(join(f.core, "mcp.json"), f.ge)).toBe(true);
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("数据目录在链接下配置时，经真实路径访问 auth.json / mcp.json 仍按 App 数据处理", () => {
+    const f = skillFixture();
+    try {
+      const call = (toolName: string, path: string) => ({ toolName, input: { path } });
+      // agentDir 经上级的目录链接配置（如 macOS 的 /var → /private/var）；模型给出的是真实路径
+      const rootLink = join(f.root, "root-link");
+      symlinkSync(f.root, rootLink, "junction");
+      const linked = {
+        ...f.ge,
+        env: { PRIMUS_CODING_AGENT_DIR: join(rootLink, "data", "users", "S-1", "core") },
+      };
+      // 经配置的（链接下的）路径访问 mcp.json 仍是用户级 MCP 配置
+      expect(
+        isUserMcpConfig(join(rootLink, "data", "users", "S-1", "core", "mcp.json"), linked),
+      ).toBe(true);
+      for (const name of ["auth.json", "mcp.json", "mcp-auth.json"]) {
+        const target = join(f.core, name);
+        // mcp.json 的例外只认 <agentDir>/mcp.json 的确切路径；真实路径别名按数据目录处理
+        expect(isUserMcpConfig(target, linked)).toBe(false);
+        expect(isProtectedPath(target, linked.env, linked.platform, linked.home)).toBe(true);
+        for (const mode of MODES) {
+          for (const tool of ["write", "edit"])
+            expect(
+              decide(mode, call(tool, target), f.ws, undefined, linked),
+              `${mode} ${tool} ${name}`,
+            ).toBe("deny");
+          expect(
+            decide(mode, call("read", target), f.ws, undefined, linked),
+            `${mode} read ${name}`,
+          ).toBe("ask");
+        }
+      }
+      // 默认对话工作区经真实路径同样不算 App 数据
+      const chat = join(f.root, "data", "users", "S-1", "chat");
+      mkdirSync(chat, { recursive: true });
+      expect(decide("full", call("write", join(chat, "a.txt")), f.ws, undefined, linked)).toBe(
+        "allow",
+      );
+      // chat 是指向 core 的链接时不能借此排除 core 里的文件
+      rmSync(chat, { recursive: true });
+      symlinkSync(f.core, chat, "junction");
+      expect(decide("full", call("write", join(chat, "auth.json")), f.ws, undefined, f.ge)).toBe(
+        "deny",
+      );
+
+      // agentDir 本身是指向数据目录外的链接：经真实路径访问同样受保护
+      const outside = join(f.root, "outside-core");
+      mkdirSync(outside);
+      writeFileSync(join(outside, "auth.json"), "{}");
+      const coreOut = join(f.root, "data", "users", "S-2", "core");
+      mkdirSync(dirname(coreOut), { recursive: true });
+      symlinkSync(outside, coreOut, "junction");
+      const out = { ...f.ge, env: { PRIMUS_CODING_AGENT_DIR: coreOut } };
+      expect(decide("full", call("write", join(outside, "auth.json")), f.ws, undefined, out)).toBe(
+        "deny",
+      );
+      expect(decide("full", call("read", join(outside, "auth.json")), f.ws, undefined, out)).toBe(
+        "ask",
+      );
+      expect(decide("full", call("write", join(outside, "mcp.json")), f.ws, undefined, out)).toBe(
+        "deny",
+      );
+      expect(decide("full", call("write", join(coreOut, "mcp.json")), f.ws, undefined, out)).toBe(
+        "allow",
+      );
     } finally {
       rmSync(f.root, { recursive: true, force: true });
     }
