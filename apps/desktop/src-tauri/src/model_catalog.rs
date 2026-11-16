@@ -338,7 +338,10 @@ mod tests {
         };
         assert_eq!(lookup("Kimi-K3.1"), Some(k3_family));
         assert_eq!(lookup("kimi-k3.2-pro"), Some(k3_family));
-        assert_eq!(lookup("openrouter/moonshotai/kimi-k3.2-pro"), Some(k3_family));
+        assert_eq!(
+            lookup("openrouter/moonshotai/kimi-k3.2-pro"),
+            Some(k3_family)
+        );
         // 带厂商前缀的 ID
         assert_eq!(lookup("moonshotai/kimi-k3"), Some(k3));
         // 档位后缀：去掉 -turbo 命中 kimi-k2-6
