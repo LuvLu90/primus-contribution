@@ -1317,40 +1317,59 @@ fn check_mcp_name(name: &str) -> Result<(), CapabilityError> {
     }
 }
 
-/// 列出 MCP 服务器并测试连接（Core 命令行 `mcp list --json`，超时 60 秒）。
-#[tauri::command(async)]
-pub(crate) fn mcp_list(
-    supervisor: State<'_, Supervisor>,
+/// 在阻塞线程池上运行 Core 命令行：`run_cli` 会等子进程结束（最长数分钟），不能占住异步运行时的工作线程。
+async fn run_cli_blocking(
+    app: tauri::AppHandle,
+    args: Vec<String>,
+    timeout: std::time::Duration,
 ) -> Result<crate::supervisor::CliOutput, CapabilityError> {
-    supervisor
-        .run_cli(&["mcp", "list", "--json"], MCP_LIST_TIMEOUT)
-        .map_err(|e| e.to_string().into())
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        app.state::<Supervisor>()
+            .run_cli(&args, timeout)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(Into::into)
+}
+
+/// 列出 MCP 服务器并测试连接（Core 命令行 `mcp list --json`，超时 60 秒）。
+#[tauri::command]
+pub(crate) async fn mcp_list(
+    app: tauri::AppHandle,
+) -> Result<crate::supervisor::CliOutput, CapabilityError> {
+    let args = ["mcp", "list", "--json"].map(String::from).to_vec();
+    run_cli_blocking(app, args, MCP_LIST_TIMEOUT).await
 }
 
 /// OAuth 登录（Core 命令行 `mcp login`，Core 自己打开系统浏览器并等回调）。
-#[tauri::command(async)]
-pub(crate) fn mcp_login(
-    supervisor: State<'_, Supervisor>,
+#[tauri::command]
+pub(crate) async fn mcp_login(
+    app: tauri::AppHandle,
     name: String,
 ) -> Result<crate::supervisor::CliOutput, CapabilityError> {
     check_mcp_name(&name)?;
     let timeout = MCP_LOGIN_SECONDS.to_string();
-    supervisor
-        .run_cli(
-            &["mcp", "login", "--timeout", &timeout, "--", &name],
-            std::time::Duration::from_secs(MCP_LOGIN_SECONDS + 30),
-        )
-        .map_err(|e| e.to_string().into())
+    let args = ["mcp", "login", "--timeout", &timeout, "--", &name]
+        .map(String::from)
+        .to_vec();
+    run_cli_blocking(
+        app,
+        args,
+        std::time::Duration::from_secs(MCP_LOGIN_SECONDS + 30),
+    )
+    .await
 }
 
 /// 删除已保存的 OAuth 凭据（Core 命令行 `mcp logout`）。
-#[tauri::command(async)]
-pub(crate) fn mcp_logout(
-    supervisor: State<'_, Supervisor>,
+#[tauri::command]
+pub(crate) async fn mcp_logout(
+    app: tauri::AppHandle,
     name: String,
 ) -> Result<crate::supervisor::CliOutput, CapabilityError> {
     check_mcp_name(&name)?;
-    supervisor
-        .run_cli(&["mcp", "logout", "--", &name], MCP_LOGOUT_TIMEOUT)
-        .map_err(|e| e.to_string().into())
+    let args = ["mcp", "logout", "--", &name].map(String::from).to_vec();
+    run_cli_blocking(app, args, MCP_LOGOUT_TIMEOUT).await
 }

@@ -184,7 +184,8 @@ fn is_reserved_windows_name(part: &str) -> bool {
         stem.as_str(),
         "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
     ) || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-        && stem.len() == 4
+        // 按字符数：上标数字在 UTF-8 中占两个字节
+        && stem.chars().count() == 4
         && stem[3..]
             .chars()
             .all(|c| c.is_ascii_digit() || "¹²³".contains(c)))
@@ -477,6 +478,8 @@ pub(crate) mod tests {
             "CON",
             "dir/nul.txt",
             "COM1.md",
+            "COM¹.md",
+            "lpt³",
             "trailing.",
             "space ",
             "ctrl\u{1}",
