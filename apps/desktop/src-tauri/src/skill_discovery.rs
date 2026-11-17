@@ -181,20 +181,30 @@ mod fs_ops {
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     pub(crate) enum Op {
         Metadata,
+        SymlinkMetadata,
         Exists,
         Read,
     }
 
     #[cfg(test)]
+    type Fault = (Op, std::path::PathBuf, usize, io::ErrorKind);
+
+    #[cfg(test)]
     thread_local! {
-        static FAULTS: std::cell::RefCell<Vec<(Op, std::path::PathBuf, usize)>> =
+        static FAULTS: std::cell::RefCell<Vec<Fault>> =
             const { std::cell::RefCell::new(Vec::new()) };
     }
 
-    /// 测试用：本线程接下来对 `path` 的 `times` 次 `op` 操作返回错误。
+    /// 测试用：本线程接下来对 `path` 的 `times` 次 `op` 操作返回错误（`ErrorKind::Other`）。
     #[cfg(test)]
     pub(crate) fn inject(op: Op, path: &Path, times: usize) {
-        FAULTS.with(|f| f.borrow_mut().push((op, path.to_path_buf(), times)));
+        inject_kind(op, path, times, io::ErrorKind::Other);
+    }
+
+    /// 测试用：同 [`inject`]，但返回指定种类的错误（如 `NotFound`）。
+    #[cfg(test)]
+    pub(crate) fn inject_kind(op: Op, path: &Path, times: usize, kind: io::ErrorKind) {
+        FAULTS.with(|f| f.borrow_mut().push((op, path.to_path_buf(), times, kind)));
     }
 
     /// 测试用：清除本线程注入的故障。
@@ -208,22 +218,18 @@ mod fs_ops {
         {
             let hit = FAULTS.with(|f| {
                 let mut f = f.borrow_mut();
-                match f
-                    .iter_mut()
-                    .find(|(o, p, n)| *o == op && p == path && *n > 0)
-                {
-                    Some(fault) => {
+                f.iter_mut()
+                    .find(|(o, p, n, _)| *o == op && p == path && *n > 0)
+                    .map(|fault| {
                         fault.2 -= 1;
-                        true
-                    }
-                    None => false,
-                }
+                        fault.3
+                    })
             });
-            if hit {
-                return Err(io::Error::other(format!(
-                    "注入的故障：{op:?} {}",
-                    path.display()
-                )));
+            if let Some(kind) = hit {
+                return Err(io::Error::new(
+                    kind,
+                    format!("注入的故障：{op:?} {}", path.display()),
+                ));
             }
         }
         let _ = (op, path);
@@ -233,6 +239,11 @@ mod fs_ops {
     pub(super) fn metadata(path: &Path) -> io::Result<std::fs::Metadata> {
         check(Op::Metadata, path)?;
         std::fs::metadata(path)
+    }
+
+    pub(super) fn symlink_metadata(path: &Path) -> io::Result<std::fs::Metadata> {
+        check(Op::SymlinkMetadata, path)?;
+        std::fs::symlink_metadata(path)
     }
 
     pub(super) fn try_exists(path: &Path) -> io::Result<bool> {
@@ -247,11 +258,16 @@ mod fs_ops {
 }
 
 #[cfg(test)]
-pub(crate) use fs_ops::{Op as FaultOp, clear as clear_faults, inject as inject_fault};
+pub(crate) use fs_ops::{
+    Op as FaultOp, clear as clear_faults, inject as inject_fault, inject_kind as inject_fault_kind,
+};
 
-/// `metadata` 的错误是不是“断开的链接”（Core 跳过它们）。
+/// `metadata` 的错误是不是“断开的链接”（Core 跳过它们）：目标不存在（`NotFound`），且路径本身确认是链接
+/// （Windows 上含目录联接）。普通文件 / 目录的 `metadata` 瞬时返回 `NotFound`（如两次读取之间被替换）不算，
+/// 严格扫描照常报错。
 fn is_broken_link(path: &Path, e: &std::io::Error) -> bool {
-    e.kind() == std::io::ErrorKind::NotFound && std::fs::symlink_metadata(path).is_ok()
+    e.kind() == std::io::ErrorKind::NotFound
+        && fs_ops::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
 }
 
 /// `ignore` 包对一行模式的解释。无效（只有空格、末尾单个 `\`）时为 None。
@@ -945,6 +961,56 @@ pub(crate) mod tests {
             collect_complete(&root.join("missing"), Mode::Core)
                 .unwrap()
                 .is_empty()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn strict_scan_reports_transient_not_found_on_regular_entries() {
+        let root = temp("meta-notfound");
+        write(&root.join("pkg/inner/SKILL.md"), "x");
+        write(&root.join("pkg/other/SKILL.md"), "x");
+        write(&root.join("solo/x/SKILL.md"), "x");
+        let skill = root.join("pkg/other/SKILL.md");
+        let _faults = Faults;
+        // 普通文件的元数据瞬时返回 NotFound：它不是链接，不能当断链跳过
+        inject_fault_kind(FaultOp::Metadata, &skill, 1, std::io::ErrorKind::NotFound);
+        assert!(collect_complete(&root, Mode::Core).is_err());
+        // 普通目录同样
+        inject_fault_kind(
+            FaultOp::Metadata,
+            &root.join("solo"),
+            1,
+            std::io::ErrorKind::NotFound,
+        );
+        assert!(collect_complete(&root, Mode::Core).is_err());
+        // 确认是不是链接时也读不到（NotFound）：不能断定是断链
+        inject_fault_kind(FaultOp::Metadata, &skill, 1, std::io::ErrorKind::NotFound);
+        inject_fault_kind(
+            FaultOp::SymlinkMetadata,
+            &skill,
+            1,
+            std::io::ErrorKind::NotFound,
+        );
+        assert!(collect_complete(&root, Mode::Core).is_err());
+        assert_eq!(collect_complete(&root, Mode::Core).unwrap().len(), 3);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn strict_scan_skips_real_broken_links() {
+        let root = temp("broken-link");
+        write(&root.join("pkg/inner/SKILL.md"), "x");
+        // 指向已删除目录的链接：Core 跳过，严格扫描也跳过，不算错误
+        let gone = root.join("gone");
+        std::fs::create_dir_all(&gone).unwrap();
+        if !link_dir(&gone, &root.join("pkg/dangling")) {
+            return;
+        }
+        std::fs::remove_dir(&gone).unwrap();
+        assert_eq!(
+            rel_to(&root, &collect_complete(&root, Mode::Core).unwrap()),
+            ["pkg/inner/SKILL.md"]
         );
         std::fs::remove_dir_all(root).unwrap();
     }
