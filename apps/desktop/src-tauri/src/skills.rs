@@ -408,15 +408,24 @@ pub(crate) fn delete(core_dir: &Path, home: Option<&Path>, file: &str) -> Result
         return Err(invalid("只能删除能力中心技能目录里的技能"));
     };
     remove_entry(&target)?;
-    if top != target && top.is_dir() && !is_link(&top) {
-        // 扫描须完整：读不全时不能断定“没有剩余技能”，保留顶层目录。按发现规则逐条路径看（不按真实路径去重），
-        // 别处经链接指向这里的技能不会让这里的技能被漏看
-        let remaining = skill_discovery::collect_complete(&root, Mode::Core)
-            .map(|files| files.iter().any(|f| f.starts_with(&top)))
-            .unwrap_or(true);
-        if !remaining {
-            remove_entry(&top)?;
-        }
+    if top != target {
+        remove_top_if_empty(&root, &top)?;
+    }
+    Ok(())
+}
+
+/// 顶层目录 `top` 里已经没有技能时删除它。
+fn remove_top_if_empty(root: &Path, top: &Path) -> io::Result<()> {
+    if !top.is_dir() || is_link(top) {
+        return Ok(());
+    }
+    // 扫描须完整：读不全（含根目录在扫描期间消失）时不能断定“没有剩余技能”，保留顶层目录。按发现规则逐条路径看
+    // （不按真实路径去重），别处经链接指向这里的技能不会让这里的技能被漏看
+    let remaining = skill_discovery::collect_complete(root, Mode::Core)
+        .map(|files| files.iter().any(|f| f.starts_with(top)))
+        .unwrap_or(true);
+    if !remaining {
+        remove_entry(top)?;
     }
     Ok(())
 }
@@ -492,18 +501,24 @@ fn stage_dir(tmp_dir: &Path, id: &str) -> Result<PathBuf, SkillError> {
 static RETIRED_STAGES: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
+/// 占用与作废记录用的键：暂存编号统一转小写。大小写不敏感的文件系统上，只差大小写的两个编号指向同一个暂存目录，
+/// 必须共用同一个键。
+fn stage_key(id: &str) -> String {
+    id.to_ascii_lowercase()
+}
+
 fn retire_stage(id: &str) {
     RETIRED_STAGES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(id.to_owned());
+        .insert(stage_key(id));
 }
 
 fn stage_retired(id: &str) -> bool {
     RETIRED_STAGES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .contains(id)
+        .contains(&stage_key(id))
 }
 
 /// 本进程内正在安装或放弃的暂存编号：同一个暂存的安装与放弃串行进行。替换失败、新来源正在回迁暂存时，另一个
@@ -524,12 +539,13 @@ impl Drop for StageLock {
 
 /// 占用 `id`；已被另一个请求占用时直接返回错误，不等待。
 fn lock_stage(id: &str) -> Result<StageLock, SkillError> {
+    let key = stage_key(id);
     let inserted = BUSY_STAGES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(id.to_owned());
+        .insert(key.clone());
     if inserted {
-        Ok(StageLock(id.to_owned()))
+        Ok(StageLock(key))
     } else {
         Err(invalid("这次暂存正在处理，请稍候再试"))
     }
@@ -1847,6 +1863,43 @@ mod tests {
         assert!(
             core.join("skills/pkg/other/SKILL.md").is_file(),
             "子目录在扫描期间消失时扫描不完整，保留顶层目录"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stage_keys_ignore_ascii_case() {
+        // 只差大小写的编号在大小写不敏感的文件系统上是同一个暂存目录：占用与作废共用一个键
+        let id = "1700000000000-caseKey-0";
+        let lock = lock_stage(id).unwrap();
+        assert!(lock_stage(&id.to_ascii_uppercase()).is_err());
+        assert!(lock_stage(&id.to_ascii_lowercase()).is_err());
+        drop(lock);
+        let again = lock_stage(&id.to_ascii_uppercase()).unwrap();
+        drop(again);
+        assert!(!stage_retired(id));
+        retire_stage(&id.to_ascii_uppercase());
+        assert!(stage_retired(id));
+        assert!(stage_retired(&id.to_ascii_lowercase()));
+    }
+
+    #[test]
+    fn delete_keeps_package_when_the_skills_root_vanishes_during_the_scan() {
+        use crate::skill_discovery::{inject_absent_dir, tests::Faults};
+        let root = temp("delete-vanish-root");
+        let core = root.join("core");
+        write(&core.join("skills/pkg/inner/SKILL.md"), SKILL);
+        write(&core.join("skills/pkg/other/SKILL.md"), SKILL);
+        let _faults = Faults;
+        let skills = user_skills_dir(&core);
+        let top = skills.join("pkg");
+        // 扫描剩余技能时 skills/ 根目录“消失”（try_exists 返回 Ok(false)），之后又回来
+        std::fs::remove_dir_all(core.join("skills/pkg/inner")).unwrap();
+        inject_absent_dir(&skills, 1);
+        remove_top_if_empty(&skills, &top).unwrap();
+        assert!(
+            core.join("skills/pkg/other/SKILL.md").is_file(),
+            "根目录在扫描期间消失时扫描不完整，保留顶层目录"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

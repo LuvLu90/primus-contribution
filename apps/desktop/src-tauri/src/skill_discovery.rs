@@ -611,7 +611,7 @@ pub(crate) fn collect(root: &Path, mode: Mode) -> Vec<PathBuf> {
 }
 
 /// 与 [`collect`] 相同，但任何读取错误（目录是否存在、目录、目录项、元数据、忽略文件，断开的链接与不存在的忽略文件
-/// 除外）都返回错误：结果不完整时调用方
+/// 除外）都返回错误，`root` 不存在（含扫描期间消失）也返回错误：结果不完整时调用方
 /// 不能把“没找到”当作“没有”（删除时判断顶层目录里还有没有技能）。
 pub(crate) fn collect_complete(root: &Path, mode: Mode) -> std::io::Result<Vec<PathBuf>> {
     let mut walker = Walker::new(mode, true);
@@ -663,11 +663,12 @@ impl Walker {
     }
 
     fn walk(&mut self, dir: &Path, rel_dir: &str, is_root: bool) -> std::io::Result<()> {
-        // 元数据读取出错不等于不存在：严格扫描时返回错误。根目录不存在就是没有技能；子目录是刚从上一级读出来的，
-        // 这时说不存在说明它在扫描期间消失了（可能马上又回来），严格扫描当作不完整
+        // 元数据读取出错不等于不存在：严格扫描时返回错误。宽松扫描时根目录不存在就是没有技能；严格扫描只用于
+        // 删除后判断剩余技能，这时根目录刚刚还在，说不存在说明它在扫描期间消失了（可能马上又回来），与子目录一样
+        // 当作不完整
         match fs_ops::try_exists(dir) {
             Ok(true) => {}
-            Ok(false) if is_root => return Ok(()),
+            Ok(false) if is_root && !self.strict => return Ok(()),
             Ok(false) => {
                 return self.fail(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -997,13 +998,10 @@ pub(crate) mod tests {
         assert!(collect_complete(&root, Mode::Core).is_err());
         inject_fault(FaultOp::Exists, &root, 1);
         assert!(collect_complete(&root, Mode::Core).is_err());
-        // 故障用完后扫描完整；真正不存在的根目录不是错误
+        // 故障用完后扫描完整；严格扫描时根目录不存在算不完整，宽松扫描是没有技能
         assert_eq!(collect_complete(&root, Mode::Core).unwrap().len(), 2);
-        assert!(
-            collect_complete(&root.join("missing"), Mode::Core)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(collect_complete(&root.join("missing"), Mode::Core).is_err());
+        assert!(collect(&root.join("missing"), Mode::Core).is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1055,9 +1053,11 @@ pub(crate) mod tests {
             rel_to(&root, &collect(&root, Mode::Core)),
             ["pkg/inner/SKILL.md"]
         );
-        // 根目录不存在仍是“没有技能”，不是错误
+        // 根目录在扫描期间消失：严格扫描同样不完整，宽松扫描是没有技能
         inject_absent_dir(&root, 1);
-        assert!(collect_complete(&root, Mode::Core).unwrap().is_empty());
+        assert!(collect_complete(&root, Mode::Core).is_err());
+        inject_absent_dir(&root, 1);
+        assert!(collect(&root, Mode::Core).is_empty());
         assert_eq!(collect_complete(&root, Mode::Core).unwrap().len(), 2);
         std::fs::remove_dir_all(root).unwrap();
     }
