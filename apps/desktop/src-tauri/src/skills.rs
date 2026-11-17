@@ -33,6 +33,8 @@ const MAX_CANDIDATES: usize = 200;
 const STAGE_TTL: Duration = Duration::from_secs(60 * 60);
 /// 暂存目录里选定的根目录名（zip 解压后去掉顶层目录、按链接取子目录后的位置）。
 const STAGE_ROOT: &str = "root";
+/// 暂存目录里的作废标记：替换失败后新来源没能完整放回暂存，这次暂存不能再用来安装。
+const STAGE_BROKEN: &str = "broken";
 /// 技能目录名（安装时的目标名）最长的字符数。
 const MAX_DIR_NAME: usize = 64;
 
@@ -706,6 +708,9 @@ pub(crate) fn install(
         ));
     }
     let stage = stage_dir(tmp_dir, stage_id)?;
+    if stage.join(STAGE_BROKEN).exists() {
+        return Err(invalid("这次暂存已不完整，不能再安装，请重新选择来源"));
+    }
     let source = stage.join(STAGE_ROOT);
     if is_link(&source) || skill_discovery::collect_as_installed(&source).is_empty() {
         return Err(invalid("暂存中没有技能"));
@@ -721,22 +726,26 @@ pub(crate) fn install(
     let incoming = root.join(format!(".{name}.installing-{stage_id}"));
     move_dir(&source, &incoming)?;
     let old = root.join(format!(".{name}.replaced-{stage_id}"));
-    // 替换失败时把新来源放回暂存，同一个 stage_id 可以在解除占用后重试；放不回去才删掉
-    let restore = || {
-        if move_dir(&incoming, &source).is_err() {
-            let _ = remove_entry(&incoming);
+    // 替换失败时把新来源放回暂存，同一个 stage_id 可以在解除占用后重试。放不回去时（如跨卷复制中途出错）不删
+    // `incoming`——那是新来源唯一完整的一份——并把这次暂存标为作废，不会拿不完整的暂存再装一次
+    let restore = |e: io::Error| -> SkillError {
+        if move_dir(&incoming, &source).is_ok() {
+            return e.into();
         }
+        let _ = std::fs::write(stage.join(STAGE_BROKEN), b"");
+        invalid(format!(
+            "安装失败（{e}），新内容也没能放回暂存，已原样保留在 {}；请处理后重新选择来源",
+            incoming.display()
+        ))
     };
     if exists && let Err(e) = std::fs::rename(&target, &old) {
-        restore();
-        return Err(e.into());
+        return Err(restore(e));
     }
     if let Err(e) = std::fs::rename(&incoming, &target) {
         if exists {
             let _ = std::fs::rename(&old, &target);
         }
-        restore();
-        return Err(e.into());
+        return Err(restore(e));
     }
     if exists {
         let _ = remove_entry(&old);
@@ -745,15 +754,59 @@ pub(crate) fn install(
     Ok(target)
 }
 
-/// 移动目录：同一卷上直接改名，否则复制后删除源目录。
+/// 移动目录：同一卷上直接改名，否则复制后删除源目录。复制失败时删掉复制了一半的目标，源目录不动。
 fn move_dir(from: &Path, to: &Path) -> Result<(), SkillError> {
-    if std::fs::rename(from, to).is_ok() {
+    let fault = tests_hook::copy_fails(to);
+    if !fault && std::fs::rename(from, to).is_ok() {
         return Ok(());
     }
     let mut budget = Budget::default();
-    copy_tree(from, to, &mut budget)?;
+    let copied = copy_tree(from, to, &mut budget).and_then(|()| {
+        if fault {
+            Err(io::Error::other("注入的故障：复制中途失败").into())
+        } else {
+            Ok(())
+        }
+    });
+    if let Err(e) = copied {
+        let _ = remove_entry(to);
+        return Err(e);
+    }
     let _ = remove_entry(from);
     Ok(())
+}
+
+/// 测试用的故障注入：让移动到指定目标的 [`move_dir`] 走复制且复制后报错（模拟跨卷复制中途失败）。
+mod tests_hook {
+    use std::path::Path;
+
+    #[cfg(test)]
+    thread_local! {
+        static COPY_FAILS: std::cell::RefCell<Vec<std::path::PathBuf>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    #[cfg(test)]
+    pub(super) fn fail_copy_to(to: &Path) {
+        COPY_FAILS.with(|f| f.borrow_mut().push(to.to_path_buf()));
+    }
+
+    #[cfg(test)]
+    pub(super) fn clear() {
+        COPY_FAILS.with(|f| f.borrow_mut().clear());
+    }
+
+    pub(super) fn copy_fails(to: &Path) -> bool {
+        #[cfg(test)]
+        {
+            COPY_FAILS.with(|f| f.borrow().iter().any(|p| p == to))
+        }
+        #[cfg(not(test))]
+        {
+            let _ = to;
+            false
+        }
+    }
 }
 
 /// 解析 GitHub 链接，返回（owner，repo，ref，子目录）。
@@ -1119,6 +1172,51 @@ mod tests {
         std::fs::remove_dir_all(&blocker).unwrap();
         install(&core, &tmp, &stage.stage_id, "demo", true).unwrap();
         assert!(core.join("skills/demo/new.md").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_restore_keeps_incoming_and_retires_the_stage() {
+        let root = temp("restore-fails");
+        let core = root.join("core");
+        let tmp = root.join("tmp");
+        write(&core.join("skills/demo/SKILL.md"), SKILL);
+        let zip = ZipBuilder::new()
+            .file("x-main/SKILL.md", SKILL)
+            .file("x-main/new.md", "new")
+            .finish();
+        let stage = stage_zip(&tmp, &zip, "x", None).unwrap();
+        let stage_dir = stage_root(&tmp).join(&stage.stage_id);
+        // 旧目录换不下来；新来源放回暂存时跨卷复制中途失败
+        let blocker = core.join(format!("skills/.demo.replaced-{}", stage.stage_id));
+        write(&blocker.join("busy"), "x");
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                tests_hook::clear();
+            }
+        }
+        let _clear = Clear;
+        tests_hook::fail_copy_to(&stage_dir.join(STAGE_ROOT));
+        let err = install(&core, &tmp, &stage.stage_id, "demo", true).unwrap_err();
+        let incoming = core.join(format!("skills/.demo.installing-{}", stage.stage_id));
+        assert!(
+            err.to_string().contains(&incoming.display().to_string()),
+            "{err}"
+        );
+        // 旧目录原样；新来源完整保留在 incoming，不删
+        assert!(core.join("skills/demo/SKILL.md").is_file());
+        assert!(!core.join("skills/demo/new.md").exists());
+        assert!(incoming.join("new.md").is_file());
+        assert!(incoming.join("SKILL.md").is_file());
+        // 复制了一半的暂存已删掉，这次暂存作废：解除占用后也不能再用它安装
+        assert!(!stage_dir.join(STAGE_ROOT).exists());
+        std::fs::remove_dir_all(&blocker).unwrap();
+        let again = install(&core, &tmp, &stage.stage_id, "demo", true).unwrap_err();
+        assert!(again.to_string().contains("不完整"), "{again}");
+        assert!(!core.join("skills/demo/new.md").exists());
+        // 作废的暂存仍可放弃
+        discard(&tmp, &stage.stage_id).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 
