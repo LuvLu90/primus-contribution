@@ -949,7 +949,53 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    #[cfg(unix)]
+    /// 建一个指向目录的链接。Unix 用符号链接；Windows 先试符号链接（要开发者模式或管理员），不行再建目录联接
+    /// （`mklink /J`，不需要特权）。都建不了时打印原因并返回 false，调用方跳过这个测试。
+    pub(crate) fn link_dir(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link).unwrap();
+            true
+        }
+        #[cfg(windows)]
+        {
+            // 链接目标里的 `/` 在 Windows 上不一定能解析：统一成 `\`
+            let norm = |p: &Path| PathBuf::from(p.to_string_lossy().replace('/', "\\"));
+            let (target, link) = (norm(target), norm(link));
+            let symlink = match std::os::windows::fs::symlink_dir(&target, &link) {
+                Ok(()) => return true,
+                Err(e) => e,
+            };
+            let junction = std::process::Command::new("cmd")
+                .arg("/C")
+                .arg("mklink")
+                .arg("/J")
+                .arg(&link)
+                .arg(&target)
+                .output();
+            match junction {
+                Ok(o) if o.status.success() => true,
+                Ok(o) => {
+                    eprintln!(
+                        "跳过：建不了目录链接（符号链接：{symlink}；目录联接：{}{}）",
+                        String::from_utf8_lossy(&o.stdout).trim(),
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    );
+                    false
+                }
+                Err(e) => {
+                    eprintln!("跳过：建不了目录链接（符号链接：{symlink}；目录联接：{e}）");
+                    false
+                }
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (target, link);
+            false
+        }
+    }
+
     #[test]
     fn links_follow_like_core_and_only_cycles_stop() {
         let root = temp("links");
@@ -957,21 +1003,16 @@ pub(crate) mod tests {
         write(&skills.join("pkg/inner/SKILL.md"), "x");
         write(&skills.join("pkg/other/SKILL.md"), "x");
         write(&skills.join("loop/y/SKILL.md"), "x");
-        std::os::unix::fs::symlink(skills.join("pkg/other"), skills.join("a")).unwrap();
         // 回到链上一级的链接：成环，不再进入
-        std::os::unix::fs::symlink(skills.join("loop"), skills.join("loop/back")).unwrap();
-        let rel: Vec<_> = collect(&skills, Mode::Core)
-            .iter()
-            .map(|p| {
-                p.strip_prefix(&skills)
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect();
+        if !link_dir(&skills.join("pkg/other"), &skills.join("a"))
+            || !link_dir(&skills.join("loop"), &skills.join("loop/back"))
+        {
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
         // 与 Core 的 collectSkillEntries 一样：链接与它指向的目录两处都列出
         assert_eq!(
-            rel,
+            rel_to(&skills, &collect(&skills, Mode::Core)),
             [
                 "a/SKILL.md",
                 "loop/y/SKILL.md",

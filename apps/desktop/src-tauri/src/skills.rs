@@ -1348,25 +1348,26 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    #[cfg(unix)]
     #[test]
     fn delete_keeps_package_when_another_link_points_into_it() {
+        use crate::skill_discovery::tests::link_dir;
         let root = temp("delete-linked-pkg");
         let core = root.join("core");
         write(&core.join("skills/pkg/inner/SKILL.md"), SKILL);
         write(&core.join("skills/pkg/other/SKILL.md"), SKILL);
-        // `a` 排在 `pkg` 前面，指向 pkg/other
-        std::os::unix::fs::symlink(core.join("skills/pkg/other"), core.join("skills/a")).unwrap();
+        // `a` 排在 `pkg` 前面，指向 pkg/other（Windows 上是符号链接或目录联接）
+        if !link_dir(&core.join("skills/pkg/other"), &core.join("skills/a")) {
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        let names = |core: &Path| -> Vec<String> {
+            list(core, None, &Map::new())
+                .into_iter()
+                .map(|s| s.dir_name)
+                .collect()
+        };
         // Core 加载时同一个文件只加载一次：列表里 pkg/other 与 a 只出现一次
-        let listed = list(&core, None, &Map::new());
-        assert_eq!(listed.iter().filter(|s| s.dir_name == "other").count(), 0);
-        assert_eq!(
-            listed
-                .iter()
-                .map(|s| s.dir_name.as_str())
-                .collect::<Vec<_>>(),
-            ["a", "inner"]
-        );
+        assert_eq!(names(&core), ["a", "inner"]);
         let file = core.join("skills/pkg/inner/SKILL.md");
         delete(&core, None, &file.to_string_lossy()).unwrap();
         assert!(!core.join("skills/pkg/inner").exists());
@@ -1374,6 +1375,17 @@ mod tests {
             core.join("skills/pkg/other/SKILL.md").is_file(),
             "pkg 里还有 other，不能整个删掉"
         );
+        // 删链接只删链接本身，目标不动
+        let file = core.join("skills/a/SKILL.md");
+        delete(&core, None, &file.to_string_lossy()).unwrap();
+        assert!(std::fs::symlink_metadata(core.join("skills/a")).is_err());
+        assert!(core.join("skills/pkg/other/SKILL.md").is_file());
+        assert_eq!(names(&core), ["other"]);
+        // 删掉 pkg 里最后一个技能：顶层目录一并删除
+        let file = core.join("skills/pkg/other/SKILL.md");
+        delete(&core, None, &file.to_string_lossy()).unwrap();
+        assert!(!core.join("skills/pkg").exists());
+        assert!(names(&core).is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 
