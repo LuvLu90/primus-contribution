@@ -165,8 +165,12 @@ fn read_central_directory(data: &[u8]) -> Result<Vec<Entry>, ArchiveError> {
                 ArchiveError::UnsafeName(String::from_utf8_lossy(name_bytes).into_owned())
             })?
             .to_owned();
-        // 创建系统为 Unix（3）时外部属性高 16 位是文件类型：0o120000 为符号链接
-        let unix_mode = if made_by >> 8 == 3 { external >> 16 } else { 0 };
+        // 创建系统为 Unix（3）或 OS X（19）时外部属性高 16 位是文件类型：0o120000 为符号链接
+        let unix_mode = if matches!(made_by >> 8, 3 | 19) {
+            external >> 16
+        } else {
+            0
+        };
         let is_link = unix_mode & 0o170_000 == 0o120_000;
         let is_dir = name.ends_with('/') || unix_mode & 0o170_000 == 0o040_000;
         entries.push(Entry {
@@ -533,6 +537,37 @@ pub(crate) mod tests {
             .entry("s/link", b"/etc/passwd", false, 0o120_777, None)
             .finish();
         let dir = temp("link");
+        let out = extract_zip(&zip, &dir).unwrap();
+        assert_eq!(
+            out,
+            Extracted {
+                files: 1,
+                skipped_links: 1
+            }
+        );
+        assert!(std::fs::symlink_metadata(dir.join("s/link")).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn skips_symlinks_from_os_x_archives() {
+        let mut zip = ZipBuilder::new()
+            .file("s/SKILL.md", b"x")
+            .entry("s/link", b"/etc/passwd", false, 0o120_777, None)
+            .finish();
+        // 把每条中央目录记录的创建系统改成 19（OS X）
+        let sig = CDH_SIG.to_le_bytes();
+        let at: Vec<_> = zip
+            .windows(4)
+            .enumerate()
+            .filter(|(_, w)| *w == sig)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(at.len(), 2);
+        for i in at {
+            zip[i + 5] = 19;
+        }
+        let dir = temp("link19");
         let out = extract_zip(&zip, &dir).unwrap();
         assert_eq!(
             out,
