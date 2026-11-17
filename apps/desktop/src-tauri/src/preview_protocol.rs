@@ -8,7 +8,7 @@
 //!   不能弹窗、不能导航顶层窗口；Tauri 的 IPC 只认 App 自己的源，页面调不到任何命令。
 //! - 每个文件夹登记时得到一个随机令牌，URL 形如 `<协议源>/<令牌>/<相对路径>`；只提供该文件夹（含子文件夹）里的
 //!   普通文件，解析后的真实路径必须仍在文件夹内（`..`、链接跳出都拒绝）；未登记的令牌一律 404。
-//! - 只提供网页静态资源（[`mime_of`] 清单内的类型）；隐藏文件与文件夹（`.env`、`.git/`）和其他文件（文本、配置、密钥）403。
+//! - 只提供网页静态资源（[`mime_of`] 清单内的类型），`.` 开头的文件与文件夹同样提供；其他文件（文本、配置、密钥）403。
 //! - 不联网：响应的 CSP 只允许本协议与 data / blob 的资源（允许内联脚本），任何外部地址的脚本、样式、图片、字体、媒体、
 //!   fetch / XHR / WebSocket 都被拦下，页面读到的内容没有外传的通道（外部 CDN 库因此加载不了，需随页面放在文件夹里）；
 //!   iframe 自己导航到外部地址由 App 的 `frame-src` 拦下。不允许连 `ipc.localhost`；不缓存。CORS 只放行不透明源 `null`。
@@ -106,7 +106,7 @@ impl PreviewRoots {
             .and_then(|n| n.to_str())
             .ok_or("文件名无法用于预览")?
             .to_string();
-        if name.starts_with('.') || mime_of(&real).is_none() {
+        if mime_of(&real).is_none() {
             return Err("这类文件不通过预览协议提供".into());
         }
         let mut roots = self.roots.lock().map_err(|_| "预览状态损坏")?;
@@ -167,10 +167,6 @@ impl PreviewRoots {
 fn resolve_in(root: &Path, rel: &str) -> Result<PathBuf, StatusCode> {
     let mut path = root.to_path_buf();
     for seg in rel.split('/').filter(|s| !s.is_empty()) {
-        // 隐藏文件与文件夹（.env、.git/config、.ssh）一律不提供
-        if seg.starts_with('.') {
-            return Err(StatusCode::FORBIDDEN);
-        }
         let seg_path = Path::new(seg);
         let mut comps = seg_path.components();
         match (comps.next(), comps.next()) {
@@ -190,23 +186,14 @@ fn resolve_in(root: &Path, rel: &str) -> Result<PathBuf, StatusCode> {
     Ok(real)
 }
 
-/// 解析链接后的真实路径仍须在文件夹内，且相对文件夹的每一段都不是隐藏的（public -> .private 这类链接也拒绝）；
-/// 文件夹本身的上级目录不检查，它们可以在隐藏目录里。Windows 上带隐藏或系统属性的文件与子目录同样拒绝
+/// 解析链接后的真实路径仍须在文件夹内（`.` 开头与带隐藏属性的文件、文件夹同样提供）
 fn check_inside(root: &Path, real: &Path) -> Result<(), StatusCode> {
     let rel_real = real.strip_prefix(root).map_err(|_| StatusCode::FORBIDDEN)?;
-    let mut cur = root.to_path_buf();
-    for c in rel_real.components() {
-        let Component::Normal(name) = c else {
-            return Err(StatusCode::FORBIDDEN);
-        };
-        if name.to_string_lossy().starts_with('.') {
-            return Err(StatusCode::FORBIDDEN);
-        }
-        cur.push(name);
-        let meta = std::fs::symlink_metadata(&cur).map_err(|_| StatusCode::NOT_FOUND)?;
-        if crate::platform::is_hidden_entry(&meta, name) {
-            return Err(StatusCode::FORBIDDEN);
-        }
+    if rel_real
+        .components()
+        .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Err(StatusCode::FORBIDDEN);
     }
     Ok(())
 }
@@ -406,7 +393,7 @@ mod tests {
             roots.resolve("/0000/index.html").unwrap_err(),
             StatusCode::NOT_FOUND
         );
-        // 隐藏文件、非静态资源不提供
+        // 非静态资源不提供（不论是否以 `.` 开头）
         for p in [".env", ".git/config", "notes.txt"] {
             assert_eq!(
                 roots.resolve(&format!("/{token}/{p}")).unwrap_err(),
@@ -414,19 +401,28 @@ mod tests {
                 "{p}"
             );
         }
-        // 链接指向文件夹内的隐藏目录：解析后的路径段也检查
+        // `.` 开头的文件夹里的网页资源照常提供，包括经链接到达的
+        std::fs::create_dir_all(dir.join("site/.private")).unwrap();
+        std::fs::write(dir.join("site/.private/index.html"), "x").unwrap();
+        assert_eq!(
+            roots
+                .resolve(&format!("/{token}/.private/index.html"))
+                .unwrap(),
+            dir.join("site/.private/index.html")
+        );
         #[cfg(unix)]
         {
-            std::fs::create_dir_all(dir.join("site/.private")).unwrap();
-            std::fs::write(dir.join("site/.private/index.html"), "x").unwrap();
             std::os::unix::fs::symlink(dir.join("site/.private"), dir.join("site/public")).unwrap();
             assert_eq!(
                 roots
                     .resolve(&format!("/{token}/public/index.html"))
-                    .unwrap_err(),
-                StatusCode::FORBIDDEN
+                    .unwrap(),
+                dir.join("site/.private/index.html")
             );
         }
+        // `.` 开头的网页文件本身也能登记预览
+        std::fs::write(dir.join("site/.page.html"), "x").unwrap();
+        assert!(roots.serve(&dir.join("site/.page.html")).is_ok());
         // 读取：按句柄取到的实际路径在文件夹内才返回内容
         let (real, body) = roots.read(&format!("/{token}/assets/app.js")).unwrap();
         assert_eq!(real, dir.join("site/assets/app.js"));

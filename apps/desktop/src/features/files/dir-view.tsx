@@ -4,7 +4,7 @@
 // 顶部为“上一级”与面包屑；点文件夹进入，点文件在右栏预览。隐藏 / 系统项默认不显示，底部可切换。
 // 最多 2000 项（薄壳 preview_dir），虚拟滚动；修改时间列在右栏较窄时隐藏（悬停提示里仍有）。
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useMemo, useRef, useState } from "react";
+import { useRef } from "react";
 import { FileIcon, Icon } from "@/components/icons";
 import { Tooltip } from "@/components/ui/tooltip";
 import { fileIconForName } from "@/features/chat/file-ref";
@@ -29,15 +29,8 @@ export function DirView({
   /** 打开子项、面包屑或上一级（在预览内部导航） */
   onOpen: (path: string) => void;
 }) {
-  const [showHidden, setShowHidden] = useState(false);
-  const hiddenCount = useMemo(
-    () => listing.entries.filter((e) => e.hidden).length,
-    [listing.entries],
-  );
-  const entries = useMemo(
-    () => (showHidden ? listing.entries : listing.entries.filter((e) => !e.hidden)),
-    [listing.entries, showHidden],
-  );
+  // 隐藏项（`.` 开头、Windows 隐藏属性）一律显示，只是颜色淡一些
+  const entries = listing.entries;
   const parent = parentPath(path);
   const crumbs = breadcrumbs(path);
 
@@ -165,16 +158,6 @@ export function DirView({
       <div className="flex min-h-7 shrink-0 flex-wrap items-center gap-x-3 border-border border-t px-3 py-1 text-2xs text-muted">
         <span>{t.count.replace("{n}", String(entries.length))}</span>
         {truncatedText && <span>{truncatedText}</span>}
-        {hiddenCount > 0 && (
-          <button
-            type="button"
-            aria-pressed={showHidden}
-            onClick={() => setShowHidden((v) => !v)}
-            className="ml-auto rounded px-1 outline-none hover:bg-hover hover:text-fg focus-visible:bg-hover"
-          >
-            {showHidden ? t.hideHidden : t.showHidden.replace("{n}", String(hiddenCount))}
-          </button>
-        )}
       </div>
     </div>
   );

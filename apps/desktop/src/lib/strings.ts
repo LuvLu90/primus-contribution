@@ -88,8 +88,6 @@ export const strings = {
       /** 只有隐藏项 */
       onlyHidden: "只有隐藏的项目",
       /** {n}：隐藏项个数 */
-      showHidden: "显示隐藏的项目（{n}）",
-      hideHidden: "不显示隐藏的项目",
       /** {shown} / {total}：超过显示上限 */
       truncated: "仅显示前 {shown} 项（共 {total} 项）",
       /** 扫描到上限仍未读完 */
@@ -234,6 +232,8 @@ export const strings = {
         edit: { done: "已编辑", running: "正在编辑" },
         write: { done: "已写入", running: "正在写入" },
         search: { done: "已搜索", running: "正在搜索" },
+        skill: { done: "已使用技能", running: "正在使用技能" },
+        mcp: { done: "已调用 MCP", running: "正在调用 MCP" },
         other: { done: "已调用", running: "正在调用" },
       },
       groups: {
@@ -242,6 +242,8 @@ export const strings = {
         edit: { done: "编辑了文件", running: "正在编辑文件" },
         write: { done: "写入了文件", running: "正在写入文件" },
         search: { done: "搜索了文件", running: "正在搜索文件" },
+        skill: { done: "使用了技能", running: "正在使用技能" },
+        mcp: { done: "调用了 MCP", running: "正在调用 MCP" },
         other: { done: "调用了工具", running: "正在调用工具" },
       },
     },
@@ -331,8 +333,6 @@ export const strings = {
     trustSkills: "技能",
     trustMcp: "MCP 服务器",
     trustAgentsSkills: ".agents 技能",
-    trustIncomplete:
-      "项目的 .primus 或 .agents/skills 内容过多或无法完整读取，不能信任，只能选择不信任。",
     trustNothing: "项目内没有扩展、技能、MCP 配置或 AGENTS.md。",
     trustAccept: "信任",
     trustReject: "不信任",
