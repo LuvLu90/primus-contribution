@@ -273,19 +273,36 @@ export function createMockCapabilities(options: MockCapabilitiesOptions = {}): C
     },
 
     mcpList: async () => {
-      let servers: Record<string, Record<string, unknown>> = {};
+      let servers: Record<string, unknown> = {};
       const errors: string[] = [];
       try {
         servers = mcpText ? (JSON.parse(mcpText).mcpServers ?? {}) : {};
       } catch (e) {
         errors.push(`${MOCK_MCP_PATH}: ${e instanceof Error ? e.message : e}`);
       }
-      const reports = Object.entries(servers).map(([name, entry]) => {
+      // 与 Core 一样：不合格的条目记进 errors，不列出、不连接
+      const valid: [string, Record<string, unknown>][] = [];
+      for (const [name, entry] of Object.entries(servers)) {
+        if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+          errors.push(`${MOCK_MCP_PATH}: server "${name}" must be an object`);
+          continue;
+        }
+        const rec = entry as Record<string, unknown>;
+        if (
+          rec.args !== undefined &&
+          !(Array.isArray(rec.args) && rec.args.every((a) => typeof a === "string"))
+        ) {
+          errors.push(`${MOCK_MCP_PATH}: server "${name}": args must be an array of strings`);
+          continue;
+        }
+        valid.push([name, rec]);
+      }
+      const reports = valid.map(([name, entry]) => {
         const enabled = entry.enabled !== false;
         const http = typeof entry.url === "string";
         const transport = http
           ? String(entry.url)
-          : [entry.command, ...((entry.args as unknown[]) ?? [])].join(" ");
+          : [entry.command, ...((entry.args as string[] | undefined) ?? [])].join(" ");
         const state = !enabled
           ? "disabled"
           : name.includes("fail")

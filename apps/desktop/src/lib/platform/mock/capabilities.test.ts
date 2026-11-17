@@ -105,4 +105,29 @@ describe("mock 能力中心", () => {
     await c.mcpConfigWrite(JSON.stringify(next), version);
     expect((await parse()).servers[0]).toMatchObject({ state: "disabled", tools: [] });
   });
+
+  it("mcp list：不合格的条目记进 errors，不让整个调用失败", async () => {
+    const c = createMockCapabilities();
+    const { version } = await c.mcpConfigRead();
+    await c.mcpConfigWrite(
+      JSON.stringify({
+        mcpServers: {
+          broken: null,
+          list: [1],
+          badArgs: { command: "x", args: "not-an-array" },
+          ok: { command: "npx", args: ["-y", "x"] },
+        },
+      }),
+      version,
+    );
+    const out = await c.mcpList();
+    expect(out.code).toBe(1);
+    const parsed = JSON.parse(out.stdout);
+    expect(parsed.servers.map((s: { name: string }) => s.name)).toEqual(["ok"]);
+    expect(parsed.errors).toHaveLength(3);
+    expect(parsed.errors.join("\n")).toContain('server "broken" must be an object');
+    expect(parsed.errors.join("\n")).toContain(
+      'server "badArgs": args must be an array of strings',
+    );
+  });
 });
