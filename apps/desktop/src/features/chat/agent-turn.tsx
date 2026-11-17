@@ -307,9 +307,7 @@ function ToolCallRow({ call, info }: { call: ToolCallBlock; info: CallInfo }) {
         icon={toolIcons[kind]}
         failed={info.status === "error"}
       >
-        {kind === "other" || (kind === "mcp" && call.name !== "codemode")
-          ? `${verb} ${mcpLabel(call.name)}`
-          : verb}
+        {kind === "other" || kind === "mcp" ? `${verb} ${mcpLabel(call.name)}` : verb}
         {fileIcon && (
           <FileIcon name={fileIcon} size="sm" className="ml-1.5 inline-block align-[-3px]" />
         )}
