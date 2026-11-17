@@ -100,11 +100,19 @@ fn read_central_directory(data: &[u8]) -> Result<Vec<Entry>, ArchiveError> {
     if data.len() < 22 {
         return Err(invalid("不是 zip 文件"));
     }
-    // 结束记录在末尾 22 字节 + 最多 65535 字节注释之内，从后往前找
+    // 结束记录在末尾 22 字节 + 最多 65535 字节注释之内，从后往前找。归档注释里也可能出现签名字节，
+    // 所以候选记录的注释长度须正好到文件末尾，不符就继续往前找；都不符时退而取注释长度不越界的（末尾有多余字节的包）
     let earliest = data.len().saturating_sub(22 + 0xFFFF);
-    let eocd = (earliest..=data.len() - 22)
-        .rev()
-        .find(|&i| u32_at(data, i) == Some(EOCD_SIG))
+    let candidates = || {
+        (earliest..=data.len() - 22)
+            .rev()
+            .filter(|&i| u32_at(data, i) == Some(EOCD_SIG))
+            .map(|i| (i, i + 22 + usize::from(u16_at(data, i + 20).unwrap_or(0))))
+    };
+    let eocd = candidates()
+        .find(|&(_, end)| end == data.len())
+        .or_else(|| candidates().find(|&(_, end)| end <= data.len()))
+        .map(|(i, _)| i)
         .ok_or_else(|| invalid("不是 zip 文件"))?;
     let disk = u16_at(data, eocd + 4).unwrap_or(1);
     let cd_disk = u16_at(data, eocd + 6).unwrap_or(1);
@@ -534,6 +542,20 @@ pub(crate) mod tests {
             }
         );
         assert!(std::fs::symlink_metadata(dir.join("s/link")).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn archive_comment_containing_the_end_signature() {
+        let mut zip = ZipBuilder::new().file("s/SKILL.md", b"x").finish();
+        let mut comment = EOCD_SIG.to_le_bytes().to_vec();
+        comment.extend([b'x'; 18]);
+        let len = zip.len();
+        zip[len - 2..].copy_from_slice(&(comment.len() as u16).to_le_bytes());
+        zip.extend(&comment);
+        let dir = temp("comment");
+        assert_eq!(extract_zip(&zip, &dir).unwrap().files, 1);
+        assert!(dir.join("s/SKILL.md").is_file());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
