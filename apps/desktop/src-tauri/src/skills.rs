@@ -402,9 +402,11 @@ pub(crate) fn delete(core_dir: &Path, home: Option<&Path>, file: &str) -> Result
     };
     remove_entry(&target)?;
     if top != target && top.is_dir() && !is_link(&top) {
-        let remaining = skill_discovery::collect(&root, Mode::Core)
-            .iter()
-            .any(|f| f.starts_with(&top));
+        // 扫描须完整：读不全时不能断定“没有剩余技能”，保留顶层目录。按发现规则逐条路径看（不按真实路径去重），
+        // 别处经链接指向这里的技能不会让这里的技能被漏看
+        let remaining = skill_discovery::collect_complete(&root, Mode::Core)
+            .map(|files| files.iter().any(|f| f.starts_with(&top)))
+            .unwrap_or(true);
         if !remaining {
             remove_entry(&top)?;
         }
@@ -1236,6 +1238,29 @@ mod tests {
             core.join("skills/pkg/other/SKILL.md").is_file(),
             "pkg 里还有 other，不能整个删掉"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_keeps_package_when_the_remaining_scan_is_incomplete() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp("delete-unreadable");
+        let core = root.join("core");
+        write(&core.join("skills/pkg/inner/SKILL.md"), SKILL);
+        write(&core.join("skills/pkg/other/x/SKILL.md"), SKILL);
+        let other = core.join("skills/pkg/other");
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // root 用户不受权限限制，这时读得到，不验证这一项
+        let unreadable = std::fs::read_dir(&other).is_err();
+        let file = core.join("skills/pkg/inner/SKILL.md");
+        delete(&core, None, &file.to_string_lossy()).unwrap();
+        assert!(!core.join("skills/pkg/inner").exists());
+        if unreadable {
+            assert!(core.join("skills/pkg").exists(), "扫描不完整时保留顶层目录");
+        }
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(core.join("skills/pkg/other/x/SKILL.md").is_file());
         std::fs::remove_dir_all(root).unwrap();
     }
 
