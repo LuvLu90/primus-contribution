@@ -81,7 +81,11 @@ export function McpSettings() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [report, setReport] = useState<McpListResult | null>(null);
-  const [editing, setEditing] = useState<McpServerView | "new" | null>(null);
+  // 编辑框绑定打开时显示的文件快照：保存按这份快照的版本写入，期间文件被重新读取或在别处改过都会以冲突拒绝
+  const [editing, setEditing] = useState<{
+    server: McpServerView | null;
+    base: McpConfigFile;
+  } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<McpServerView | null>(null);
 
   const apply = (f: McpConfigFile) => {
@@ -113,9 +117,9 @@ export function McpSettings() {
     }
   }
 
-  /** 基于最近读出的原文改写并保存；版本冲突时重新读取并报错 */
-  const save = async (mutate: (text: string | null) => string) => {
-    const current = fileRef.current;
+  /** 基于 `base`（默认最近读出的文件）的原文改写并保存；版本冲突时重新读取并报错 */
+  const save = async (mutate: (text: string | null) => string, base?: McpConfigFile) => {
+    const current = base ?? fileRef.current;
     if (!current) throw new Error(tm.loadFailed);
     const next = mutate(current.text);
     try {
@@ -290,7 +294,7 @@ export function McpSettings() {
                       type="button"
                       aria-label={fill(tm.editLabel, { name: s.name })}
                       disabled={busy !== null || !editable}
-                      onClick={() => setEditing(s)}
+                      onClick={() => file && setEditing({ server: s, base: file })}
                       className={iconButtonClass}
                     >
                       <Icon name="pen" />
@@ -315,7 +319,7 @@ export function McpSettings() {
         <div className="flex flex-wrap items-center gap-2 px-4 py-3">
           <button
             type="button"
-            onClick={() => setEditing("new")}
+            onClick={() => file && setEditing({ server: null, base: file })}
             disabled={busy !== null || !editable}
             className={buttonClass}
           >
@@ -337,14 +341,14 @@ export function McpSettings() {
       </div>
       <p className="px-1 text-xs text-muted">{t.newSessionHint}</p>
 
-      {editing !== null && file && (
+      {editing !== null && (
         <ServerDialog
-          server={editing === "new" ? null : editing}
+          server={editing.server}
           existing={servers.map((s) => s.name)}
           onClose={() => setEditing(null)}
           onSubmit={async (mutate) => {
             try {
-              await save(mutate);
+              await save(mutate, editing.base);
             } catch (e) {
               // 冲突：对话框里的条目基于旧文件，关掉对话框，让用户在新内容上重新编辑
               if (!(e instanceof McpConflictError)) throw e;

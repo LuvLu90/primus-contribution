@@ -291,6 +291,51 @@ describe("设置·能力中心·MCP", () => {
     });
   });
 
+  it("编辑框打开后重新读取才完成：仍按打开时的版本保存，以冲突拒绝", async () => {
+    const base = createMockPlatform();
+    let mode: "ok" | "fail" | "defer" = "ok";
+    let release: (() => void) | null = null;
+    const platform = setup({
+      mcpConfigRead: async () => {
+        if (mode === "fail") throw new Error("读取失败");
+        if (mode === "defer") await new Promise<void>((r) => (release = r));
+        return base.mcpConfigRead();
+      },
+      mcpConfigWrite: (text, version) => base.mcpConfigWrite(text, version),
+    });
+    openMcp();
+    const fs = await row(tm.title, "filesystem");
+    // 别处改了 docs-auth；随后一次操作冲突，重新读取失败，界面保留旧内容
+    const current = await base.mcpConfigRead();
+    const changed = JSON.parse(current.text ?? "");
+    changed.mcpServers["docs-auth"].oauth = { clientId: "new" };
+    await base.mcpConfigWrite(JSON.stringify(changed), current.version);
+    mode = "fail";
+    fireEvent.click(within(fs).getByRole("switch", { name: "启用 filesystem" }));
+    expect(await screen.findByText(tm.conflict)).toBeTruthy();
+    // 点“重新读取”，请求还没完成时打开旧条目的编辑框
+    mode = "defer";
+    fireEvent.click(screen.getByRole("button", { name: tm.reload }));
+    const docs = await row(tm.title, "docs-auth");
+    fireEvent.click(within(docs).getByRole("button", { name: "编辑 docs-auth" }));
+    const dialog = await screen.findByRole("dialog", { name: tm.dialog.editTitle });
+    await waitFor(() => expect(release).not.toBeNull());
+    mode = "ok";
+    release?.();
+    await waitFor(() => expect(screen.queryByRole("button", { name: tm.reload })).toBeNull());
+    fireEvent.change(within(dialog).getByLabelText(tm.dialog.description), {
+      target: { value: "d" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: tm.dialog.save }));
+    expect(await screen.findByText(tm.conflict)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const servers = JSON.parse((await platform.mcpConfigRead()).text ?? "").mcpServers;
+    expect(servers["docs-auth"]).toEqual({
+      url: "https://example.com/mcp",
+      oauth: { clientId: "new" },
+    });
+  });
+
   it("编辑时在 JSON 里改的字段切回表单后保留", async () => {
     const platform = setup();
     openMcp();
