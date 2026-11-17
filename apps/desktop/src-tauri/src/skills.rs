@@ -329,7 +329,10 @@ pub(crate) fn list(
         ));
     }
     let mut out = Vec::new();
-    // 同一个文件（经链接从多处找到）Core 只加载第一次找到的（`loadSkills` 按真实路径去重），列表也只列那一次
+    // 同一个文件（经链接从多处找到）只列第一次找到的那一处，启停也按那一处算，与 Core 一致：Core 给每条发现路径
+    // 各算启停（`addResource`），随后 `toResolvedPaths` 按真实路径去重——保留先登记的、不看启停——之后才
+    // `filter((r) => r.enabled)`（`resource-loader.ts`）。所以先登记的路径被停用时，同一文件的其他路径也不会加载；
+    // 列表若把其他路径显示为“已启用”，反而与 Core 实际加载的不符
     let mut seen = std::collections::HashSet::new();
     for (root, mode, scope, base) in roots {
         for file in skill_discovery::collect(&root, mode) {
@@ -1386,6 +1389,38 @@ mod tests {
         delete(&core, None, &file.to_string_lossy()).unwrap();
         assert!(!core.join("skills/pkg").exists());
         assert!(names(&core).is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn list_dedupes_by_real_file_before_applying_enabled_like_core() {
+        use crate::skill_discovery::tests::link_dir;
+        let root = temp("list-dedupe-enabled");
+        let core = root.join("core");
+        write(&core.join("skills/pkg/inner/SKILL.md"), SKILL);
+        write(&core.join("skills/pkg/other/SKILL.md"), SKILL);
+        if !link_dir(&core.join("skills/pkg/other"), &core.join("skills/a")) {
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        let shown = |patterns: serde_json::Value| -> Vec<(String, bool)> {
+            let mut settings = Map::new();
+            settings.insert("skills".into(), patterns);
+            list(&core, None, &settings)
+                .into_iter()
+                .map(|s| (s.dir_name, s.enabled))
+                .collect()
+        };
+        // 停用先登记的 `a`：Core 去重保留 `a` 再按启停过滤，pkg/other 也不加载——列表显示 a 已停用、不另列 other
+        assert_eq!(
+            shown(serde_json::json!(["-skills/a/SKILL.md"])),
+            [("a".to_owned(), false), ("inner".to_owned(), true)]
+        );
+        // 只停用后登记的 pkg/other：Core 去重时它已被 `a` 挤掉，`a` 照常加载
+        assert_eq!(
+            shown(serde_json::json!(["-skills/pkg/other/SKILL.md"])),
+            [("a".to_owned(), true), ("inner".to_owned(), true)]
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
