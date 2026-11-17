@@ -142,7 +142,7 @@ describe("设置·能力中心·技能", () => {
 
   it("切到 MCP 再回来：读取中的来源与输入都还在，读取完成后照常确认安装", async () => {
     const base = createMockPlatform();
-    let release: (() => void) | null = null;
+    let release = null as (() => void) | null;
     setup({
       skillStage: async (source) => {
         await new Promise<void>((r) => (release = r));
@@ -317,7 +317,7 @@ describe("设置·能力中心·MCP", () => {
   it("编辑框打开后重新读取才完成：仍按打开时的版本保存，以冲突拒绝", async () => {
     const base = createMockPlatform();
     let mode: "ok" | "fail" | "defer" = "ok";
-    let release: (() => void) | null = null;
+    let release = null as (() => void) | null;
     const platform = setup({
       mcpConfigRead: async () => {
         if (mode === "fail") throw new Error("读取失败");
