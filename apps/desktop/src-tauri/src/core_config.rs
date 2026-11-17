@@ -154,7 +154,7 @@ fn sync_builtin_key(vault: &Vault, provider_id: &str) -> io::Result<bool> {
         Err(_) => true,
     };
     if stale {
-        vault.ensure(&secret, crate::builtin::BUILTIN_API_KEY)
+        vault.ensure(&secret, crate::builtin::api_key().as_str())
     } else {
         Ok(false)
     }
@@ -499,7 +499,7 @@ impl ModelConfigState {
             // 先存密钥再写文件：密钥存不进去时不写文件，下次启动重试
             if let Err(e) = vault.ensure(
                 &providers::secret_name(&provider.id),
-                crate::builtin::BUILTIN_API_KEY,
+                crate::builtin::api_key().as_str(),
             ) {
                 eprintln!("[core_config] 内置渠道密钥写入保险库失败：{e}");
                 return false;
@@ -1123,17 +1123,17 @@ mod tests {
         );
         assert_eq!(
             vault.get("provider:ioply").unwrap().as_deref(),
-            Some(crate::builtin::BUILTIN_API_KEY)
+            Some(crate::builtin::api_key().as_str())
         );
         let text = fs::read_to_string(root.join("app").join(PROVIDERS_FILE)).unwrap();
-        assert!(!text.contains(crate::builtin::BUILTIN_API_KEY));
+        assert!(!text.contains(crate::builtin::api_key().as_str()));
         let list = state.providers_list().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].provider.id, "ioply");
         assert!(list[0].has_key);
         assert_eq!(
             list[0].key_hint,
-            providers::key_hint(crate::builtin::BUILTIN_API_KEY)
+            providers::key_hint(crate::builtin::api_key().as_str())
         );
         assert!(list[0].hidden);
         let json = serde_json::to_string(&list).unwrap();
@@ -1143,7 +1143,7 @@ mod tests {
                 && json.contains("\"hidden\":true")
         );
         assert!(
-            !json.contains(crate::builtin::BUILTIN_API_KEY),
+            !json.contains(crate::builtin::api_key().as_str()),
             "不返回密钥"
         );
         vault
@@ -1152,7 +1152,7 @@ mod tests {
         assert!(state.prepare_builtin(), "空模型继续重试");
         assert_eq!(
             vault.get("provider:ioply").unwrap().as_deref(),
-            Some(crate::builtin::BUILTIN_API_KEY),
+            Some(crate::builtin::api_key().as_str()),
             "隐藏渠道的历史内置密钥同步为当前内置密钥"
         );
         vault.set("provider:ioply", "sk-user-own-key").unwrap();
@@ -1166,7 +1166,7 @@ mod tests {
         assert!(state.prepare_builtin());
         assert_eq!(
             vault.get("provider:ioply").unwrap().as_deref(),
-            Some(crate::builtin::BUILTIN_API_KEY),
+            Some(crate::builtin::api_key().as_str()),
             "缺少密钥时补上内置密钥"
         );
 
@@ -1236,7 +1236,7 @@ mod tests {
         assert!(state.providers_list().unwrap()[0].hidden, "迁移后重新隐藏");
         assert_eq!(
             vault.get("provider:ioply").unwrap().as_deref(),
-            Some(crate::builtin::BUILTIN_API_KEY)
+            Some(crate::builtin::api_key().as_str())
         );
 
         // 停用的旧地址渠道也迁移地址，但保持停用、可见，不触发获取
@@ -1297,7 +1297,7 @@ mod tests {
         assert!(!changed.fetch_builtin_models, "已有模型不获取");
         assert_eq!(
             vault.get("provider:ioply").unwrap().as_deref(),
-            Some(crate::builtin::BUILTIN_API_KEY),
+            Some(crate::builtin::api_key().as_str()),
             "恢复种子配置时同步缺失的密钥"
         );
         let _ = fs::remove_dir_all(&root);
@@ -1310,7 +1310,7 @@ mod tests {
         ));
         assert!(!crate::builtin::is_legacy_api_key("sk-user-own-key"));
         assert!(!crate::builtin::is_legacy_api_key(
-            crate::builtin::BUILTIN_API_KEY
+            crate::builtin::api_key().as_str()
         ));
     }
 

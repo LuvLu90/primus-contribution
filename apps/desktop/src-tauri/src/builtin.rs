@@ -20,11 +20,29 @@ const SEED_API: Api = Api::OpenAiResponses;
 /// 内置渠道接口地址：内置地址只写在这里，更换时只改这一处。
 const SEED_BASE_URL: &str = "https://api.690990.xyz/v1";
 
-/// 内置渠道密钥，用户要求直接写在源码中，后续会更换。
-pub(crate) const BUILTIN_API_KEY: &str = "sk-xFAj92kTXnK6WCz9nGiKznBgzfFpWKi6uqg1j6xNRl3HLvEj";
+/// 内置渠道密钥（简单加密：按 [`KEY_MASK`] 循环异或后转十六进制），运行时由 [`api_key`] 还原。
+/// 更换密钥时只改这一行，生成新值：
+/// `python3 -c "import sys;m=b'primus-builtin';k=sys.argv[1].encode();print(bytes(b^m[i%len(m)] for i,b in enumerate(k)).hex())" <新密钥>`
+/// 并把旧密钥的摘要追加到 [`LEGACY_API_KEY_SHA256`]。
+pub(crate) const BUILTIN_API_KEY: &str = "031944153332475b4702382c072546252a174c1d6a0b3e1302360e141634193a3e1a1b17040e5d1e5f163e20055e3d3f5b271f";
 
-/// 历史版本用过的内置密钥的 SHA-256（小写十六进制）。只存摘要，真实密钥只有 [`BUILTIN_API_KEY`] 一处。
-/// 保险库里是这些密钥（或没有密钥）时同步为 [`BUILTIN_API_KEY`]，其他值视为用户自己换的密钥，不覆盖。
+/// 密钥加密用的异或掩码。
+const KEY_MASK: &[u8] = b"primus-builtin";
+
+/// 还原内置渠道密钥。
+pub(crate) fn api_key() -> String {
+    let bytes: Vec<u8> = (0..BUILTIN_API_KEY.len())
+        .step_by(2)
+        .zip(KEY_MASK.iter().cycle())
+        .map(|(i, m)| {
+            u8::from_str_radix(&BUILTIN_API_KEY[i..i + 2], 16).expect("内置密钥不是十六进制") ^ m
+        })
+        .collect();
+    String::from_utf8(bytes).expect("内置密钥不是 UTF-8")
+}
+
+/// 历史版本用过的内置密钥的 SHA-256（小写十六进制）。只存摘要，内置密钥只有 [`BUILTIN_API_KEY`] 一处（加密存放）。
+/// 保险库里是这些密钥（或没有密钥）时同步为 [`api_key`]，其他值视为用户自己换的密钥，不覆盖。
 /// 更换密钥时把旧密钥的摘要追加到这里。
 const LEGACY_API_KEY_SHA256: &[&str] =
     &["54a2f0dbde8b80d465fb9272ef0f10ad8bec1075f1994bad12d430fbc8664fbd"];
@@ -66,6 +84,20 @@ mod tests {
         let p = seed_provider();
         crate::providers::check_provider(&p).unwrap();
         assert!(p.models.is_empty() && p.enabled);
-        assert!(!serde_json::to_string(&p).unwrap().contains(BUILTIN_API_KEY));
+        assert!(
+            !serde_json::to_string(&p)
+                .unwrap()
+                .contains(api_key().as_str())
+        );
+    }
+
+    #[test]
+    fn api_key_is_decoded() {
+        let key = api_key();
+        assert!(key.starts_with("sk-"));
+        assert!(
+            !BUILTIN_API_KEY.contains(key.as_str()),
+            "源码中不出现明文密钥"
+        );
     }
 }
