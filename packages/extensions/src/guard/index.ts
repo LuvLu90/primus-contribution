@@ -8,7 +8,7 @@
 // 受保护路径（.env*、.git/、~/.ssh、<安装目录>\data）的写入不论模式一律拒绝，读取需要确认；
 // 两处例外（ADR 0016）：Core 已加载技能目录内的读取任何模式都放行（目录取自 before_agent_start）；
 // 用户级 MCP 配置 <agentDir>/mcp.json 的读写按工作区外的文件处理（完全访问放行，其他模式询问）。
-// 强制推送与下载后直接执行的命令在完全访问下也询问，且不能“始终允许”。路径按 Core 的规则解析并跟随符号链接比较。
+// 强制推送与下载后直接执行的命令在每次询问、自动编辑模式下必定询问，且不能“始终允许”；完全访问不询问。路径按 Core 的规则解析并跟随符号链接比较。
 // 没有界面（hasUI 为 false）时需要询问的调用一律拒绝；处理出错时 Core 按失败即拦截处理。
 // 当前模式经 setWidget("primus:mode") 告知前端。
 // 计划模式（primus-plan 经 plan/gate.ts 打开只读开关）压过上面三种模式：修改文件一律拒绝，命令按只读分类器
@@ -298,7 +298,8 @@ export function insideLoadedSkill(abs: string, ge: GuardEnv): boolean {
 }
 
 /**
- * 始终询问的命令（技术方案第 17.4 节）：强制推送、下载后直接执行。完全访问模式下也询问，且不能“始终允许”。
+ * 始终询问的命令（技术方案第 17.4 节）：强制推送、下载后直接执行。每次询问、自动编辑模式下必定询问，且不能“始终允许”；
+ * 完全访问模式不询问（用户选择完全访问即表示不再确认）。
  * 管道与 `&&`、`;` 拆开后逐段检查。
  */
 export function isAlwaysAskCommand(command: string): boolean {
@@ -380,6 +381,7 @@ export function decide(
     )
       return isEdit ? "deny" : "ask";
   }
+  if (mode === "full") return "allow";
   const command = call.input?.command;
   if (
     (call.toolName === "bash" || call.toolName === "powershell") &&
@@ -387,7 +389,6 @@ export function decide(
     isAlwaysAskCommand(command)
   )
     return "ask";
-  if (mode === "full") return "allow";
   const inside = abs === undefined || insideWorkspace(cwd, abs, ge.platform, ge.real);
   if (isRead) return inside ? "allow" : "ask";
   if (isEdit) return mode === "edit" && inside ? "allow" : "ask";
