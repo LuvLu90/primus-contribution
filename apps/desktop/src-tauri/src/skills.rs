@@ -610,6 +610,11 @@ fn too_large(m: String) -> SkillError {
 
 fn copy_tree(src: &Path, dest: &Path, budget: &mut Budget) -> Result<(), SkillError> {
     std::fs::create_dir(dest)?;
+    copy_contents(src, dest, budget)
+}
+
+/// 把 `src` 里的内容复制进已存在的 `dest`（规则同 [`copy_tree`]）。
+fn copy_contents(src: &Path, dest: &Path, budget: &mut Budget) -> Result<(), SkillError> {
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -815,14 +820,24 @@ fn rename(from: &Path, to: &Path) -> io::Result<()> {
     tests_hook::fault(Fault::Rename, from).and_then(|()| std::fs::rename(from, to))
 }
 
-/// 移动目录：同一卷上直接改名，否则复制后删除源目录。复制失败时删掉复制了一半的目标，源目录不动。
+/// 移动目录：同一卷上直接改名，否则复制后删除源目录。目标已存在时直接报错，不覆盖、不删除它（Unix 上改名会
+/// 换掉空目录）。复制失败时只删掉这次复制新建的目标，源目录不动。
 fn move_dir(from: &Path, to: &Path) -> Result<(), SkillError> {
+    if std::fs::symlink_metadata(to).is_ok() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("目标已存在：{}", to.display()),
+        )
+        .into());
+    }
     let fault = tests_hook::fault(Fault::CopyTo, to).is_err();
     if !fault && std::fs::rename(from, to).is_ok() {
         return Ok(());
     }
+    // 目标由这里独占新建（`create_dir` 遇到已存在的会失败）：建不成就不是本次复制的，失败时不能删
+    std::fs::create_dir(to)?;
     let mut budget = Budget::default();
-    let copied = copy_tree(from, to, &mut budget).and_then(|()| {
+    let copied = copy_contents(from, to, &mut budget).and_then(|()| {
         if fault {
             Err(io::Error::other("注入的故障：复制中途失败").into())
         } else {
@@ -1358,6 +1373,51 @@ mod tests {
         tests_hook::clear();
         install(&core, &tmp, &stage.stage_id, "demo", true).unwrap();
         assert!(skills.join("demo/new.md").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn move_dir_refuses_an_existing_target_and_never_deletes_it() {
+        let root = temp("move-exists");
+        let from = root.join("from");
+        write(&from.join("SKILL.md"), SKILL);
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                tests_hook::clear();
+            }
+        }
+        let _clear = Clear;
+        // 目标是非空目录 / 空目录（Unix 上 rename 会直接换掉空目录）/ 文件；直接改名与跨卷复制两条路都试
+        for (i, kind) in ["full", "empty", "file"].iter().enumerate() {
+            for copy in [false, true] {
+                let to = root.join(format!("to-{i}-{copy}"));
+                match *kind {
+                    "full" => write(&to.join("keep"), "keep"),
+                    "empty" => std::fs::create_dir_all(&to).unwrap(),
+                    _ => write(&to, "keep"),
+                }
+                if copy {
+                    tests_hook::inject(Fault::CopyTo, &to);
+                }
+                let err = move_dir(&from, &to).unwrap_err();
+                assert!(err.to_string().contains("已存在"), "{kind} {copy}: {err}");
+                match *kind {
+                    "full" => assert!(to.join("keep").is_file(), "{kind} {copy}"),
+                    "empty" => {
+                        assert_eq!(std::fs::read_dir(&to).unwrap().count(), 0, "{copy}")
+                    }
+                    _ => assert_eq!(std::fs::read_to_string(&to).unwrap(), "keep"),
+                }
+                assert!(from.join("SKILL.md").is_file(), "源目录不动");
+            }
+        }
+        // 目标不存在时复制中途失败：只删掉这次新建的目标
+        let to = root.join("fresh");
+        tests_hook::inject(Fault::CopyTo, &to);
+        assert!(move_dir(&from, &to).is_err());
+        assert!(!to.exists());
+        assert!(from.join("SKILL.md").is_file());
         std::fs::remove_dir_all(root).unwrap();
     }
 
