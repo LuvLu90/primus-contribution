@@ -5,7 +5,8 @@
 //! - 密钥只有下面一个常量：种子写入时存进 DPAPI 保险库（`provider:ioply`），`models.json` 里只放取密钥命令。
 //! - 模型清单起初为空；只要渠道仍是种子配置且清单为空，每次启动都会在后台重试获取（`lib.rs`）。
 //!   已停用的渠道改回种子配置并保存时也会立即后台获取，无需重启。
-//! - 更换内置地址后，旧安装里仍是旧内置地址的 ioply 在启动时迁移到新地址（清空模型清单后重新获取），
+//! - 内置地址只写在 [`SEED_BASE_URL`] 一处：更换时只改它。自动更新后，名称与协议仍是种子配置的 ioply
+//!   只要地址与它不同，启动时就迁移到当前地址（清空模型清单后重新获取），旧地址不需要保留；
 //!   保险库里的旧内置密钥同步为当前常量；用户自己换过的密钥不覆盖。
 
 use crate::providers::{Api, Provider};
@@ -16,15 +17,11 @@ pub(crate) const SEED_PROVIDER_ID: &str = "ioply";
 /// 内置渠道协议。
 const SEED_API: Api = Api::OpenAiResponses;
 
-/// 内置渠道接口地址。
+/// 内置渠道接口地址：内置地址只写在这里，更换时只改这一处。
 const SEED_BASE_URL: &str = "https://api.690990.xyz/v1";
 
 /// 内置渠道密钥，用户要求直接写在源码中，后续会更换。
 pub(crate) const BUILTIN_API_KEY: &str = "sk-xFAj92kTXnK6WCz9nGiKznBgzfFpWKi6uqg1j6xNRl3HLvEj";
-
-/// 历史版本用过的内置接口地址：旧安装的 ioply 仍是这些地址时，启动时迁移到 [`SEED_BASE_URL`]。
-/// 更换地址时把旧值追加到这里。
-pub(crate) const LEGACY_BASE_URLS: &[&str] = &["http://218.93.48.244:3304/openai/v1"];
 
 /// 历史版本用过的内置密钥的 SHA-256（小写十六进制）。只存摘要，真实密钥只有 [`BUILTIN_API_KEY`] 一处。
 /// 保险库里是这些密钥（或没有密钥）时同步为 [`BUILTIN_API_KEY`]，其他值视为用户自己换的密钥，不覆盖。
