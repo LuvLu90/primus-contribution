@@ -15,9 +15,10 @@
 //! 与 `ignore` 包一样也检查上级目录（Core 不进入被忽略的目录，这一步只为与它逐条一致）。
 //!
 //! 与 Core 的差别只有两处，都不改变结果：同一目录的子项按名字排序（Core 用 `readdir` 的顺序，只影响
-//! 同名技能谁先被加载，这里只列出不加载）；记下走过的真实路径，链接成环时不重复进入（Core 会一直走到报错）。
+//! 同名技能谁先被加载，这里只列出不加载）；当前递归链上的目录经链接又回到链上某一级（成环）时不再进入（Core 会一直
+//! 走到报错）。不在链上的重复路径照常进入，与 Core 一样：`a` 链接到 `pkg/other` 时两处都列出（同一个文件 Core 只加载
+//! 一次，那是加载时按真实路径去重，见 [`crate::skills::list`]）。
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Core 的两种发现方式（`SkillDiscoveryMode`：`pi` / `agents`）。
@@ -449,31 +450,29 @@ impl Rule {
 }
 
 /// 按 Core 的规则找出 `root` 下的技能文件（`SKILL.md` 或单个 `*.md`），顺序与 Core 的遍历一致（同一目录按名字）。
+/// 读不了的目录与目录项跳过（Core 也是这样）。
 pub(crate) fn collect(root: &Path, mode: Mode) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut rules = IgnoreRules::default();
-    let mut visited = HashSet::new();
-    walk(root, "", true, mode, &mut rules, &mut out, &mut visited);
-    out
+    let mut walker = Walker::new(mode, false);
+    // 宽松模式不会返回错误
+    let _ = walker.walk(root, "", true);
+    walker.out
+}
+
+/// 与 [`collect`] 相同，但任何读取错误（目录、目录项、元数据，断开的链接除外）都返回错误：结果不完整时调用方
+/// 不能把“没找到”当作“没有”（删除时判断顶层目录里还有没有技能）。
+pub(crate) fn collect_complete(root: &Path, mode: Mode) -> std::io::Result<Vec<PathBuf>> {
+    let mut walker = Walker::new(mode, true);
+    walker.walk(root, "", true)?;
+    Ok(walker.out)
 }
 
 /// 把 `dir` 当作 Core 用户目录 `skills/` 下的一个子目录（安装后的位置）来找技能：与 Core 加载安装后的
 /// `skills/<名称>/` 结果相同（相对路径与忽略规则都带上 `<名称>/` 前缀；`skills/` 自己的忽略文件不算）。
 pub(crate) fn collect_as_installed(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut rules = IgnoreRules::default();
-    let mut visited = HashSet::new();
+    let mut walker = Walker::new(Mode::Core, false);
     // 前缀的名字不影响结果：所有规则与路径都在它下面
-    walk(
-        dir,
-        "_",
-        false,
-        Mode::Core,
-        &mut rules,
-        &mut out,
-        &mut visited,
-    );
-    out
+    let _ = walker.walk(dir, "_", false);
+    walker.out
 }
 
 fn join_rel(rel_dir: &str, name: &str) -> String {
@@ -484,63 +483,115 @@ fn join_rel(rel_dir: &str, name: &str) -> String {
     }
 }
 
-fn walk(
-    dir: &Path,
-    rel_dir: &str,
-    is_root: bool,
+struct Walker {
     mode: Mode,
-    rules: &mut IgnoreRules,
-    out: &mut Vec<PathBuf>,
-    visited: &mut HashSet<PathBuf>,
-) {
-    if !dir.exists() {
-        return;
-    }
-    if let Ok(real) = dir.canonicalize()
-        && !visited.insert(real)
-    {
-        return;
-    }
-    add_ignore_rules(rules, dir, rel_dir);
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<(String, PathBuf)> = read
-        .flatten()
-        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
-        .collect();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    /// 读取错误是否返回（否则跳过）
+    strict: bool,
+    rules: IgnoreRules,
+    out: Vec<PathBuf>,
+    /// 当前递归链上各级目录的真实路径（检测链接成环）
+    chain: Vec<PathBuf>,
+}
 
-    // 名字完全是 SKILL.md、是文件（跟随链接）、没被忽略：这个目录是一个技能
-    if let Some((name, path)) = entries.iter().find(|(n, _)| n == "SKILL.md")
-        && std::fs::metadata(path).is_ok_and(|m| m.is_file())
-        && !rules.ignores(&join_rel(rel_dir, name), false)
-    {
-        out.push(path.clone());
-        return;
+impl Walker {
+    fn new(mode: Mode, strict: bool) -> Self {
+        Self {
+            mode,
+            strict,
+            rules: IgnoreRules::default(),
+            out: Vec::new(),
+            chain: Vec::new(),
+        }
     }
 
-    for (name, path) in &entries {
-        if name.starts_with('.') || name == "node_modules" {
-            continue;
+    /// 宽松模式把错误当作跳过。
+    fn fail(&self, e: std::io::Error) -> std::io::Result<()> {
+        if self.strict { Err(e) } else { Ok(()) }
+    }
+
+    fn walk(&mut self, dir: &Path, rel_dir: &str, is_root: bool) -> std::io::Result<()> {
+        if !dir.exists() {
+            return Ok(());
         }
-        // 跟随链接；断开的跳过
-        let Ok(meta) = std::fs::metadata(path) else {
-            continue;
+        let real = match dir.canonicalize() {
+            Ok(r) => Some(r),
+            Err(e) => {
+                self.fail(e)?;
+                None
+            }
         };
-        let rel = join_rel(rel_dir, name);
-        let md_counts = match mode {
-            Mode::Core => is_root,
-            Mode::Agents => !is_root,
+        if let Some(real) = &real {
+            if self.chain.contains(real) {
+                return Ok(());
+            }
+            self.chain.push(real.clone());
+        }
+        let result = self.walk_dir(dir, rel_dir, is_root);
+        if real.is_some() {
+            self.chain.pop();
+        }
+        result
+    }
+
+    fn walk_dir(&mut self, dir: &Path, rel_dir: &str, is_root: bool) -> std::io::Result<()> {
+        add_ignore_rules(&mut self.rules, dir, rel_dir);
+        let read = match std::fs::read_dir(dir) {
+            Ok(r) => r,
+            Err(e) => return self.fail(e),
         };
-        if meta.is_file() && name.ends_with(".md") && !rules.ignores(&rel, false) && md_counts {
-            out.push(path.clone());
-            continue;
+        let mut entries: Vec<(String, PathBuf)> = Vec::new();
+        for entry in read {
+            match entry {
+                Ok(e) => entries.push((e.file_name().to_string_lossy().into_owned(), e.path())),
+                Err(e) => self.fail(e)?,
+            }
         }
-        if !meta.is_dir() || rules.ignores(&rel, true) {
-            continue;
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // 名字完全是 SKILL.md、是文件（跟随链接）、没被忽略：这个目录是一个技能
+        if let Some((name, path)) = entries.iter().find(|(n, _)| n == "SKILL.md")
+            && std::fs::metadata(path).is_ok_and(|m| m.is_file())
+            && !self.rules.ignores(&join_rel(rel_dir, name), false)
+        {
+            self.out.push(path.clone());
+            return Ok(());
         }
-        walk(path, &rel, false, mode, rules, out, visited);
+
+        for (name, path) in &entries {
+            if name.starts_with('.') || name == "node_modules" {
+                continue;
+            }
+            // 跟随链接；断开的跳过
+            let meta = match std::fs::metadata(path) {
+                Ok(m) => m,
+                Err(e) => {
+                    let broken_link = e.kind() == std::io::ErrorKind::NotFound
+                        && std::fs::symlink_metadata(path).is_ok();
+                    if !broken_link {
+                        self.fail(e)?;
+                    }
+                    continue;
+                }
+            };
+            let rel = join_rel(rel_dir, name);
+            let md_counts = match self.mode {
+                Mode::Core => is_root,
+                Mode::Agents => !is_root,
+            };
+            if meta.is_file()
+                && name.ends_with(".md")
+                && !self.rules.ignores(&rel, false)
+                && md_counts
+            {
+                self.out.push(path.clone());
+                continue;
+            }
+            if !meta.is_dir() || self.rules.ignores(&rel, true) {
+                continue;
+            }
+            self.walk(path, &rel, false)?;
+        }
+        Ok(())
     }
 }
 
@@ -703,6 +754,40 @@ pub(crate) mod tests {
                 "one/SKILL.md"
             ]
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_follow_like_core_and_only_cycles_stop() {
+        let root = temp("links");
+        let skills = root.join("skills");
+        write(&skills.join("pkg/inner/SKILL.md"), "x");
+        write(&skills.join("pkg/other/SKILL.md"), "x");
+        write(&skills.join("loop/y/SKILL.md"), "x");
+        std::os::unix::fs::symlink(skills.join("pkg/other"), skills.join("a")).unwrap();
+        // 回到链上一级的链接：成环，不再进入
+        std::os::unix::fs::symlink(skills.join("loop"), skills.join("loop/back")).unwrap();
+        let rel: Vec<_> = collect(&skills, Mode::Core)
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&skills)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        // 与 Core 的 collectSkillEntries 一样：链接与它指向的目录两处都列出
+        assert_eq!(
+            rel,
+            [
+                "a/SKILL.md",
+                "loop/y/SKILL.md",
+                "pkg/inner/SKILL.md",
+                "pkg/other/SKILL.md"
+            ]
+        );
+        assert_eq!(collect_complete(&skills, Mode::Core).unwrap().len(), 4);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

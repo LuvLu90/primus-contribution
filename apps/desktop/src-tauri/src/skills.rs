@@ -327,8 +327,15 @@ pub(crate) fn list(
         ));
     }
     let mut out = Vec::new();
+    // 同一个文件（经链接从多处找到）Core 只加载第一次找到的（`loadSkills` 按真实路径去重），列表也只列那一次
+    let mut seen = std::collections::HashSet::new();
     for (root, mode, scope, base) in roots {
         for file in skill_discovery::collect(&root, mode) {
+            if let Ok(real) = file.canonicalize()
+                && !seen.insert(real)
+            {
+                continue;
+            }
             // Core 的 baseDir：技能文件所在目录
             let dir = file.parent().unwrap_or(&root).to_path_buf();
             let target = skill_target(&file);
@@ -1200,6 +1207,35 @@ mod tests {
             assert!(delete(&core, Some(&home), &x.file).is_err());
             assert!(nested.join("deep/x/SKILL.md").is_file());
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_keeps_package_when_another_link_points_into_it() {
+        let root = temp("delete-linked-pkg");
+        let core = root.join("core");
+        write(&core.join("skills/pkg/inner/SKILL.md"), SKILL);
+        write(&core.join("skills/pkg/other/SKILL.md"), SKILL);
+        // `a` 排在 `pkg` 前面，指向 pkg/other
+        std::os::unix::fs::symlink(core.join("skills/pkg/other"), core.join("skills/a")).unwrap();
+        // Core 加载时同一个文件只加载一次：列表里 pkg/other 与 a 只出现一次
+        let listed = list(&core, None, &Map::new());
+        assert_eq!(listed.iter().filter(|s| s.dir_name == "other").count(), 0);
+        assert_eq!(
+            listed
+                .iter()
+                .map(|s| s.dir_name.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "inner"]
+        );
+        let file = core.join("skills/pkg/inner/SKILL.md");
+        delete(&core, None, &file.to_string_lossy()).unwrap();
+        assert!(!core.join("skills/pkg/inner").exists());
+        assert!(
+            core.join("skills/pkg/other/SKILL.md").is_file(),
+            "pkg 里还有 other，不能整个删掉"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
