@@ -53,10 +53,24 @@ const toolIcons: Record<ToolKind, IconName> = {
   edit: "pen-edit",
   write: "pen-edit",
   search: "search",
+  skill: "bulb",
+  mcp: "server",
   other: "tool",
 };
 
-const kindOf = (name: string): ToolKind => toolKinds[name] ?? "other";
+/** 读取技能目录里的文件（`SKILL.md` 或任意 `skills/` 目录下的文件）算作使用技能 */
+const SKILL_PATH = /(^|[\\/])(SKILL\.md$|skills[\\/])/i;
+
+/** MCP 工具：直接暴露的 `mcp__<服务器>__<工具>`，以及经 codemode 调用的 */
+const isMcpTool = (name: string) => name.startsWith("mcp__") || name === "codemode";
+
+const kindOf = (call: ToolCallBlock | undefined): ToolKind => {
+  if (!call) return "other";
+  if (isMcpTool(call.name)) return "mcp";
+  const kind = toolKinds[call.name] ?? "other";
+  if (kind === "read" && SKILL_PATH.test(argOf(call))) return "skill";
+  return kind;
+};
 
 type ToolCallBlock = Extract<TimelineContent, { type: "toolCall" }>;
 type ToolStatus = ToolRun["status"];
@@ -211,10 +225,16 @@ function argOf(call: ToolCallBlock): string {
   );
 }
 
+/** `mcp__github__search_issues` → `github · search_issues` */
+const mcpLabel = (name: string) => {
+  const m = /^mcp__(.+?)__(.+)$/.exec(name);
+  return m ? `${m[1]} · ${m[2]}` : name;
+};
+
 const firstLine = (s: string) => (s.split("\n")[0] ?? "").trim();
 
 /** 参数是文件路径的工具 */
-const FILE_KINDS = new Set<ToolKind>(["read", "edit", "write"]);
+const FILE_KINDS = new Set<ToolKind>(["read", "edit", "write", "skill"]);
 
 const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 
@@ -267,7 +287,7 @@ function StepButton({
 function ToolCallRow({ call, info }: { call: ToolCallBlock; info: CallInfo }) {
   const [open, setOpen] = useState(false);
   const id = useId();
-  const kind = kindOf(call.name);
+  const kind = kindOf(call);
   const running = info.status === "running";
   const verb = running ? t.tools[kind].running : t.tools[kind].done;
   const arg = firstLine(argOf(call));
@@ -287,7 +307,7 @@ function ToolCallRow({ call, info }: { call: ToolCallBlock; info: CallInfo }) {
         icon={toolIcons[kind]}
         failed={info.status === "error"}
       >
-        {kind === "other" ? `${verb} ${call.name}` : verb}
+        {kind === "other" || kind === "mcp" ? `${verb} ${mcpLabel(call.name)}` : verb}
         {fileIcon && (
           <FileIcon name={fileIcon} size="sm" className="ml-1.5 inline-block align-[-3px]" />
         )}
@@ -341,8 +361,8 @@ function ToolGroup({
     return <ToolCallRow call={call} info={infos[0] as CallInfo} />;
   }
   const failed = infos.filter((i) => i.status === "error").length;
-  const kinds = [...new Set(calls.map((c) => kindOf(c.name)))];
-  const lastKind = kindOf(calls.at(-1)?.name ?? "");
+  const kinds = [...new Set(calls.map((c) => kindOf(c)))];
+  const lastKind = kindOf(calls.at(-1));
   const label = kinds
     .map((k) => (running && k === lastKind ? t.groups[k].running : t.groups[k].done))
     .join("、");

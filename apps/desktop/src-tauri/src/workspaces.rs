@@ -5,9 +5,9 @@
 //! 按最近打开时间倒序，最多保留 [`MAX_RECENT`] 个；同一目录按 [`crate::platform::path_key`] 去重
 //! （Windows 不区分大小写、`/` 与 `\` 等价、忽略末尾分隔符）。写入先写临时文件再改名，不会留下半个文件。
 //!
-//! 信任：首次打开时需要用户确认（[`WorkspaceInfo::needs_trust`]）；选择“信任”时记下项目资源的内容指纹
-//! （`.primus/`，以及 Core 在信任后会加载技能的 `.agents/skills`，见 [`agents_skill_dirs`]），
-//! 之后内容变化则视为未信任，下次打开时重新确认。会话以 `--approve` 启动只看 [`Workspaces::approved`]。
+//! 信任：只在首次添加工作区时确认一次（[`WorkspaceInfo::needs_trust`]）。选择“信任”后之后的改动一律沿用信任，
+//! 不再比对内容；每次新会话以 `--approve` 启动（只看 [`Workspaces::approved`]），由 Core 重新加载项目里的
+//! 扩展、技能（`.primus/skills`、各级 `.agents/skills`）与 `.primus/mcp.json`。
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -15,7 +15,6 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// 最近工作区列表的上限。
 pub(crate) const MAX_RECENT: usize = 30;
@@ -26,9 +25,9 @@ pub(crate) const MAX_RECENT: usize = 30;
 pub(crate) struct WorkspaceInfo {
     pub(crate) path: String,
     pub(crate) name: String,
-    /// 当前有效的信任状态：已信任且 `.primus/` 未变化
+    /// 用户选择过“信任”
     pub(crate) trusted: bool,
-    /// 需要显示信任确认：从未确认过，或信任后 `.primus/` 内容已变化
+    /// 需要显示信任确认：从未确认过
     pub(crate) needs_trust: bool,
 }
 
@@ -49,18 +48,12 @@ pub(crate) struct TrustDetails {
     /// 工作区及上级目录（到 Git 仓库根为止）`.agents/skills` 中 Core 会加载的技能，
     /// 带相对工作区的目录前缀（如 `.agents/skills/review`、`../.agents/skills/lint`）
     pub(crate) agents_skills: Vec<String>,
-    /// 此刻项目资源（`.primus/` 与 `.agents/skills`）的内容指纹，`workspace_trust` 信任时必须原样带回；
-    /// 内容过多或无法完整读取时为 None，此时不能信任
-    pub(crate) fingerprint: Option<String>,
 }
 
 /// 信任确认中 `AGENTS.md` 最多展示的字节数。
 pub(crate) const AGENTS_MD_LIMIT: usize = 64 * 1024;
 /// `.primus/mcp.json` 最多读取的字节数，超过时只显示文件名。
 const MCP_JSON_LIMIT: u64 = 1024 * 1024;
-/// 计算指纹时最多计入的文件数与总字节数（`.primus/` 与各 `.agents/skills` 合计）；超出则指纹不完整，不能信任。
-const HASH_MAX_FILES: usize = 20_000;
-const HASH_MAX_BYTES: u64 = 512 * 1024 * 1024;
 /// 扩展目录中 `package.json` 最多读取的字节数，超过时报错。
 const PACKAGE_JSON_LIMIT: usize = 4 * 1024 * 1024;
 
@@ -73,9 +66,6 @@ struct Entry {
     /// 用户是否已对信任确认做过选择（“信任”或“不信任”）
     #[serde(default)]
     decided: bool,
-    /// 选择“信任”时 `.primus/` 的内容指纹
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    primus_hash: Option<String>,
     /// 最近打开时间（Unix 毫秒）
     #[serde(default)]
     last_opened: u64,
@@ -94,12 +84,6 @@ pub(crate) enum WorkspaceError {
     NotADirectory(String),
     /// 信任操作的目标不在最近工作区中
     Unknown(String),
-    /// 确认弹窗展示之后 `.primus/` 内容又变了
-    TrustChanged,
-    /// `.primus/` 内容过多或无法完整读取，无法生成指纹
-    Incomplete,
-    /// 读取确认内容期间 `.primus/` 发生了变化
-    Changing,
     /// 读取项目文件失败（`workspace_inspect`）
     Read(PathBuf, io::Error),
     Io(io::Error),
@@ -110,12 +94,6 @@ impl std::fmt::Display for WorkspaceError {
         match self {
             Self::NotADirectory(p) => write!(f, "文件夹不存在或不可访问：{p}"),
             Self::Unknown(p) => write!(f, "不是已打开过的工作区：{p}"),
-            Self::TrustChanged => write!(f, "项目内容在确认后发生了变化，请重新查看后再决定"),
-            Self::Changing => write!(f, "项目内容在读取期间发生了变化，请重新打开"),
-            Self::Incomplete => write!(
-                f,
-                "项目的 .primus 或 .agents/skills 内容过多或无法完整读取，不能信任"
-            ),
             Self::Read(p, e) => write!(f, "读取 {} 失败：{e}", p.display()),
             Self::Io(e) => write!(f, "无法保存工作区列表：{e}"),
         }
@@ -162,14 +140,12 @@ impl Workspaces {
             self.save(&store)?;
             entry
         };
-        // 指纹计算可能读很多文件，放在锁外
         Ok(entry_info(&entry))
     }
 
     /// 最近工作区，最近打开的在前；已不存在的目录不列出（记录保留，目录恢复后重新出现）。
     /// 文件读取失败（不是“不存在”）时返回错误，由界面提示，而不是显示成空列表。
     pub(crate) fn list(&self) -> io::Result<Vec<WorkspaceInfo>> {
-        // 锁内只读登记列表；逐个计算指纹放在锁外，不阻塞 open / trust / approved
         let mut items = {
             let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
             self.load()?.workspaces
@@ -182,7 +158,7 @@ impl Workspaces {
             .collect())
     }
 
-    /// 会话是否以 `--approve` 启动：已登记、用户选择过“信任”，且 `.primus/` 未变化。
+    /// 会话是否以 `--approve` 启动：已登记且用户选择过“信任”。
     /// 读取失败或未登记一律按未信任处理。
     /// 只认与登记记录完全相同的路径：只差大小写的路径可能是另一个目录。
     pub(crate) fn approved(&self, path: &str) -> bool {
@@ -199,24 +175,7 @@ impl Workspaces {
     }
 
     /// 记录信任确认的选择；目标必须已打开过（路径完全一致）。
-    /// 选择“信任”时 `fingerprint` 必须是弹窗展示内容时 [`inspect`] 给出的指纹，且与当前内容一致，
-    /// 保证记为信任的正是用户看到的内容。
-    pub(crate) fn trust(
-        &self,
-        path: &str,
-        trusted: bool,
-        fingerprint: Option<&str>,
-    ) -> Result<(), WorkspaceError> {
-        // 先在锁外计算指纹；之后内容再变，approved 会按新指纹判为需要重新确认
-        let hash = if trusted {
-            let current = primus_hash(Path::new(path)).ok_or(WorkspaceError::Incomplete)?;
-            if fingerprint != Some(current.as_str()) {
-                return Err(WorkspaceError::TrustChanged);
-            }
-            Some(current)
-        } else {
-            None
-        };
+    pub(crate) fn trust(&self, path: &str, trusted: bool) -> Result<(), WorkspaceError> {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut store = self.load()?;
         let entry = store
@@ -226,7 +185,6 @@ impl Workspaces {
             .ok_or_else(|| WorkspaceError::Unknown(path.to_owned()))?;
         entry.trusted = trusted;
         entry.decided = true;
-        entry.primus_hash = hash;
         self.save(&store)?;
         Ok(())
     }
@@ -284,108 +242,17 @@ fn untrusted(path: String) -> Entry {
         path,
         trusted: false,
         decided: false,
-        primus_hash: None,
         last_opened: 0,
     }
 }
 
 fn entry_info(e: &Entry) -> WorkspaceInfo {
-    // 只有选择过“信任”的才需要比对指纹；指纹不完整（None）同样视为变化
-    let changed =
-        e.trusted && (e.primus_hash.is_none() || primus_hash(Path::new(&e.path)) != e.primus_hash);
-    let needs_trust = !e.decided || changed;
     WorkspaceInfo {
         path: e.path.clone(),
         name: display_name(&e.path),
-        trusted: e.trusted && !needs_trust,
-        needs_trust,
+        trusted: e.trusted && e.decided,
+        needs_trust: !e.decided,
     }
-}
-
-/// 指纹中的一项：相对路径、经由的符号链接目标、实际文件（目录项为 None）。
-struct HashItem {
-    rel: String,
-    link: Option<PathBuf>,
-    file: Option<PathBuf>,
-}
-
-/// 项目资源的内容指纹（SHA-256）：先是 `.primus/`，按相对路径排序，依次计入路径、符号链接目标、长度与内容；
-/// 再按 [`agents_skill_dirs`] 的顺序计入每个存在的 `.agents/skills`（目录层级 + 同样的条目；
-/// 不存在或是文件的跳过，其他读取失败见 [`agents_skill_dir_present`]）。
-/// 跟随符号链接（Core 加载扩展与技能时也跟随），按规范路径防止循环。都不存在时为空集合的指纹；
-/// 没有 `.agents/skills` 时与只算 `.primus/` 的旧指纹相同，已信任的工作区不必重新确认。
-/// 任何目录或文件读取失败、断开的链接、超过 [`HASH_MAX_FILES`] / [`HASH_MAX_BYTES`] 时返回 None：
-/// 不完整的指纹无法代表全部内容，不能用于信任。
-fn primus_hash(workspace: &Path) -> Option<String> {
-    let root = workspace.join(".primus");
-    let mut items = Vec::new();
-    match std::fs::symlink_metadata(&root) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(_) => return None,
-        Ok(_) => {
-            let mut visited = std::collections::HashSet::new();
-            walk_hash(&root, "", &mut items, &mut visited)?;
-        }
-    }
-    let mut hasher = Sha256::new();
-    let mut budget = HASH_MAX_BYTES;
-    let mut files = items.len();
-    hash_items(&mut hasher, &mut items, &mut budget)?;
-    for (depth, dir) in agents_skill_dirs(workspace) {
-        // 只有不存在或是文件时才跳过；无权限、断开的链接等读取失败无法确认 Core 会加载什么，指纹不完整
-        if !agents_skill_dir_present(&dir).ok()? {
-            continue;
-        }
-        let mut items = Vec::new();
-        let mut visited = std::collections::HashSet::new();
-        walk_hash(&dir, "", &mut items, &mut visited)?;
-        files += items.len();
-        if files > HASH_MAX_FILES {
-            return None;
-        }
-        // 文件名不含 NUL：以 NUL 开头的分段标记不会与 `.primus/` 的条目混淆
-        hasher.update(b"\0agents-skills\0");
-        hasher.update(u64::try_from(depth).unwrap_or(u64::MAX).to_le_bytes());
-        hash_items(&mut hasher, &mut items, &mut budget)?;
-    }
-    Some(
-        hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect(),
-    )
-}
-
-/// 把一组条目按相对路径排序后计入指纹；`budget` 为剩余可读字节数，超出或读取失败时返回 None。
-fn hash_items(hasher: &mut Sha256, items: &mut [HashItem], budget: &mut u64) -> Option<()> {
-    items.sort_by(|a, b| a.rel.cmp(&b.rel));
-    for item in items.iter() {
-        hasher.update(item.rel.as_bytes());
-        hasher.update([0]);
-        if let Some(target) = &item.link {
-            hasher.update(b"link:");
-            hasher.update(target.to_string_lossy().as_bytes());
-            hasher.update([0]);
-        }
-        match &item.file {
-            None => hasher.update(b"dir"),
-            Some(path) => {
-                let file = open_regular(path).ok()?;
-                let len = file.metadata().ok()?.len();
-                // 先看长度再读：超出预算时不读内容，指纹作废
-                *budget = budget.checked_sub(len)?;
-                hasher.update(b"file:");
-                hasher.update(len.to_le_bytes());
-                let copied = io::copy(&mut io::Read::take(file, len), hasher).ok()?;
-                if copied != len {
-                    return None;
-                }
-            }
-        }
-        hasher.update([0]);
-    }
-    Some(())
 }
 
 /// 信任后 Core 会加载技能的 `.agents/skills` 目录（与 agent-core 的发现规则一致）：从工作区起逐级往上，
@@ -427,7 +294,7 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// 某级 `.agents/skills` 是否要计入指纹与信任确认。只有确定没有技能时返回 false：路径不存在
+/// 某级 `.agents/skills` 是否要列入信任确认。只有确定没有技能时返回 false：路径不存在
 /// （上级 `.agents` 不存在，或它跟随链接后是普通文件），或它（跟随链接后）是普通文件。其余情况——没有权限、
 /// 断开的符号链接（链接在、目标缺失，不论是 `skills` 还是上级 `.agents`）、其他 IO 错误——都返回错误：
 /// 读不到就无法确认 Core 会加载什么，不能当作“没有”。
@@ -490,76 +357,11 @@ fn agents_skill_label(depth: usize) -> String {
     format!("{}.agents/skills", "../".repeat(depth))
 }
 
-fn walk_hash(
-    dir: &Path,
-    rel: &str,
-    out: &mut Vec<HashItem>,
-    visited: &mut std::collections::HashSet<PathBuf>,
-) -> Option<()> {
-    // 同一目录经不同链接到达时只展开一次（防止循环）；再次到达的位置只计入链接本身
-    let canonical = std::fs::canonicalize(dir).ok()?;
-    if !visited.insert(canonical) {
-        return Some(());
-    }
-    // read_dir 的顺序在调用间可能不同：先按文件名排序再递归，同一目录经多个链接到达时展开哪一处才固定，
-    // 内容未变时指纹不变
-    let mut entries = Vec::new();
-    for entry in std::fs::read_dir(dir).ok()? {
-        entries.push(entry.ok()?);
-        if out.len() + entries.len() > HASH_MAX_FILES {
-            return None;
-        }
-    }
-    entries.sort_by_key(|e| e.file_name());
-    for entry in entries {
-        if out.len() >= HASH_MAX_FILES {
-            return None;
-        }
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let child_rel = if rel.is_empty() {
-            name
-        } else {
-            format!("{rel}/{name}")
-        };
-        let link = std::fs::symlink_metadata(&path)
-            .ok()?
-            .file_type()
-            .is_symlink()
-            .then(|| std::fs::read_link(&path))
-            .transpose()
-            .ok()?;
-        // 跟随链接取实际类型；断开的链接无法确认内容。只接受目录与普通文件：
-        // FIFO、设备等打开时可能阻塞，直接使指纹作废
-        let meta = std::fs::metadata(&path).ok()?;
-        if !meta.is_dir() && !meta.is_file() {
-            return None;
-        }
-        if meta.is_dir() {
-            out.push(HashItem {
-                rel: child_rel.clone(),
-                link,
-                file: None,
-            });
-            walk_hash(&path, &child_rel, out, visited)?;
-        } else {
-            out.push(HashItem {
-                rel: child_rel,
-                link,
-                file: Some(path),
-            });
-        }
-    }
-    Some(())
-}
-
 /// 读取信任确认要展示的内容；路径必须是已存在的目录。只有“不存在”视为没有，其他读取错误返回失败，
 /// 避免弹窗把读不到的内容显示成“没有”。
 pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
     let path = normalize(path).ok_or_else(|| WorkspaceError::NotADirectory(path.to_owned()))?;
     let root = Path::new(&path);
-    // 先取指纹再读列表：之后加入的文件会让 trust 时重算的指纹不一致而被拒绝，不会被悄悄信任
-    let fingerprint = primus_hash(root);
     let agents = root.join("AGENTS.md");
     let (agents_md, agents_md_truncated) = match read_prefix(&agents, AGENTS_MD_LIMIT) {
         Ok(Some((bytes, truncated))) => (
@@ -601,7 +403,7 @@ pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
     skills.sort();
     let mut agents_skills = Vec::new();
     for (depth, dir) in agents_skill_dirs(root) {
-        // 与指纹一致：只有不存在或是文件时才跳过；其他读取失败报错，不能把读不到的技能显示成“没有”
+        // 只有不存在或是文件时才跳过；其他读取失败报错，不能把读不到的技能显示成“没有”
         if !agents_skill_dir_present(&dir).map_err(|e| WorkspaceError::Read(dir.clone(), e))? {
             continue;
         }
@@ -613,10 +415,6 @@ pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
         let label = agents_skill_label(depth);
         agents_skills.extend(found.into_iter().map(|s| format!("{label}/{s}")));
     }
-    // 列表读完后再取一次指纹：两次不一致说明读取期间内容在变，展示的可能不是指纹对应的内容
-    if primus_hash(root) != fingerprint {
-        return Err(WorkspaceError::Changing);
-    }
     Ok(TrustDetails {
         agents_md,
         agents_md_truncated,
@@ -624,7 +422,6 @@ pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
         skills,
         mcp_servers,
         agents_skills,
-        fingerprint,
         path,
     })
 }
@@ -823,10 +620,9 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
 
-    /// 按 `inspect` 给出的当前指纹信任（等同用户在弹窗中点“信任”）。
+    /// 等同用户在弹窗中点“信任”。
     fn trust_now(ws: &Workspaces, path: &str) {
-        let fp = inspect(path).unwrap().fingerprint;
-        ws.trust(path, true, fp.as_deref()).unwrap();
+        ws.trust(path, true).unwrap();
     }
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -896,7 +692,7 @@ mod tests {
         std::fs::create_dir_all(app.join("workspaces.json")).unwrap();
         let ws = Workspaces::new(&app);
         assert!(ws.open(a.to_str().unwrap()).is_err());
-        assert!(ws.trust(a.to_str().unwrap(), false, None).is_err());
+        assert!(ws.trust(a.to_str().unwrap(), false).is_err());
         assert!(ws.list().is_err());
         assert!(app.join("workspaces.json").is_dir());
         std::fs::remove_dir_all(&root).unwrap();
@@ -911,7 +707,7 @@ mod tests {
         let ws = Workspaces::new(&app);
         let path = ws.open(a.to_str().unwrap()).unwrap().path;
         assert!(matches!(
-            ws.trust(root.join("other").to_str().unwrap(), false, None),
+            ws.trust(root.join("other").to_str().unwrap(), false),
             Err(WorkspaceError::Unknown(_))
         ));
         trust_now(&ws, &path);
@@ -934,7 +730,7 @@ mod tests {
         assert!(!ws.approved(&path));
 
         // “不信任”同样记为已确认，之后不再询问，会话以 --no-approve 启动
-        ws.trust(&path, false, None).unwrap();
+        ws.trust(&path, false).unwrap();
         let again = ws.open(&path).unwrap();
         assert!(!again.needs_trust && !again.trusted);
         assert!(!ws.approved(&path));
@@ -947,7 +743,8 @@ mod tests {
     }
 
     #[test]
-    fn changed_primus_dir_requires_reconfirmation() {
+    fn later_changes_keep_trust() {
+        // 只在首次添加时确认；之后改动 .primus/ 或 .agents/skills 都沿用信任，新会话由 Core 重新加载
         let root = temp_dir("rehash");
         let proj = root.join("proj");
         std::fs::create_dir_all(proj.join(".primus/extensions")).unwrap();
@@ -959,20 +756,18 @@ mod tests {
         assert!(ws.approved(&path));
 
         std::fs::write(proj.join(".primus/extensions/a.js"), "two").unwrap();
-        let info = ws.open(&path).unwrap();
-        assert!(info.needs_trust && !info.trusted);
-        assert!(!ws.approved(&path));
-
-        trust_now(&ws, &path);
-        assert!(ws.approved(&path));
-        // 新增文件同样视为变化
         std::fs::create_dir_all(proj.join(".primus/skills/s")).unwrap();
         std::fs::write(proj.join(".primus/skills/s/SKILL.md"), "x").unwrap();
-        assert!(!ws.approved(&path));
+        std::fs::write(proj.join(".primus/mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+        std::fs::create_dir_all(proj.join(".agents/skills/new")).unwrap();
+        std::fs::write(proj.join(".agents/skills/new/SKILL.md"), "n").unwrap();
+        let info = ws.open(&path).unwrap();
+        assert!(!info.needs_trust && info.trusted);
+        assert!(ws.approved(&path));
     }
 
     #[test]
-    fn agents_skills_up_to_git_root_are_listed_and_fingerprinted() {
+    fn agents_skills_up_to_git_root_are_listed() {
         let root = temp_dir("agents");
         let repo = root.join("repo");
         let proj = repo.join("sub");
@@ -999,61 +794,12 @@ mod tests {
             ]
         );
         assert!(d.skills.is_empty());
-
-        let ws = Workspaces::new(&root.join("app"));
-        ws.open(&path).unwrap();
-        trust_now(&ws, &path);
-        assert!(ws.approved(&path));
-        // Git 仓库根以上的 .agents/skills Core 不加载：变化不影响信任
-        std::fs::write(root.join(".agents/skills/outside/SKILL.md"), "changed").unwrap();
-        assert!(ws.approved(&path));
-        // 工作区与上级（仓库内）的技能变化、新增都要重新确认
-        std::fs::write(repo.join(".agents/skills/lint/SKILL.md"), "changed").unwrap();
-        assert!(!ws.approved(&path));
-        trust_now(&ws, &path);
-        std::fs::create_dir_all(proj.join(".agents/skills/new")).unwrap();
-        std::fs::write(proj.join(".agents/skills/new/SKILL.md"), "n").unwrap();
-        assert!(!ws.approved(&path));
-        trust_now(&ws, &path);
-        assert!(ws.approved(&path));
-        // .agents/skills 是文件时 Core 不加载，也不计入
-        std::fs::remove_dir_all(repo.join(".agents")).unwrap();
-        trust_now(&ws, &path);
-        std::fs::create_dir_all(repo.join(".agents")).unwrap();
-        std::fs::write(repo.join(".agents/skills"), "file").unwrap();
-        assert!(ws.approved(&path));
-    }
-
-    #[test]
-    fn fingerprint_without_agents_skills_is_unchanged() {
-        // 没有 .agents/skills 时指纹只由 .primus/ 决定（升级前已信任的工作区不必重新确认）
-        let root = temp_dir("compat");
-        let proj = root.join("proj");
-        std::fs::create_dir_all(proj.join(".git")).unwrap();
-        std::fs::create_dir_all(proj.join(".primus/extensions")).unwrap();
-        std::fs::write(proj.join(".primus/extensions/a.js"), "one").unwrap();
-        let mut items = Vec::new();
-        let mut visited = std::collections::HashSet::new();
-        walk_hash(&proj.join(".primus"), "", &mut items, &mut visited).unwrap();
-        let mut hasher = Sha256::new();
-        let mut budget = HASH_MAX_BYTES;
-        hash_items(&mut hasher, &mut items, &mut budget).unwrap();
-        let primus_only: String = hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        assert_eq!(primus_hash(&proj), Some(primus_only.clone()));
-        std::fs::create_dir_all(proj.join(".agents/skills")).unwrap();
-        // 空的 .agents/skills 也计入（目录存在本身是内容的一部分）
-        assert_ne!(primus_hash(&proj), Some(primus_only));
     }
 
     #[cfg(unix)]
     #[test]
-    fn unreadable_agents_skills_cannot_be_trusted() {
+    fn unreadable_agents_skills_is_a_read_error() {
         use std::os::unix::fs::PermissionsExt;
-        // 只有不存在或是文件时跳过；读不了的 .agents/skills 不能当作“没有”而被信任
         let root = temp_dir("agents-noread");
         let proj = root.join("proj");
         std::fs::create_dir_all(proj.join(".git")).unwrap();
@@ -1061,123 +807,60 @@ mod tests {
         std::fs::create_dir_all(skills.join("review")).unwrap();
         std::fs::write(skills.join("review/SKILL.md"), "r").unwrap();
         let path = proj.to_string_lossy().into_owned();
-        let ws = Workspaces::new(&root.join("app"));
-        ws.open(&path).unwrap();
-        trust_now(&ws, &path);
-        assert!(ws.approved(&path));
-
         std::fs::set_permissions(&skills, std::fs::Permissions::from_mode(0o000)).unwrap();
         // 以 root 运行时权限不起作用，跳过
         if std::fs::read_dir(&skills).is_ok() {
             std::fs::set_permissions(&skills, std::fs::Permissions::from_mode(0o755)).unwrap();
             return;
         }
-        let hash = primus_hash(&proj);
-        let approved = ws.approved(&path);
         let details = inspect(&path);
-        let trusted = ws.trust(&path, true, None);
         std::fs::set_permissions(&skills, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(hash, None);
-        assert!(!approved);
         assert!(matches!(details, Err(WorkspaceError::Read(p, _)) if p == skills));
-        assert!(matches!(trusted, Err(WorkspaceError::Incomplete)));
-        assert!(ws.approved(&path));
     }
 
     #[cfg(unix)]
     #[test]
-    fn broken_agents_skills_link_cannot_be_trusted() {
+    fn broken_agents_skills_link_is_a_read_error() {
         let root = temp_dir("agents-broken");
         let proj = root.join("proj");
         std::fs::create_dir_all(proj.join(".git")).unwrap();
         std::fs::create_dir_all(proj.join(".agents")).unwrap();
         let path = proj.to_string_lossy().into_owned();
-        let ws = Workspaces::new(&root.join("app"));
-        ws.open(&path).unwrap();
-        trust_now(&ws, &path);
-        assert!(ws.approved(&path));
-
-        // 断开的链接（链接在、目标缺失）是读取失败，不是“不存在”：目标之后出现时 Core 就会加载
         let skills = proj.join(".agents/skills");
         std::os::unix::fs::symlink(root.join("missing"), &skills).unwrap();
-        assert_eq!(primus_hash(&proj), None);
-        assert!(!ws.approved(&path));
         assert!(matches!(inspect(&path), Err(WorkspaceError::Read(p, _)) if p == skills));
-        assert!(matches!(
-            ws.trust(&path, true, None),
-            Err(WorkspaceError::Incomplete)
-        ));
 
         // 指向文件的链接与普通文件一样，Core 不加载，跳过
         std::fs::write(root.join("missing"), "file").unwrap();
-        assert!(primus_hash(&proj).is_some());
         assert!(inspect(&path).unwrap().agents_skills.is_empty());
         // 上级 .agents 是文件：.agents/skills 不可能存在，跳过
         std::fs::remove_file(&skills).unwrap();
         std::fs::remove_dir(proj.join(".agents")).unwrap();
         std::fs::write(proj.join(".agents"), "file").unwrap();
-        assert!(primus_hash(&proj).is_some());
         assert!(inspect(&path).unwrap().agents_skills.is_empty());
-        trust_now(&ws, &path);
-        assert!(ws.approved(&path));
     }
 
     #[cfg(unix)]
     #[test]
-    fn walk_hash_expands_linked_dirs_in_name_order() {
-        // 同一目录经链接到达两次：按文件名排序后先到的一处展开，与 read_dir 的返回顺序无关
-        let root = temp_dir("walk-order");
-        let skills = root.join("skills");
-        std::fs::create_dir_all(skills.join("z")).unwrap();
-        std::fs::write(skills.join("z/SKILL.md"), "z").unwrap();
-        std::os::unix::fs::symlink(skills.join("z"), skills.join("a")).unwrap();
-        let mut items = Vec::new();
-        let mut visited = std::collections::HashSet::new();
-        walk_hash(&skills, "", &mut items, &mut visited).unwrap();
-        let rels: Vec<&str> = items.iter().map(|i| i.rel.as_str()).collect();
-        assert_eq!(rels, ["a", "a/SKILL.md", "z"]);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn broken_agents_parent_link_cannot_be_trusted() {
+    fn broken_agents_parent_link_is_a_read_error() {
         let root = temp_dir("agents-parent-broken");
         let proj = root.join("proj");
         std::fs::create_dir_all(proj.join(".git")).unwrap();
         let path = proj.to_string_lossy().into_owned();
-        let ws = Workspaces::new(&root.join("app"));
-        ws.open(&path).unwrap();
-        trust_now(&ws, &path);
-        assert!(ws.approved(&path));
-
-        // 上级 .agents 是断开的链接：.agents/skills 解析为“不存在”，但目标之后出现时 Core 就会加载，
-        // 是读取失败，不能跳过
         let agents = proj.join(".agents");
         let skills = agents.join("skills");
         std::os::unix::fs::symlink(root.join("target"), &agents).unwrap();
-        assert_eq!(primus_hash(&proj), None);
-        assert!(!ws.approved(&path));
         assert!(matches!(inspect(&path), Err(WorkspaceError::Read(p, _)) if p == skills));
-        assert!(matches!(
-            ws.trust(&path, true, None),
-            Err(WorkspaceError::Incomplete)
-        ));
 
         // 链接指向文件：.agents/skills 不可能存在，跳过
         std::fs::write(root.join("target"), "file").unwrap();
-        assert!(primus_hash(&proj).is_some());
         assert!(inspect(&path).unwrap().agents_skills.is_empty());
-        // 链接指向没有 skills 的目录：跳过
+        // 链接指向没有 skills 的目录：跳过；之后出现技能时列出
         std::fs::remove_file(root.join("target")).unwrap();
         std::fs::create_dir(root.join("target")).unwrap();
-        assert!(primus_hash(&proj).is_some());
         assert!(inspect(&path).unwrap().agents_skills.is_empty());
-        trust_now(&ws, &path);
-        assert!(ws.approved(&path));
-        // 目标里出现技能后指纹改变，需要重新确认
         std::fs::create_dir_all(root.join("target/skills/review")).unwrap();
         std::fs::write(root.join("target/skills/review/SKILL.md"), "r").unwrap();
-        assert!(!ws.approved(&path));
         assert_eq!(inspect(&path).unwrap().agents_skills.len(), 1);
     }
 
@@ -1229,33 +912,6 @@ mod tests {
     }
 
     #[test]
-    fn trust_requires_the_fingerprint_the_user_saw() {
-        let root = temp_dir("seen");
-        let proj = root.join("proj");
-        std::fs::create_dir_all(proj.join(".primus/extensions")).unwrap();
-        std::fs::write(proj.join(".primus/extensions/a.js"), "one").unwrap();
-        let path = proj.to_string_lossy().into_owned();
-        let ws = Workspaces::new(&root.join("app"));
-        ws.open(&path).unwrap();
-
-        let seen = inspect(&path).unwrap().fingerprint;
-        assert!(seen.is_some());
-        // 弹窗展示之后内容被改：拒绝记为信任
-        std::fs::write(proj.join(".primus/extensions/b.js"), "new").unwrap();
-        assert!(matches!(
-            ws.trust(&path, true, seen.as_deref()),
-            Err(WorkspaceError::TrustChanged)
-        ));
-        assert!(matches!(
-            ws.trust(&path, true, None),
-            Err(WorkspaceError::TrustChanged)
-        ));
-        assert!(!ws.approved(&path));
-        trust_now(&ws, &path);
-        assert!(ws.approved(&path));
-    }
-
-    #[test]
     fn trust_binds_to_the_exact_path() {
         let root = temp_dir("exact");
         let proj = root.join("Proj");
@@ -1274,7 +930,7 @@ mod tests {
         let other = other.to_string_lossy().into_owned();
         assert!(!ws.approved(&other));
         assert!(matches!(
-            ws.trust(&other, false, None),
+            ws.trust(&other, false),
             Err(WorkspaceError::Unknown(_))
         ));
         // 打开它：无论是否同一个目录（不区分大小写的文件系统），都单独登记为未确认，原记录与信任保留
@@ -1286,7 +942,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn special_files_do_not_block_and_cannot_be_trusted() {
+    fn special_files_do_not_block() {
         let root = temp_dir("fifo");
         let proj = root.join("proj");
         std::fs::create_dir_all(proj.join(".primus")).unwrap();
@@ -1296,8 +952,7 @@ mod tests {
             return;
         }
         let path = proj.to_string_lossy().into_owned();
-        let d = inspect(&path).unwrap();
-        assert_eq!(d.fingerprint, None);
+        assert!(inspect(&path).is_ok());
 
         std::fs::remove_file(&fifo).unwrap();
         let agents = proj.join("AGENTS.md");
@@ -1329,7 +984,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn symlinked_content_is_part_of_the_fingerprint() {
+    fn symlinked_extensions_are_listed_without_looping() {
         let root = temp_dir("link");
         let proj = root.join("proj");
         let outside = root.join("outside");
@@ -1340,24 +995,7 @@ mod tests {
         // 指回自身的链接不会无限递归
         std::os::unix::fs::symlink(proj.join(".primus"), proj.join(".primus/loop")).unwrap();
         let path = proj.to_string_lossy().into_owned();
-        let ws = Workspaces::new(&root.join("app"));
-        ws.open(&path).unwrap();
         assert_eq!(inspect(&path).unwrap().extensions, vec!["ext"]);
-        trust_now(&ws, &path);
-        assert!(ws.approved(&path));
-
-        std::fs::write(outside.join("index.js"), "two").unwrap();
-        assert!(!ws.approved(&path));
-        trust_now(&ws, &path);
-
-        // 断开的链接无法确认内容：指纹不完整，不能信任
-        std::os::unix::fs::symlink(root.join("missing"), proj.join(".primus/broken")).unwrap();
-        assert!(!ws.approved(&path));
-        assert_eq!(inspect(&path).unwrap().fingerprint, None);
-        assert!(matches!(
-            ws.trust(&path, true, None),
-            Err(WorkspaceError::Incomplete)
-        ));
     }
 
     #[cfg(unix)]

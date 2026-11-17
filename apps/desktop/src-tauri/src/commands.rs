@@ -169,17 +169,14 @@ pub(crate) fn workspace_inspect(path: String) -> Result<TrustDetails, String> {
     crate::workspaces::inspect(&path).map_err(|e| e.to_string())
 }
 
-/// 记录信任确认的选择；信任时带回 `workspace_inspect` 给出的指纹（第 17.2 节）。
+/// 记录信任确认的选择（第 17.2 节）：只在首次添加工作区时确认一次，之后的改动沿用信任。
 #[tauri::command(async)]
 pub(crate) fn workspace_trust(
     workspaces: State<'_, Workspaces>,
     path: String,
     trusted: bool,
-    fingerprint: Option<String>,
 ) -> Result<(), String> {
-    workspaces
-        .trust(&path, trusted, fingerprint.as_deref())
-        .map_err(|e| e.to_string())
+    workspaces.trust(&path, trusted).map_err(|e| e.to_string())
 }
 
 /// 对话框返回的路径转成本地路径字符串；不是本地路径时报错（不静默丢弃）。

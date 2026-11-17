@@ -1018,10 +1018,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       `${MOCK_WORKSPACE}\\src\\main.ts`,
       `${MOCK_WORKSPACE}\\设计稿.png`,
     ],
-    workspaceTrust: async (path, trusted, fingerprint) => {
-      // 与真实平台一致：信任必须带回 workspaceInspect 给出的指纹
-      if (trusted && fingerprint !== "mock")
-        throw new Error("项目内容在确认后发生了变化，请重新查看后再决定");
+    workspaceTrust: async (path, trusted) => {
       const ws = workspaces.get(path);
       if (ws) Object.assign(ws, { trusted, needsTrust: false });
     },
@@ -1033,7 +1030,6 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       skills: ["review"],
       mcpServers: ["github"],
       agentsSkills: [".agents/skills/lint"],
-      fingerprint: "mock",
     }),
 
     sessionDefaultWorkspace: async () =>

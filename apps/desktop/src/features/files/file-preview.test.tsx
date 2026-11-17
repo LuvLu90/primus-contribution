@@ -409,14 +409,12 @@ describe("右栏文件预览：显示打开后的样子", () => {
     render(<FilePreview />);
     act(() => showPreview("D:\\w"));
     const list = await screen.findByRole("list", { name: t.folder.list });
-    // 隐藏项默认不显示
+    // 隐藏项（`.` 开头）直接显示
     expect(
       within(list)
         .getAllByRole("button")
         .map((b) => b.textContent),
-    ).toEqual(["src", "a.ts1.5 KB"]);
-    fireEvent.click(screen.getByRole("button", { name: t.folder.showHidden.replace("{n}", "1") }));
-    expect(within(list).getAllByRole("button")).toHaveLength(3);
+    ).toEqual(["src", ".git", "a.ts1.5 KB"]);
 
     // 进入子文件夹：空文件夹提示；面包屑可回到上一级
     fireEvent.click(within(list).getByRole("button", { name: /^src/ }));

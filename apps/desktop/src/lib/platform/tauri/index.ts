@@ -30,8 +30,7 @@ export function createTauriPlatform(): Platform {
     workspaceOpen: (path) => call("workspaceOpen", { path }),
     workspaceList: () => call("workspaceList"),
     workspaceInspect: (path) => call("workspaceInspect", { path }),
-    workspaceTrust: (path, trusted, fingerprint) =>
-      call("workspaceTrust", { path, trusted, fingerprint: fingerprint ?? null }),
+    workspaceTrust: (path, trusted) => call("workspaceTrust", { path, trusted }),
     dialogPickFolder: () => call("dialogPickFolder"),
     dialogPickFiles: () => call("dialogPickFiles"),
 

@@ -1,6 +1,6 @@
 "use client";
 
-// 项目信任确认（第 17.2 节）：首次打开工作区，或信任后 `.primus/` 内容变化时显示。
+// 项目信任确认（第 17.2 节）：只在首次添加工作区时显示，之后项目里的改动沿用这次选择。
 // 展示项目路径、AGENTS.md（可展开查看）以及 `.primus/` 下的扩展、技能、MCP 配置；
 // 选择“信任”或“不信任”都会记下，会话据此以 --approve / --no-approve 启动（由薄壳判定）。
 import { useEffect, useRef, useState } from "react";
@@ -31,7 +31,7 @@ export function TrustDialog({
   const [details, setDetails] = useState<TrustDetails | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  // 保存失败（如内容在展示后变化）时重新读取，让用户看到当前内容再决定
+  // 保存失败时重新读取，让用户看到当前内容再决定
   const [reload, setReload] = useState(0);
   const path = workspace?.path ?? null;
   const shownPath = useRef<string | null>(null);
@@ -59,7 +59,7 @@ export function TrustDialog({
     setSaving(true);
     setError(null);
     getPlatform()
-      .then((p) => p.workspaceTrust(workspace.path, trusted, trusted ? details?.fingerprint : null))
+      .then((p) => p.workspaceTrust(workspace.path, trusted))
       .then(() => onDecided({ ...workspace, trusted, needsTrust: false }))
       .catch((e) => {
         setError(failure(t.trustSaveFailed, e));
@@ -77,9 +77,8 @@ export function TrustDialog({
     : [];
   const empty =
     details !== null && details.agentsMd === null && groups.every(([, items]) => !items.length);
-  // 内容读取失败时仍允许选择“不信任”（只用用户级资源）；“信任”需要用户看到完整的项目内容
-  const incomplete = details !== null && details.fingerprint === null;
-  const canTrust = details !== null && !incomplete && !saving;
+  // 内容读取失败时也可以选择信任（列表只是展示）
+  const canTrust = (details !== null || error !== null) && !saving;
 
   return (
     <GlassDialog
@@ -94,8 +93,7 @@ export function TrustDialog({
 
         <div className="scroll-thin mt-3 max-h-64 space-y-2 overflow-y-auto text-sm">
           {!details && !error && <p className="text-muted">{t.trustLoading}</p>}
-          {incomplete && <p className="text-warning">{t.trustIncomplete}</p>}
-          {empty && !incomplete && <p className="text-muted">{t.trustNothing}</p>}
+          {empty && <p className="text-muted">{t.trustNothing}</p>}
           {groups.map(([label, items]) =>
             items.length ? (
               <div key={label}>

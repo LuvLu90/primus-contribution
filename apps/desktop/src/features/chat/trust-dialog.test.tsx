@@ -35,10 +35,10 @@ describe("项目信任确认", () => {
     await waitFor(() =>
       expect(onDecided).toHaveBeenCalledWith({ ...ws, trusted: true, needsTrust: false }),
     );
-    expect(workspaceTrust).toHaveBeenCalledWith(ws.path, true, "mock");
+    expect(workspaceTrust).toHaveBeenCalledWith(ws.path, true);
   });
 
-  it("读取项目内容失败时不能信任，但可以选择不信任", async () => {
+  it("读取项目内容失败时仍可以选择信任或不信任", async () => {
     const base = createMockPlatform();
     const workspaceTrust = vi.fn(async () => {});
     setPlatformForTesting({
@@ -54,30 +54,13 @@ describe("项目信任确认", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("拒绝访问");
     expect(
       (screen.getByRole("button", { name: t.trustAccept }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    ).toBe(false);
 
     fireEvent.click(screen.getByRole("button", { name: t.trustReject }));
     await waitFor(() =>
       expect(onDecided).toHaveBeenCalledWith({ ...ws, trusted: false, needsTrust: false }),
     );
-    expect(workspaceTrust).toHaveBeenCalledWith(ws.path, false, null);
-  });
-
-  it("内容无法完整读取（没有指纹）时只能不信任", async () => {
-    const base = createMockPlatform();
-    const details = await base.workspaceInspect(ws.path);
-    setPlatformForTesting({
-      ...base,
-      workspaceInspect: async () => ({ ...details, fingerprint: null }),
-    });
-    render(<TrustDialog workspace={ws} onDecided={() => {}} onCancel={() => {}} />);
-    expect(await screen.findByText(t.trustIncomplete)).toBeTruthy();
-    expect(
-      (screen.getByRole("button", { name: t.trustAccept }) as HTMLButtonElement).disabled,
-    ).toBe(true);
-    expect(
-      (screen.getByRole("button", { name: t.trustReject }) as HTMLButtonElement).disabled,
-    ).toBe(false);
+    expect(workspaceTrust).toHaveBeenCalledWith(ws.path, false);
   });
 
   it("保存进行中按 Esc 不会取消", async () => {
