@@ -95,13 +95,36 @@ fn invalid(m: &str) -> ArchiveError {
     ArchiveError::Invalid(m.to_owned())
 }
 
+/// `at` 处的结束记录结构是否自洽：单卷（磁盘号都是 0、本卷条目数等于总数）、不是 ZIP64 标记、中央目录在记录之前，
+/// 有条目时中央目录以记录签名开头，没有条目时大小为 0。不自洽为 None；自洽时返回中央目录是否紧挨在记录前面
+/// （正常写出的包都是这样）。
+fn plausible_eocd(data: &[u8], at: usize) -> Option<bool> {
+    let disk = u16_at(data, at + 4)?;
+    let cd_disk = u16_at(data, at + 6)?;
+    let count_disk = u16_at(data, at + 8)?;
+    let count = u16_at(data, at + 10)?;
+    let cd_size = u32_at(data, at + 12)? as usize;
+    let cd_offset = u32_at(data, at + 16)? as usize;
+    if disk != 0 || cd_disk != 0 || count_disk != count || count == 0xFFFF {
+        return None;
+    }
+    let cd_end = cd_offset.checked_add(cd_size).filter(|&e| e <= at)?;
+    let ok = if count == 0 {
+        cd_size == 0
+    } else {
+        u32_at(data, cd_offset) == Some(CDH_SIG)
+    };
+    ok.then_some(cd_end == at)
+}
+
 /// 读中央目录。
 fn read_central_directory(data: &[u8]) -> Result<Vec<Entry>, ArchiveError> {
     if data.len() < 22 {
         return Err(invalid("不是 zip 文件"));
     }
-    // 结束记录在末尾 22 字节 + 最多 65535 字节注释之内，从后往前找。归档注释里也可能出现签名字节，
-    // 所以候选记录的注释长度须正好到文件末尾，不符就继续往前找；都不符时退而取注释长度不越界的（末尾有多余字节的包）
+    // 结束记录在末尾 22 字节 + 最多 65535 字节注释之内，从后往前找。归档注释里也可能出现签名字节（甚至整条
+    // 像样的结束记录），所以只按签名与注释长度挑不够：先挑结构自洽的候选（见 [`plausible_eocd`]），优先
+    // 注释正好到文件末尾、中央目录紧挨在它前面的；都不自洽时才退回按注释长度挑，交给下面报出具体的错误
     let earliest = data.len().saturating_sub(22 + 0xFFFF);
     let candidates = || {
         (earliest..=data.len() - 22)
@@ -109,9 +132,14 @@ fn read_central_directory(data: &[u8]) -> Result<Vec<Entry>, ArchiveError> {
             .filter(|&i| u32_at(data, i) == Some(EOCD_SIG))
             .map(|i| (i, i + 22 + usize::from(u16_at(data, i + 20).unwrap_or(0))))
     };
+    let exact = |&(_, end): &(usize, usize)| end == data.len();
+    let within = |&(_, end): &(usize, usize)| end <= data.len();
     let eocd = candidates()
-        .find(|&(_, end)| end == data.len())
-        .or_else(|| candidates().find(|&(_, end)| end <= data.len()))
+        .find(|c| exact(c) && plausible_eocd(data, c.0) == Some(true))
+        .or_else(|| candidates().find(|c| exact(c) && plausible_eocd(data, c.0).is_some()))
+        .or_else(|| candidates().find(|c| within(c) && plausible_eocd(data, c.0).is_some()))
+        .or_else(|| candidates().find(exact))
+        .or_else(|| candidates().find(within))
         .map(|(i, _)| i)
         .ok_or_else(|| invalid("不是 zip 文件"))?;
     let disk = u16_at(data, eocd + 4).unwrap_or(1);
@@ -592,6 +620,25 @@ pub(crate) mod tests {
         assert_eq!(extract_zip(&zip, &dir).unwrap().files, 1);
         assert!(dir.join("s/SKILL.md").is_file());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn archive_comment_with_a_lookalike_end_record() {
+        // 注释里的“结束记录”注释长度也正好到文件末尾，但结构不对（磁盘号是 xx）；或结构自洽却是一个空包
+        let fakes: [Vec<u8>; 2] = [
+            [&EOCD_SIG.to_le_bytes()[..], &[b'x'; 16], &[0, 0]].concat(),
+            [&EOCD_SIG.to_le_bytes()[..], &[0u8; 18]].concat(),
+        ];
+        for comment in fakes {
+            let mut zip = ZipBuilder::new().file("s/SKILL.md", b"x").finish();
+            let len = zip.len();
+            zip[len - 2..].copy_from_slice(&(comment.len() as u16).to_le_bytes());
+            zip.extend(&comment);
+            let dir = temp("lookalike");
+            assert_eq!(extract_zip(&zip, &dir).unwrap().files, 1, "{comment:?}");
+            assert!(dir.join("s/SKILL.md").is_file());
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]
