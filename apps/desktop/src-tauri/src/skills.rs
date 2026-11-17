@@ -721,15 +721,21 @@ pub(crate) fn install(
     let incoming = root.join(format!(".{name}.installing-{stage_id}"));
     move_dir(&source, &incoming)?;
     let old = root.join(format!(".{name}.replaced-{stage_id}"));
+    // 替换失败时把新来源放回暂存，同一个 stage_id 可以在解除占用后重试；放不回去才删掉
+    let restore = || {
+        if move_dir(&incoming, &source).is_err() {
+            let _ = remove_entry(&incoming);
+        }
+    };
     if exists && let Err(e) = std::fs::rename(&target, &old) {
-        let _ = remove_entry(&incoming);
+        restore();
         return Err(e.into());
     }
     if let Err(e) = std::fs::rename(&incoming, &target) {
         if exists {
             let _ = std::fs::rename(&old, &target);
         }
-        let _ = remove_entry(&incoming);
+        restore();
         return Err(e.into());
     }
     if exists {
@@ -1081,6 +1087,38 @@ mod tests {
             .map(|e| e.file_name())
             .collect();
         assert_eq!(leftovers, ["demo"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_replace_keeps_the_stage_for_a_retry() {
+        let root = temp("retry");
+        let core = root.join("core");
+        let tmp = root.join("tmp");
+        write(&core.join("skills/demo/SKILL.md"), SKILL);
+        let zip = ZipBuilder::new()
+            .file("x-main/SKILL.md", SKILL)
+            .file("x-main/new.md", "new")
+            .finish();
+        let stage = stage_zip(&tmp, &zip, "x", None).unwrap();
+        // 旧目录换不下来（换下的临时名被一个非空目录占着）：安装失败，新来源回到暂存
+        let blocker = core.join(format!("skills/.demo.replaced-{}", stage.stage_id));
+        write(&blocker.join("busy"), "x");
+        assert!(install(&core, &tmp, &stage.stage_id, "demo", true).is_err());
+        assert!(!core.join("skills/demo/new.md").exists(), "旧目录原样保留");
+        assert!(core.join("skills/demo/SKILL.md").is_file());
+        assert!(
+            stage_root(&tmp)
+                .join(&stage.stage_id)
+                .join(STAGE_ROOT)
+                .join("new.md")
+                .is_file(),
+            "新来源放回暂存"
+        );
+        // 解除占用后用同一个 stage_id 重试
+        std::fs::remove_dir_all(&blocker).unwrap();
+        install(&core, &tmp, &stage.stage_id, "demo", true).unwrap();
+        assert!(core.join("skills/demo/new.md").is_file());
         std::fs::remove_dir_all(root).unwrap();
     }
 
