@@ -129,8 +129,7 @@ function checkOAuth(value: unknown): string | null {
 function checkExposures(entry: Obj): string | null {
   const { exposure, toolExposure } = entry;
   const valid = (v: unknown) =>
-    typeof v === "string" &&
-    (MCP_EXPOSURES as readonly string[]).includes(exposureName(v));
+    typeof v === "string" && (MCP_EXPOSURES as readonly string[]).includes(exposureName(v));
   const list = MCP_EXPOSURES.join("、");
   if (exposure !== undefined && !valid(exposure)) return fill(msg.exposure, { list });
   if (toolExposure !== undefined) {
@@ -264,10 +263,7 @@ export function listServers(doc: McpDocument): McpServerView[] {
       transport: "transport" in result ? result.transport : null,
       target: describeTarget(entry),
       enabled: rec.enabled !== false,
-      exposure:
-        typeof rec.exposure === "string"
-          ? exposureName(rec.exposure)
-          : DEFAULT_EXPOSURE,
+      exposure: typeof rec.exposure === "string" ? exposureName(rec.exposure) : DEFAULT_EXPOSURE,
       description: typeof rec.description === "string" ? rec.description : null,
       error,
     };

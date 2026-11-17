@@ -118,7 +118,9 @@ describe("mcp.json 修改", () => {
     const names = ["__proto__", "toString", "constructor", "codemode-deferred"];
     const doc = parseMcpDocument(
       JSON.stringify({
-        mcpServers: Object.fromEntries(names.map((x, i) => [`s${i}`, { command: "x", exposure: x }])),
+        mcpServers: Object.fromEntries(
+          names.map((x, i) => [`s${i}`, { command: "x", exposure: x }]),
+        ),
       }),
     );
     const list = listServers(doc);
