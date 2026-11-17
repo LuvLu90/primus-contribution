@@ -1580,6 +1580,26 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn delete_keeps_package_when_a_directory_vanishes_during_the_scan() {
+        use crate::skill_discovery::{inject_absent_dir, tests::Faults};
+        let root = temp("delete-vanish");
+        let core = root.join("core");
+        write(&core.join("skills/pkg/inner/SKILL.md"), SKILL);
+        write(&core.join("skills/pkg/other/SKILL.md"), SKILL);
+        let _faults = Faults;
+        // pkg/other 在扫描期间“消失”（try_exists 返回 Ok(false)），之后又回来
+        inject_absent_dir(&core.join("skills/pkg/other"), usize::MAX);
+        let file = core.join("skills/pkg/inner/SKILL.md");
+        delete(&core, None, &file.to_string_lossy()).unwrap();
+        assert!(!core.join("skills/pkg/inner").exists());
+        assert!(
+            core.join("skills/pkg/other/SKILL.md").is_file(),
+            "子目录在扫描期间消失时扫描不完整，保留顶层目录"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn delete_keeps_package_when_the_remaining_scan_is_incomplete() {

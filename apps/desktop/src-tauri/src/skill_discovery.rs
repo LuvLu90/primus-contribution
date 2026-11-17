@@ -207,10 +207,41 @@ mod fs_ops {
         FAULTS.with(|f| f.borrow_mut().push((op, path.to_path_buf(), times, kind)));
     }
 
+    #[cfg(test)]
+    thread_local! {
+        /// 测试用：`try_exists` 返回 `Ok(false)` 的路径与剩余次数（模拟扫描期间目录消失）。
+        static ABSENT: std::cell::RefCell<Vec<(std::path::PathBuf, usize)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// 测试用：本线程接下来对 `path` 的 `times` 次 `try_exists` 返回 `Ok(false)`。
+    #[cfg(test)]
+    pub(crate) fn inject_absent(path: &Path, times: usize) {
+        ABSENT.with(|a| a.borrow_mut().push((path.to_path_buf(), times)));
+    }
+
     /// 测试用：清除本线程注入的故障。
     #[cfg(test)]
     pub(crate) fn clear() {
         FAULTS.with(|f| f.borrow_mut().clear());
+        ABSENT.with(|a| a.borrow_mut().clear());
+    }
+
+    fn absent(path: &Path) -> bool {
+        #[cfg(test)]
+        {
+            let hit = ABSENT.with(|a| {
+                let mut a = a.borrow_mut();
+                a.iter_mut()
+                    .find(|(p, n)| p == path && *n > 0)
+                    .map(|fault| fault.1 -= 1)
+            });
+            if hit.is_some() {
+                return true;
+            }
+        }
+        let _ = path;
+        false
     }
 
     fn check(op: Op, path: &Path) -> io::Result<()> {
@@ -248,6 +279,9 @@ mod fs_ops {
 
     pub(super) fn try_exists(path: &Path) -> io::Result<bool> {
         check(Op::Exists, path)?;
+        if absent(path) {
+            return Ok(false);
+        }
         path.try_exists()
     }
 
@@ -259,7 +293,8 @@ mod fs_ops {
 
 #[cfg(test)]
 pub(crate) use fs_ops::{
-    Op as FaultOp, clear as clear_faults, inject as inject_fault, inject_kind as inject_fault_kind,
+    Op as FaultOp, clear as clear_faults, inject as inject_fault,
+    inject_absent as inject_absent_dir, inject_kind as inject_fault_kind,
 };
 
 /// `metadata` 的错误是不是“断开的链接”（Core 跳过它们）：目标不存在（`NotFound`），且路径本身确认是链接
@@ -628,10 +663,17 @@ impl Walker {
     }
 
     fn walk(&mut self, dir: &Path, rel_dir: &str, is_root: bool) -> std::io::Result<()> {
-        // 元数据读取出错不等于不存在：严格扫描时返回错误
+        // 元数据读取出错不等于不存在：严格扫描时返回错误。根目录不存在就是没有技能；子目录是刚从上一级读出来的，
+        // 这时说不存在说明它在扫描期间消失了（可能马上又回来），严格扫描当作不完整
         match fs_ops::try_exists(dir) {
             Ok(true) => {}
-            Ok(false) => return Ok(()),
+            Ok(false) if is_root => return Ok(()),
+            Ok(false) => {
+                return self.fail(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("扫描期间目录消失：{}", dir.display()),
+                ));
+            }
             Err(e) => return self.fail(e),
         }
         let real = match dir.canonicalize() {
@@ -994,6 +1036,29 @@ pub(crate) mod tests {
         );
         assert!(collect_complete(&root, Mode::Core).is_err());
         assert_eq!(collect_complete(&root, Mode::Core).unwrap().len(), 3);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn strict_scan_reports_directories_that_vanish_during_the_scan() {
+        let root = temp("vanish");
+        write(&root.join("pkg/inner/SKILL.md"), "x");
+        write(&root.join("pkg/other/SKILL.md"), "x");
+        let other = root.join("pkg/other");
+        let _faults = Faults;
+        // 读出目录项、元数据也读到了，进入时 try_exists 却说不存在：严格扫描不完整
+        inject_absent_dir(&other, 1);
+        assert!(collect_complete(&root, Mode::Core).is_err());
+        // 宽松扫描照旧跳过
+        inject_absent_dir(&other, 1);
+        assert_eq!(
+            rel_to(&root, &collect(&root, Mode::Core)),
+            ["pkg/inner/SKILL.md"]
+        );
+        // 根目录不存在仍是“没有技能”，不是错误
+        inject_absent_dir(&root, 1);
+        assert!(collect_complete(&root, Mode::Core).unwrap().is_empty());
+        assert_eq!(collect_complete(&root, Mode::Core).unwrap().len(), 2);
         std::fs::remove_dir_all(root).unwrap();
     }
 
