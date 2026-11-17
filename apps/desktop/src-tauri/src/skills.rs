@@ -1279,6 +1279,56 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn delete_keeps_package_when_a_negation_rule_cannot_be_read() {
+        use crate::skill_discovery::{FaultOp, inject_fault, tests::Faults};
+        let root = temp("delete-ignore-fault");
+        let core = root.join("core");
+        // other 只靠自己目录里的 `!SKILL.md` 才被发现
+        write(&core.join("skills/.gitignore"), "*.md\n");
+        write(&core.join("skills/pkg/inner/SKILL.md"), SKILL);
+        write(&core.join("skills/pkg/inner/.ignore"), "!SKILL.md\n");
+        write(&core.join("skills/pkg/other/SKILL.md"), SKILL);
+        write(&core.join("skills/pkg/other/.ignore"), "!SKILL.md\n");
+        let _faults = Faults;
+        inject_fault(
+            FaultOp::Read,
+            &core.join("skills/pkg/other/.ignore"),
+            usize::MAX,
+        );
+        let file = core.join("skills/pkg/inner/SKILL.md");
+        delete(&core, None, &file.to_string_lossy()).unwrap();
+        assert!(!core.join("skills/pkg/inner").exists());
+        assert!(
+            core.join("skills/pkg/other/SKILL.md").is_file(),
+            "忽略文件读不到时扫描不完整，保留顶层目录"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn delete_keeps_package_when_skill_metadata_cannot_be_read() {
+        use crate::skill_discovery::{FaultOp, inject_fault, tests::Faults};
+        let root = temp("delete-meta-fault");
+        let core = root.join("core");
+        write(&core.join("skills/pkg/inner/SKILL.md"), SKILL);
+        write(&core.join("skills/pkg/other/SKILL.md"), SKILL);
+        let _faults = Faults;
+        inject_fault(
+            FaultOp::Metadata,
+            &core.join("skills/pkg/other/SKILL.md"),
+            usize::MAX,
+        );
+        let file = core.join("skills/pkg/inner/SKILL.md");
+        delete(&core, None, &file.to_string_lossy()).unwrap();
+        assert!(!core.join("skills/pkg/inner").exists());
+        assert!(
+            core.join("skills/pkg/other/SKILL.md").is_file(),
+            "SKILL.md 的元数据读不到时扫描不完整，保留顶层目录"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn delete_keeps_package_when_the_remaining_scan_is_incomplete() {

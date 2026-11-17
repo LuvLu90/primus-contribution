@@ -133,15 +133,32 @@ fn prefix_ignore_pattern(line: &str, prefix: &str) -> Option<String> {
 }
 
 /// Core 的 `addIgnoreRules`：读 `dir` 下的忽略文件，每行加上 `dir` 相对根目录的前缀。
-fn add_ignore_rules(rules: &mut IgnoreRules, dir: &Path, rel_dir: &str) {
+///
+/// 不存在的（含断开的链接）与不是文件的（Core 的 `existsSync` 为假或读取时报错）跳过，与 Core 一致；其他读取错误
+/// 返回给调用方：严格扫描时不能当作“没有这个文件”（丢掉一条 `!` 规则就会少找到技能）。读到的内容按 UTF-8 解码，
+/// 无效字节换成替换字符（与 Core 的 `readFileSync(path, "utf-8")` 一致）。
+fn add_ignore_rules(rules: &mut IgnoreRules, dir: &Path, rel_dir: &str) -> std::io::Result<()> {
     let prefix = if rel_dir.is_empty() {
         String::new()
     } else {
         format!("{rel_dir}/")
     };
+    let mut first_error = None;
     for name in IGNORE_FILE_NAMES {
-        let Ok(content) = std::fs::read_to_string(dir.join(name)) else {
-            continue;
+        let path = dir.join(name);
+        let bytes = match fs_ops::metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Ok(m) if !m.is_file() => continue,
+            Err(e) => Err(e),
+            Ok(_) => fs_ops::read(&path),
+        };
+        let content = match bytes {
+            Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+            Err(e) => {
+                // 其余忽略文件照常读入（宽松扫描用），错误留给调用方决定
+                first_error.get_or_insert(e);
+                continue;
+            }
         };
         // 与 Core 的 split(/\r?\n/) 一致：只去掉 \n 前的一个 \r
         for line in content.split('\n') {
@@ -151,6 +168,90 @@ fn add_ignore_rules(rules: &mut IgnoreRules, dir: &Path, rel_dir: &str) {
             }
         }
     }
+    first_error.map_or(Ok(()), Err)
+}
+
+/// 发现过程用到的文件系统操作。测试可以在指定路径上注入读取错误（模拟瞬时的 I/O 故障）。
+mod fs_ops {
+    use std::io;
+    use std::path::Path;
+
+    /// 注入故障的操作种类。
+    #[cfg_attr(not(test), allow(dead_code))]
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(crate) enum Op {
+        Metadata,
+        Exists,
+        Read,
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        static FAULTS: std::cell::RefCell<Vec<(Op, std::path::PathBuf, usize)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// 测试用：本线程接下来对 `path` 的 `times` 次 `op` 操作返回错误。
+    #[cfg(test)]
+    pub(crate) fn inject(op: Op, path: &Path, times: usize) {
+        FAULTS.with(|f| f.borrow_mut().push((op, path.to_path_buf(), times)));
+    }
+
+    /// 测试用：清除本线程注入的故障。
+    #[cfg(test)]
+    pub(crate) fn clear() {
+        FAULTS.with(|f| f.borrow_mut().clear());
+    }
+
+    fn check(op: Op, path: &Path) -> io::Result<()> {
+        #[cfg(test)]
+        {
+            let hit = FAULTS.with(|f| {
+                let mut f = f.borrow_mut();
+                match f
+                    .iter_mut()
+                    .find(|(o, p, n)| *o == op && p == path && *n > 0)
+                {
+                    Some(fault) => {
+                        fault.2 -= 1;
+                        true
+                    }
+                    None => false,
+                }
+            });
+            if hit {
+                return Err(io::Error::other(format!(
+                    "注入的故障：{op:?} {}",
+                    path.display()
+                )));
+            }
+        }
+        let _ = (op, path);
+        Ok(())
+    }
+
+    pub(super) fn metadata(path: &Path) -> io::Result<std::fs::Metadata> {
+        check(Op::Metadata, path)?;
+        std::fs::metadata(path)
+    }
+
+    pub(super) fn try_exists(path: &Path) -> io::Result<bool> {
+        check(Op::Exists, path)?;
+        path.try_exists()
+    }
+
+    pub(super) fn read(path: &Path) -> io::Result<Vec<u8>> {
+        check(Op::Read, path)?;
+        std::fs::read(path)
+    }
+}
+
+#[cfg(test)]
+pub(crate) use fs_ops::{Op as FaultOp, clear as clear_faults, inject as inject_fault};
+
+/// `metadata` 的错误是不是“断开的链接”（Core 跳过它们）。
+fn is_broken_link(path: &Path, e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::NotFound && std::fs::symlink_metadata(path).is_ok()
 }
 
 /// `ignore` 包对一行模式的解释。无效（只有空格、末尾单个 `\`）时为 None。
@@ -458,7 +559,8 @@ pub(crate) fn collect(root: &Path, mode: Mode) -> Vec<PathBuf> {
     walker.out
 }
 
-/// 与 [`collect`] 相同，但任何读取错误（目录、目录项、元数据，断开的链接除外）都返回错误：结果不完整时调用方
+/// 与 [`collect`] 相同，但任何读取错误（目录是否存在、目录、目录项、元数据、忽略文件，断开的链接与不存在的忽略文件
+/// 除外）都返回错误：结果不完整时调用方
 /// 不能把“没找到”当作“没有”（删除时判断顶层目录里还有没有技能）。
 pub(crate) fn collect_complete(root: &Path, mode: Mode) -> std::io::Result<Vec<PathBuf>> {
     let mut walker = Walker::new(mode, true);
@@ -510,8 +612,11 @@ impl Walker {
     }
 
     fn walk(&mut self, dir: &Path, rel_dir: &str, is_root: bool) -> std::io::Result<()> {
-        if !dir.exists() {
-            return Ok(());
+        // 元数据读取出错不等于不存在：严格扫描时返回错误
+        match fs_ops::try_exists(dir) {
+            Ok(true) => {}
+            Ok(false) => return Ok(()),
+            Err(e) => return self.fail(e),
         }
         let real = match dir.canonicalize() {
             Ok(r) => Some(r),
@@ -534,7 +639,9 @@ impl Walker {
     }
 
     fn walk_dir(&mut self, dir: &Path, rel_dir: &str, is_root: bool) -> std::io::Result<()> {
-        add_ignore_rules(&mut self.rules, dir, rel_dir);
+        if let Err(e) = add_ignore_rules(&mut self.rules, dir, rel_dir) {
+            self.fail(e)?;
+        }
         let read = match std::fs::read_dir(dir) {
             Ok(r) => r,
             Err(e) => return self.fail(e),
@@ -548,13 +655,22 @@ impl Walker {
         }
         entries.sort_by(|a, b| a.0.cmp(&b.0));
 
-        // 名字完全是 SKILL.md、是文件（跟随链接）、没被忽略：这个目录是一个技能
-        if let Some((name, path)) = entries.iter().find(|(n, _)| n == "SKILL.md")
-            && std::fs::metadata(path).is_ok_and(|m| m.is_file())
-            && !self.rules.ignores(&join_rel(rel_dir, name), false)
-        {
-            self.out.push(path.clone());
-            return Ok(());
+        // 名字完全是 SKILL.md、是文件（跟随链接）、没被忽略：这个目录是一个技能。读不到它的元数据时（断开的链接除外）
+        // 严格扫描返回错误：不能断定它不是技能而接着往下找
+        if let Some((name, path)) = entries.iter().find(|(n, _)| n == "SKILL.md") {
+            let is_file = match fs_ops::metadata(path) {
+                Ok(m) => m.is_file(),
+                Err(e) => {
+                    if !is_broken_link(path, &e) {
+                        self.fail(e)?;
+                    }
+                    false
+                }
+            };
+            if is_file && !self.rules.ignores(&join_rel(rel_dir, name), false) {
+                self.out.push(path.clone());
+                return Ok(());
+            }
         }
 
         for (name, path) in &entries {
@@ -562,12 +678,10 @@ impl Walker {
                 continue;
             }
             // 跟随链接；断开的跳过
-            let meta = match std::fs::metadata(path) {
+            let meta = match fs_ops::metadata(path) {
                 Ok(m) => m,
                 Err(e) => {
-                    let broken_link = e.kind() == std::io::ErrorKind::NotFound
-                        && std::fs::symlink_metadata(path).is_ok();
-                    if !broken_link {
+                    if !is_broken_link(path, &e) {
                         self.fail(e)?;
                     }
                     continue;
@@ -753,6 +867,84 @@ pub(crate) mod tests {
                 "lower/skill.md",
                 "one/SKILL.md"
             ]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 测试结束（含失败）时清掉本线程注入的故障。
+    pub(crate) struct Faults;
+    impl Drop for Faults {
+        fn drop(&mut self) {
+            clear_faults();
+        }
+    }
+
+    fn rel_to(root: &Path, files: &[PathBuf]) -> Vec<String> {
+        files
+            .iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn strict_scan_reports_ignore_file_read_errors() {
+        let root = temp("ignore-read");
+        // 根目录忽略所有 *.md，两个技能各靠自己目录里的 `!SKILL.md` 放回来
+        write(&root.join(".gitignore"), "*.md\n");
+        write(&root.join("pkg/inner/SKILL.md"), "x");
+        write(&root.join("pkg/inner/.ignore"), "!SKILL.md\n");
+        write(&root.join("pkg/other/SKILL.md"), "x");
+        write(&root.join("pkg/other/.ignore"), "!SKILL.md\n");
+        // 不存在的、是目录的忽略文件与 Core 一样跳过，不算错误
+        std::fs::create_dir_all(root.join("pkg/inner/.fdignore")).unwrap();
+        assert_eq!(
+            rel_to(&root, &collect_complete(&root, Mode::Core).unwrap()),
+            ["pkg/inner/SKILL.md", "pkg/other/SKILL.md"]
+        );
+        let _faults = Faults;
+        inject_fault(FaultOp::Read, &root.join("pkg/other/.ignore"), usize::MAX);
+        // 取反规则读不到：结果不完整，严格扫描返回错误
+        assert!(collect_complete(&root, Mode::Core).is_err());
+        // 宽松扫描与 Core 一样跳过读不了的忽略文件（other 因此被根目录的规则忽略）
+        assert_eq!(
+            rel_to(&root, &collect(&root, Mode::Core)),
+            ["pkg/inner/SKILL.md"]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn strict_scan_reports_transient_metadata_errors() {
+        let root = temp("meta-fault");
+        write(&root.join("pkg/inner/SKILL.md"), "x");
+        write(&root.join("pkg/other/SKILL.md"), "x");
+        let skill = root.join("pkg/other/SKILL.md");
+        let _faults = Faults;
+        // 第一次读 SKILL.md 的元数据失败、第二次成功：宽松扫描会把它当作普通文件跳过，漏掉这个技能
+        inject_fault(FaultOp::Metadata, &skill, 1);
+        assert_eq!(
+            rel_to(&root, &collect(&root, Mode::Core)),
+            ["pkg/inner/SKILL.md"]
+        );
+        // 严格扫描返回错误
+        inject_fault(FaultOp::Metadata, &skill, 1);
+        assert!(collect_complete(&root, Mode::Core).is_err());
+        // 读不到目录是否存在：不能当作不存在
+        inject_fault(FaultOp::Exists, &root.join("pkg/other"), 1);
+        assert!(collect_complete(&root, Mode::Core).is_err());
+        inject_fault(FaultOp::Exists, &root, 1);
+        assert!(collect_complete(&root, Mode::Core).is_err());
+        // 故障用完后扫描完整；真正不存在的根目录不是错误
+        assert_eq!(collect_complete(&root, Mode::Core).unwrap().len(), 2);
+        assert!(
+            collect_complete(&root.join("missing"), Mode::Core)
+                .unwrap()
+                .is_empty()
         );
         std::fs::remove_dir_all(root).unwrap();
     }
