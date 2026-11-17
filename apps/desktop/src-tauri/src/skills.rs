@@ -778,20 +778,41 @@ pub(crate) fn install(
         }
         invalid(message)
     };
-    if exists && let Err(e) = std::fs::rename(&target, &old) {
+    if exists && let Err(e) = rename(&target, &old) {
         return Err(restore(e));
     }
-    if let Err(e) = std::fs::rename(&incoming, &target) {
-        if exists {
-            let _ = std::fs::rename(&old, &target);
-        }
-        return Err(restore(e));
+    if let Err(e) = rename(&incoming, &target) {
+        // 先把旧安装改回原位；改不回去时旧安装留在 `old`（`.` 开头，Core 不加载），不删，并在错误里写明位置
+        let rollback = if exists {
+            rename(&old, &target).err()
+        } else {
+            None
+        };
+        let err = restore(e);
+        let Some(re) = rollback else {
+            return Err(err);
+        };
+        eprintln!(
+            "[skills] 安装失败后把原来的技能改回原位失败（{} → {}）：{re}",
+            old.display(),
+            target.display()
+        );
+        return Err(invalid(format!(
+            "{err}；原来的技能也没能恢复到 {}（{re}），已原样保留在 {}，请手动移回",
+            target.display(),
+            old.display()
+        )));
     }
     if exists {
         let _ = remove_entry(&old);
     }
     let _ = remove_entry(&stage);
     Ok(target)
+}
+
+/// 改名（测试可按来源路径注入失败）。
+fn rename(from: &Path, to: &Path) -> io::Result<()> {
+    tests_hook::fault(Fault::Rename, from).and_then(|()| std::fs::rename(from, to))
 }
 
 /// 移动目录：同一卷上直接改名，否则复制后删除源目录。复制失败时删掉复制了一半的目标，源目录不动。
@@ -836,6 +857,8 @@ enum Fault {
     Cleanup,
     /// 写该作废标记失败
     WriteMarker,
+    /// [`install`] 把该路径改名失败
+    Rename,
 }
 
 /// 测试用的故障注入：按（操作，路径）登记，非测试构建里永远不出错。
@@ -1282,6 +1305,59 @@ mod tests {
         assert!(!core.join("skills/demo/new.md").exists());
         // 作废的暂存仍可放弃
         discard(&tmp, &stage.stage_id).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_rollback_reports_where_the_old_install_is() {
+        let root = temp("rollback-fails");
+        let core = root.join("core");
+        let tmp = root.join("tmp");
+        write(&core.join("skills/demo/SKILL.md"), SKILL);
+        write(&core.join("skills/demo/old.md"), "old");
+        let zip = ZipBuilder::new()
+            .file("x-main/SKILL.md", SKILL)
+            .file("x-main/new.md", "new")
+            .finish();
+        let stage = stage_zip(&tmp, &zip, "x", None).unwrap();
+        let stage_dir = stage_root(&tmp).join(&stage.stage_id);
+        let skills = user_skills_dir(&core);
+        let incoming = skills.join(format!(".demo.installing-{}", stage.stage_id));
+        let old = skills.join(format!(".demo.replaced-{}", stage.stage_id));
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                tests_hook::clear();
+            }
+        }
+        let _clear = Clear;
+        // 旧目录已换下；新目录改名就位失败，旧目录改回原位也失败
+        tests_hook::inject(Fault::Rename, &incoming);
+        tests_hook::inject(Fault::Rename, &old);
+        let err = install(&core, &tmp, &stage.stage_id, "demo", true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(&old.display().to_string()), "{err}");
+        assert!(err.contains("没能恢复"), "{err}");
+        // 旧安装原样留在 old，不删；新来源照旧放回暂存
+        assert!(old.join("old.md").is_file());
+        assert!(!skills.join("demo").exists());
+        assert!(!incoming.exists());
+        assert!(stage_dir.join(STAGE_ROOT).join("new.md").is_file());
+        // 只有新目录就位失败、旧目录改回成功时，错误里不提旧安装
+        tests_hook::clear();
+        std::fs::rename(&old, skills.join("demo")).unwrap();
+        tests_hook::inject(Fault::Rename, &incoming);
+        let err = install(&core, &tmp, &stage.stage_id, "demo", true)
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("没能恢复"), "{err}");
+        assert!(skills.join("demo/old.md").is_file());
+        assert!(!old.exists());
+        // 故障解除后同一个 stage_id 能装
+        tests_hook::clear();
+        install(&core, &tmp, &stage.stage_id, "demo", true).unwrap();
+        assert!(skills.join("demo/new.md").is_file());
         std::fs::remove_dir_all(root).unwrap();
     }
 
