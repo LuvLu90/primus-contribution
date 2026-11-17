@@ -140,6 +140,29 @@ describe("设置·能力中心·技能", () => {
     expect(await screen.findByText(ts.notZip)).toBeTruthy();
   });
 
+  it("切到 MCP 再回来：读取中的来源与输入都还在，读取完成后照常确认安装", async () => {
+    const base = createMockPlatform();
+    let release: (() => void) | null = null;
+    setup({
+      skillStage: async (source) => {
+        await new Promise<void>((r) => (release = r));
+        return base.skillStage(source);
+      },
+    });
+    const input = (await screen.findByLabelText(ts.githubLabel)) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "https://github.com/acme/skills" } });
+    fireEvent.click(screen.getByRole("button", { name: ts.githubRead }));
+    await waitFor(() => expect(release).not.toBeNull());
+    openMcp();
+    await row(tm.title, "filesystem");
+    release?.();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: t.tabs.skills }));
+    expect(await screen.findByRole("dialog", { name: ts.dialog.title })).toBeTruthy();
+    expect((screen.getByLabelText(ts.githubLabel) as HTMLInputElement).value).toBe(
+      "https://github.com/acme/skills",
+    );
+  });
+
   it("删除前确认", async () => {
     const platform = setup();
     const remove = vi.spyOn(platform, "skillDelete");
