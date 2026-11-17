@@ -1,14 +1,13 @@
 "use client";
 
-import { WindowTitleBar } from "@/components/layout/window-controls";
-import { strings } from "@/lib/strings";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 
-// 能力中心
+// 能力中心并入设置（ADR 0017）：旧地址跳到 /settings/?group=capabilities
 export default function CapabilitiesPage() {
-  return (
-    <>
-      <WindowTitleBar />
-      <main>{strings.pages.capabilities}</main>
-    </>
-  );
+  const router = useRouter();
+  useEffect(() => {
+    router.replace("/settings/?group=capabilities");
+  }, [router]);
+  return null;
 }

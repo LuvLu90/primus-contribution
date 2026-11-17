@@ -1076,3 +1076,299 @@ pub(crate) fn speech_audio(
 pub(crate) fn speech_stop(speech: State<'_, crate::platform::speech::Speech>, session: u64) {
     speech.stop(session);
 }
+
+// ---- 能力中心：技能与 MCP（ADR 0017） ----
+
+/// 能力中心命令的错误：`code` 供前端区分（`exists`：同名技能需确认覆盖；`conflict`：mcp.json 已在别处被修改），
+/// 其余为 `null`；`message` 是界面文案。
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct CapabilityError {
+    code: Option<&'static str>,
+    message: String,
+}
+
+impl From<crate::skills::SkillError> for CapabilityError {
+    fn from(e: crate::skills::SkillError) -> Self {
+        Self {
+            code: e.code(),
+            message: e.to_string(),
+        }
+    }
+}
+
+impl From<crate::mcp_config::McpConfigError> for CapabilityError {
+    fn from(e: crate::mcp_config::McpConfigError) -> Self {
+        Self {
+            code: e.code(),
+            message: e.to_string(),
+        }
+    }
+}
+
+impl From<String> for CapabilityError {
+    fn from(message: String) -> Self {
+        Self {
+            code: None,
+            message,
+        }
+    }
+}
+
+/// 技能的安装来源。
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub(crate) enum SkillSource {
+    /// GitHub 仓库、`tree/` 或 `blob/` 链接
+    Github { url: String },
+    /// 本地 `.zip` 文件
+    Zip { path: String },
+    /// 本地文件夹
+    Folder { path: String },
+}
+
+/// 下载 GitHub 仓库压缩包的时限。
+const GITHUB_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// 从 codeload 下载仓库压缩包：只走 https，重定向只允许留在 codeload.github.com，边下边数字节，超过上限即停。
+async fn download_github_zip(url: &str) -> Result<Vec<u8>, String> {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("Primus/", env!("CARGO_PKG_VERSION")))
+        .timeout(GITHUB_DOWNLOAD_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let ok = attempt.previous().len() < 5
+                && attempt.url().scheme() == "https"
+                && attempt.url().host_str() == Some("codeload.github.com");
+            if ok { attempt.follow() } else { attempt.stop() }
+        }))
+        .build()
+        .map_err(|_| "无法创建网络客户端".to_owned())?;
+    let mut resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("下载失败：{e}"))?;
+    match resp.status().as_u16() {
+        200 => {}
+        404 => return Err("找不到这个仓库或分支（私有仓库无法直接下载）".into()),
+        code => return Err(format!("下载失败：HTTP {code}")),
+    }
+    let limit = crate::skill_archive::MAX_ARCHIVE_BYTES;
+    let too_large = || format!("压缩包超过 {} MiB", limit / 1024 / 1024);
+    if resp.content_length().is_some_and(|n| n > limit) {
+        return Err(too_large());
+    }
+    let mut data = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("下载失败：{e}"))? {
+        if (data.len() + chunk.len()) as u64 > limit {
+            return Err(too_large());
+        }
+        data.extend_from_slice(&chunk);
+    }
+    Ok(data)
+}
+
+/// 已安装的技能：Core 用户目录 `skills/` 与 `~/.agents/skills`（ADR 0017）。
+#[tauri::command(async)]
+pub(crate) fn skills_list(paths: State<'_, DataPaths>) -> Vec<crate::skills::SkillInfo> {
+    let settings = crate::core_config::read_settings(&paths.core_dir());
+    crate::skills::list(
+        &paths.core_dir(),
+        crate::skills::home_dir().as_deref(),
+        &settings,
+    )
+}
+
+/// 把来源解到暂存目录，按 Core 的规则列出其中的全部技能（GitHub 链接经 codeload 下载 zip）。
+#[tauri::command]
+pub(crate) async fn skill_stage(
+    paths: State<'_, DataPaths>,
+    source: SkillSource,
+) -> Result<crate::skills::SkillStage, CapabilityError> {
+    let tmp = paths.tmp_dir();
+    match source {
+        SkillSource::Github { url } => {
+            let (owner, repo, reference, sub) = crate::skills::parse_github_url(&url)?;
+            let zip_url = crate::skills::codeload_url(&owner, &repo, reference.as_deref());
+            let data = download_github_zip(&zip_url).await?;
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::skills::stage_zip(&tmp, &data, &repo, sub.as_deref())
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(Into::into)
+        }
+        SkillSource::Zip { path } => tauri::async_runtime::spawn_blocking(move || {
+            crate::skills::stage_zip_file(&tmp, Path::new(&path))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(Into::into),
+        SkillSource::Folder { path } => tauri::async_runtime::spawn_blocking(move || {
+            crate::skills::stage_folder(&tmp, Path::new(&path))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(Into::into),
+    }
+}
+
+/// 把暂存的整个来源装进用户目录 `skills/<name>`，其中的技能由 Core 按自己的规则全部加载（`overwrite` 为假且
+/// 已有同名目录时以 code `exists` 拒绝）；返回安装后的目录。
+#[tauri::command(async)]
+pub(crate) fn skill_install(
+    paths: State<'_, DataPaths>,
+    stage_id: String,
+    name: String,
+    overwrite: bool,
+) -> Result<String, CapabilityError> {
+    let dir = crate::skills::install(
+        &paths.core_dir(),
+        &paths.tmp_dir(),
+        &stage_id,
+        &name,
+        overwrite,
+    )?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+/// 放弃一次暂存（取消安装）。
+#[tauri::command(async)]
+pub(crate) fn skill_discard(
+    paths: State<'_, DataPaths>,
+    stage_id: String,
+) -> Result<(), CapabilityError> {
+    Ok(crate::skills::discard(&paths.tmp_dir(), &stage_id)?)
+}
+
+/// 删除用户目录下的技能（链接只删链接本身）。
+#[tauri::command(async)]
+pub(crate) fn skill_delete(
+    paths: State<'_, DataPaths>,
+    file: String,
+) -> Result<(), CapabilityError> {
+    Ok(crate::skills::delete(
+        &paths.core_dir(),
+        crate::skills::home_dir().as_deref(),
+        &file,
+    )?)
+}
+
+/// 启用或停用技能：改写 Core 设置 `settings.json` 的 `skills`（新会话或 /reload 后生效）。
+#[tauri::command(async)]
+pub(crate) fn skill_set_enabled(
+    paths: State<'_, DataPaths>,
+    file: String,
+    enabled: bool,
+) -> Result<(), CapabilityError> {
+    let core = paths.core_dir();
+    let (path, base, _, _) =
+        crate::skills::locate(&core, crate::skills::home_dir().as_deref(), &file)?;
+    let mut settings =
+        crate::core_config::read_settings_strict(&core).map_err(|e| e.to_string())?;
+    if crate::skills::apply_enabled(&mut settings, &path, &base, enabled)? {
+        crate::core_config::write_settings(&core, &settings).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// 读取用户级 `mcp.json`（原文与版本）。
+#[tauri::command(async)]
+pub(crate) fn mcp_config_read(
+    paths: State<'_, DataPaths>,
+) -> Result<crate::mcp_config::McpConfigFile, CapabilityError> {
+    Ok(crate::mcp_config::read(&paths.core_dir())?)
+}
+
+/// 写入用户级 `mcp.json`：`version` 须是读出时的版本，文件已被别处修改时以 code `conflict` 拒绝；返回新版本。
+#[tauri::command(async)]
+pub(crate) fn mcp_config_write(
+    paths: State<'_, DataPaths>,
+    text: String,
+    version: String,
+) -> Result<String, CapabilityError> {
+    Ok(crate::mcp_config::write(
+        &paths.core_dir(),
+        &text,
+        &version,
+    )?)
+}
+
+/// `mcp list --json` 的时限：逐个连接已启用的服务器（连接测试）。
+const MCP_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// `mcp login` 的时限（Core 默认等浏览器回调 300 秒，再留出连接的时间）。
+const MCP_LOGIN_SECONDS: u64 = 300;
+const MCP_LOGOUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// MCP 服务器名：与 Core 一致，只允许字母、数字、`_`、`-`。
+fn check_mcp_name(name: &str) -> Result<(), CapabilityError> {
+    let ok = !name.is_empty()
+        && name.len() <= 128
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("MCP 服务器名无效：{name}").into())
+    }
+}
+
+/// 在阻塞线程池上运行 Core 命令行：`run_cli` 会等子进程结束（最长数分钟），不能占住异步运行时的工作线程。
+async fn run_cli_blocking(
+    app: tauri::AppHandle,
+    args: Vec<String>,
+    timeout: std::time::Duration,
+) -> Result<crate::supervisor::CliOutput, CapabilityError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        app.state::<Supervisor>()
+            .run_cli(&args, timeout)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(Into::into)
+}
+
+/// 列出 MCP 服务器并测试连接（Core 命令行 `mcp list --json`，超时 60 秒）。
+#[tauri::command]
+pub(crate) async fn mcp_list(
+    app: tauri::AppHandle,
+) -> Result<crate::supervisor::CliOutput, CapabilityError> {
+    let args = ["mcp", "list", "--json"].map(String::from).to_vec();
+    run_cli_blocking(app, args, MCP_LIST_TIMEOUT).await
+}
+
+/// OAuth 登录（Core 命令行 `mcp login`，Core 自己打开系统浏览器并等回调）。
+#[tauri::command]
+pub(crate) async fn mcp_login(
+    app: tauri::AppHandle,
+    name: String,
+) -> Result<crate::supervisor::CliOutput, CapabilityError> {
+    check_mcp_name(&name)?;
+    let timeout = MCP_LOGIN_SECONDS.to_string();
+    let args = ["mcp", "login", "--timeout", &timeout, "--", &name]
+        .map(String::from)
+        .to_vec();
+    run_cli_blocking(
+        app,
+        args,
+        std::time::Duration::from_secs(MCP_LOGIN_SECONDS + 30),
+    )
+    .await
+}
+
+/// 删除已保存的 OAuth 凭据（Core 命令行 `mcp logout`）。
+#[tauri::command]
+pub(crate) async fn mcp_logout(
+    app: tauri::AppHandle,
+    name: String,
+) -> Result<crate::supervisor::CliOutput, CapabilityError> {
+    check_mcp_name(&name)?;
+    let args = ["mcp", "logout", "--", &name].map(String::from).to_vec();
+    run_cli_blocking(app, args, MCP_LOGOUT_TIMEOUT).await
+}

@@ -13,6 +13,7 @@ mod core_config;
 mod fs_watch;
 mod git;
 mod job;
+mod mcp_config;
 mod model_catalog;
 mod open_path;
 mod paths;
@@ -24,6 +25,9 @@ mod rpc_bridge;
 mod session_index;
 mod sessions;
 mod shell_detect;
+mod skill_archive;
+mod skill_discovery;
+mod skills;
 mod supervisor;
 mod tray;
 mod updater;
@@ -277,6 +281,17 @@ pub fn run() {
             commands::workspace_list,
             commands::workspace_inspect,
             commands::workspace_trust,
+            commands::skills_list,
+            commands::skill_stage,
+            commands::skill_install,
+            commands::skill_discard,
+            commands::skill_delete,
+            commands::skill_set_enabled,
+            commands::mcp_config_read,
+            commands::mcp_config_write,
+            commands::mcp_list,
+            commands::mcp_login,
+            commands::mcp_logout,
             commands::dialog_pick_folder,
             commands::dialog_pick_files,
             commands::session_default_workspace,

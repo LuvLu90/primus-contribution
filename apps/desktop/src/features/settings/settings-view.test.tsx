@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { useRouter } from "next/navigation";
 import { afterEach, describe, expect, it } from "vitest";
 import { strings } from "@/lib/strings";
@@ -29,6 +29,15 @@ describe("设置页", () => {
     expect(screen.getByRole("main", { name: t.groups.usage }).textContent).toContain(
       t.groupItems.usage,
     );
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("能力中心是设置中的一个分组，可由 ?group=capabilities 直接打开", async () => {
+    expect(groupFromSearch("?group=capabilities")).toBe("capabilities");
+    window.history.replaceState(null, "", "/settings/?group=capabilities");
+    render(<SettingsView />);
+    const main = screen.getByRole("main", { name: t.groups.capabilities });
+    expect(await within(main).findByRole("tab", { name: t.capabilities.tabs.skills })).toBeTruthy();
     window.history.replaceState(null, "", "/");
   });
 

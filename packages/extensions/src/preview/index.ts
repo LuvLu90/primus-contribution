@@ -4,11 +4,13 @@
 //   shown        已在右栏打开（附带类别与解析后的绝对路径）
 //   unsupported  文件存在但没有内置预览：右栏已打开，用户只看到“用默认程序打开”
 //   not_found    路径不存在
-//   denied       受保护路径（与 primus-guard 相同的规则）、网址、网络 / 设备路径、格式不正确或无权访问
+//   denied       网址、网络 / 设备路径、格式不正确或无权访问
 //   too_large    超过预览上限（与薄壳 preview.rs / attachments.rs 一致），没有打开
 //   no_ui        没有可显示预览的界面（hasUI 为 false），没有打开
 // 路径校验对照薄壳 open_path::check_path（预览命令都经它校验）：长度、控制字符、网址、网络 / 设备路径。
 // 工具声明只读、不联网，primus-guard 按注解直接放行，不弹确认。
+// 受保护路径（.env、.git、~/.ssh、应用数据目录）同样可以预览：预览只给用户看，内容不经工具结果返回给模型
+// （结果只有状态、类别、大小与路径），模型要读内容仍须经 read，由 primus-guard 按受保护路径规则确认或拒绝。
 
 import { open, stat } from "node:fs/promises";
 import {
@@ -24,7 +26,7 @@ import {
   type PreviewToolDetails,
   previewKindOf,
 } from "@primus/protocol";
-import { isProtectedPath, realPath, resolveToolPath } from "../guard/index.ts";
+import { realPath, resolveToolPath } from "../guard/index.ts";
 
 /** 路径的最大长度（字符），与 open_path.rs 的 MAX_LEN 一致 */
 const MAX_LEN = 4096;
@@ -53,7 +55,6 @@ const TEXT = {
     format: "路径格式不正确",
     url: "只能预览本机文件，不能预览网址",
     network: "不支持网络路径或设备路径",
-    protected: "受保护的路径（.env、.git、~/.ssh、应用数据目录）",
     special: "不是普通文件（设备、管道等）",
   },
 } as const;
@@ -140,11 +141,6 @@ export async function inspectPreview(
   if (isNetworkOrDevice(path)) return denied(TEXT.reason.network, path);
   const real = realPath(path, pe.real);
   if (isNetworkOrDevice(real)) return denied(TEXT.reason.network, path);
-  if (
-    isProtectedPath(path, pe.env, pe.platform, pe.home, pe.real) ||
-    isProtectedPath(real, pe.env, pe.platform, pe.home, pe.real)
-  )
-    return denied(TEXT.reason.protected, path);
 
   let info: Awaited<ReturnType<typeof stat>>;
   try {
@@ -278,7 +274,7 @@ export default function preview(pi: unknown): void {
     promptSnippet: TEXT.snippet,
     promptGuidelines: [...TEXT.guidelines],
     parameters: PREVIEW_PARAMETERS,
-    // 只读、不联网：primus-guard 按注解直接放行（受保护路径由工具自己拒绝）
+    // 只读、不联网：primus-guard 按注解直接放行（受保护路径同样预览给用户，内容不进工具结果）
     annotations: { readOnlyHint: true, openWorldHint: false },
     execute: (toolCallId, params, _signal, _onUpdate, ctx) => runPreview(toolCallId, params, ctx),
   });

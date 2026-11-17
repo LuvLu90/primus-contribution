@@ -90,17 +90,8 @@ describe("inspectPreview 状态", () => {
     expect((await inspectPreview("main.ts/x", w(), true, pe())).status).toBe("not_found");
   });
 
-  it("denied：受保护路径、网址、网络路径、空路径与控制字符", async () => {
-    for (const p of [
-      ".env",
-      ".git",
-      "~/.ssh",
-      "https://x.com/a",
-      "mailto:a@b.c",
-      "//srv/share/a",
-      "",
-      "a\nb",
-    ])
+  it("denied：网址、网络路径、空路径与控制字符", async () => {
+    for (const p of ["https://x.com/a", "mailto:a@b.c", "//srv/share/a", "", "a\nb"])
       expect((await inspectPreview(p, w(), true, pe())).status, p).toBe("denied");
     // file:// 按本机路径解析
     expect(
@@ -108,7 +99,48 @@ describe("inspectPreview 状态", () => {
     ).toBe("shown");
   });
 
-  it("denied：应用数据目录（PRIMUS_CODING_AGENT_DIR 往上三级的 data）", async () => {
+  it("受保护路径（.env、.git、~/.ssh）也给用户预览，结果里没有文件内容", async () => {
+    expect(await inspectPreview(".env", w(), true, pe())).toMatchObject({
+      status: "shown",
+      path: join(w(), ".env"),
+    });
+    expect((await inspectPreview(".git", w(), true, pe())).kind).toBe("folder");
+    expect((await inspectPreview("~/.ssh", w(), true, pe())).status).toBe("shown");
+    const r = await runPreview(
+      "c",
+      { path: ".env" },
+      { hasUI: true, cwd: w(), ui: { setWidget: vi.fn() } },
+      pe(),
+    );
+    expect(JSON.stringify(r)).not.toContain("SECRET");
+  });
+
+  it("~/.ssh 里的私钥与 Core 用户目录的 auth.json 也给用户预览，结果里没有内容", async () => {
+    const key = join(root, "home", ".ssh", "id_ed25519");
+    writeFileSync(key, "PRIVATE-KEY-BODY");
+    const core = join(root, "data", "users", "S", "core");
+    mkdirSync(core, { recursive: true });
+    writeFileSync(join(core, "auth.json"), '{"token":"TOKEN-BODY"}');
+    const env = { PRIMUS_CODING_AGENT_DIR: core };
+    for (const [path, body] of [
+      ["~/.ssh/id_ed25519", "PRIVATE-KEY-BODY"],
+      [join(core, "auth.json"), "TOKEN-BODY"],
+    ] as const) {
+      const widget = vi.fn();
+      const r = await runPreview(
+        "c",
+        { path },
+        { hasUI: true, cwd: w(), ui: { setWidget: widget } },
+        { ...pe(), env },
+      );
+      expect(r.details.status, path).toBe("shown");
+      expect(widget).toHaveBeenCalledOnce();
+      expect(JSON.stringify(r)).not.toContain(body);
+      expect(JSON.stringify(widget.mock.calls)).not.toContain(body);
+    }
+  });
+
+  it("应用数据目录（PRIMUS_CODING_AGENT_DIR 往上三级的 data）也给用户预览", async () => {
     const data = join(root, "data");
     mkdirSync(join(data, "users", "S", "core"), { recursive: true });
     writeFileSync(join(data, "users", "S", "core", "x.json"), "{}");
@@ -120,7 +152,7 @@ describe("inspectPreview 状态", () => {
           env,
         })
       ).status,
-    ).toBe("denied");
+    ).toBe("shown");
   });
 
   it("too_large：文档超过 30 MiB", async () => {
@@ -136,7 +168,7 @@ describe("inspectPreview 状态", () => {
     expect((await inspectPreview("main.ts", w(), false, pe())).status).toBe("no_ui");
     expect((await inspectPreview("a.bin", w(), false, pe())).status).toBe("no_ui");
     expect((await inspectPreview("nope", w(), false, pe())).status).toBe("not_found");
-    expect((await inspectPreview(".env", w(), false, pe())).status).toBe("denied");
+    expect((await inspectPreview(".env", w(), false, pe())).status).toBe("no_ui");
   });
 });
 
@@ -170,7 +202,7 @@ describe("runPreview", () => {
   it("失败的状态不推数据，结果标为错误", async () => {
     for (const [path, status] of [
       ["nope", "not_found"],
-      [".env", "denied"],
+      ["https://x.com/a", "denied"],
       ["big.pdf", "too_large"],
     ] as const) {
       const c = ctx();

@@ -47,6 +47,8 @@ rusqlite = { version = "=0.40.2", features = ["bundled"] }
 notify = "=8.2.0"
 # 工作区信任：`.primus/` 内容指纹（第 17.2 节），与 Tauri 依赖树中的版本一致
 sha2 = "=0.10.9"
+# 技能压缩包解压（skill_archive.rs，ADR 0017）：只用 raw deflate 与 CRC-32，与 Tauri 依赖树中的版本一致
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 # 内置语音转文字（platform/speech.rs）：独立的库，见 asr/
 primus-asr = { path = "asr" }
 # 输入框图片附件（attachment_image）：在内存中解码、缩小、重新编码，不写文件（约束 C2）；只开常见格式

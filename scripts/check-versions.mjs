@@ -146,6 +146,15 @@ for (const file of findPackageJsons(root)) {
   }
 }
 
+// 技能 frontmatter 用 Core 同一个 YAML 解析器（ADR 0017）：版本跟随 agent-core 锁定的版本
+{
+  const coreYaml = JSON.parse(
+    readFileSync(join(root, "agent-core/packages/coding-agent/package.json"), "utf8"),
+  ).dependencies?.yaml;
+  if (coreYaml !== baseline.npm.yaml)
+    fail(`基线 yaml@${baseline.npm.yaml} 与 agent-core 的 yaml@${coreYaml} 不一致（ADR 0017）`);
+}
+
 // ---- Cargo 依赖 ----
 const depSection =
   /^\[((?:target\.[^\]]+\.)?(?:build-|dev-)?dependencies)\]\s*$([\s\S]*?)(?=^\[|$(?![\s\S]))/gm;
