@@ -13,10 +13,12 @@
 //! - 启停：Core 设置 `settings.json` 的 `skills` 中的 `-<技能文件绝对路径>`（与 Core 的精确模式一致，
 //!   路径用 `/`）；启用即删掉指向该技能的 `-` 精确模式。`!` 通配排除不改写，只按精确模式判断。
 
+use std::collections::HashSet;
 use std::fmt;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -485,6 +487,25 @@ fn stage_dir(tmp_dir: &Path, id: &str) -> Result<PathBuf, SkillError> {
     Ok(dir)
 }
 
+/// 本进程内已作废的暂存编号。作废以它为准：只靠暂存目录里的 `broken` 标记时，标记没写成、复制了一半的
+/// 暂存又没删掉，后续安装就可能拿不完整的暂存再装一次。标记只是给日志和排查看的辅助。
+static RETIRED_STAGES: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn retire_stage(id: &str) {
+    RETIRED_STAGES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(id.to_owned());
+}
+
+fn stage_retired(id: &str) -> bool {
+    RETIRED_STAGES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(id)
+}
+
 /// 放弃一次暂存。
 pub(crate) fn discard(tmp_dir: &Path, id: &str) -> Result<(), SkillError> {
     let dir = stage_dir(tmp_dir, id)?;
@@ -710,6 +731,10 @@ pub(crate) fn install(
             "技能名称只能包含字母、数字、-、_ 和 .，且不超过 64 个字符",
         ));
     }
+    // 先查进程内的作废记录，不依赖任何文件操作是否成功
+    if stage_retired(stage_id) {
+        return Err(invalid("这次暂存已不完整，不能再安装，请重新选择来源"));
+    }
     let stage = stage_dir(tmp_dir, stage_id)?;
     if stage.join(STAGE_BROKEN).exists() {
         return Err(invalid("这次暂存已不完整，不能再安装，请重新选择来源"));
@@ -730,16 +755,28 @@ pub(crate) fn install(
     move_dir(&source, &incoming)?;
     let old = root.join(format!(".{name}.replaced-{stage_id}"));
     // 替换失败时把新来源放回暂存，同一个 stage_id 可以在解除占用后重试。放不回去时（如跨卷复制中途出错）不删
-    // `incoming`——那是新来源唯一完整的一份——并把这次暂存标为作废，不会拿不完整的暂存再装一次
+    // `incoming`——那是新来源唯一完整的一份——并把这次暂存标为作废（进程内记录为准，另写 `broken` 标记），
+    // 不会拿不完整的暂存再装一次
     let restore = |e: io::Error| -> SkillError {
         if move_dir(&incoming, &source).is_ok() {
             return e.into();
         }
-        let _ = std::fs::write(stage.join(STAGE_BROKEN), b"");
-        invalid(format!(
+        retire_stage(stage_id);
+        let marker = stage.join(STAGE_BROKEN);
+        let marked = tests_hook::fault(Fault::WriteMarker, &marker)
+            .and_then(|()| std::fs::write(&marker, b""));
+        let mut message = format!(
             "安装失败（{e}），新内容也没能放回暂存，已原样保留在 {}；请处理后重新选择来源",
             incoming.display()
-        ))
+        );
+        if let Err(me) = marked {
+            eprintln!(
+                "[skills] 暂存 {stage_id} 的作废标记写入失败（{}）：{me}；本次运行内仍拒绝用它安装",
+                marker.display()
+            );
+            message.push_str(&format!("（暂存作废标记也没写成：{me}；请放弃这次暂存）"));
+        }
+        invalid(message)
     };
     if exists && let Err(e) = std::fs::rename(&target, &old) {
         return Err(restore(e));
@@ -759,7 +796,7 @@ pub(crate) fn install(
 
 /// 移动目录：同一卷上直接改名，否则复制后删除源目录。复制失败时删掉复制了一半的目标，源目录不动。
 fn move_dir(from: &Path, to: &Path) -> Result<(), SkillError> {
-    let fault = tests_hook::copy_fails(to);
+    let fault = tests_hook::fault(Fault::CopyTo, to).is_err();
     if !fault && std::fs::rename(from, to).is_ok() {
         return Ok(());
     }
@@ -772,43 +809,67 @@ fn move_dir(from: &Path, to: &Path) -> Result<(), SkillError> {
         }
     });
     if let Err(e) = copied {
-        let _ = remove_entry(to);
+        // 删不掉复制了一半的目标时只能留下它：记下来；调用方据返回的错误把它当作不完整处理
+        if let Err(ce) = tests_hook::fault(Fault::Cleanup, to).and_then(|()| remove_entry(to)) {
+            eprintln!(
+                "[skills] 复制中途失败后清理不完整的目标失败（{}）：{ce}",
+                to.display()
+            );
+        }
         return Err(e);
     }
-    let _ = remove_entry(from);
+    if let Err(ce) = remove_entry(from) {
+        eprintln!(
+            "[skills] 复制完成后删除源目录失败（{}）：{ce}",
+            from.display()
+        );
+    }
     Ok(())
 }
 
-/// 测试用的故障注入：让移动到指定目标的 [`move_dir`] 走复制且复制后报错（模拟跨卷复制中途失败）。
+/// [`tests_hook`] 可注入的文件操作故障。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Fault {
+    /// [`move_dir`] 移到该目标时走复制，且复制后报错（模拟跨卷复制中途失败）
+    CopyTo,
+    /// [`move_dir`] 复制失败后删除该目标失败
+    Cleanup,
+    /// 写该作废标记失败
+    WriteMarker,
+}
+
+/// 测试用的故障注入：按（操作，路径）登记，非测试构建里永远不出错。
 mod tests_hook {
+    use super::Fault;
+    use std::io;
     use std::path::Path;
 
     #[cfg(test)]
     thread_local! {
-        static COPY_FAILS: std::cell::RefCell<Vec<std::path::PathBuf>> =
+        static FAULTS: std::cell::RefCell<Vec<(Fault, std::path::PathBuf)>> =
             const { std::cell::RefCell::new(Vec::new()) };
     }
 
     #[cfg(test)]
-    pub(super) fn fail_copy_to(to: &Path) {
-        COPY_FAILS.with(|f| f.borrow_mut().push(to.to_path_buf()));
+    pub(super) fn inject(op: Fault, path: &Path) {
+        FAULTS.with(|f| f.borrow_mut().push((op, path.to_path_buf())));
     }
 
     #[cfg(test)]
     pub(super) fn clear() {
-        COPY_FAILS.with(|f| f.borrow_mut().clear());
+        FAULTS.with(|f| f.borrow_mut().clear());
     }
 
-    pub(super) fn copy_fails(to: &Path) -> bool {
+    /// 登记了（`op`，`path`）时返回注入的错误。
+    pub(super) fn fault(op: Fault, path: &Path) -> io::Result<()> {
         #[cfg(test)]
         {
-            COPY_FAILS.with(|f| f.borrow().iter().any(|p| p == to))
+            if FAULTS.with(|f| f.borrow().iter().any(|(o, p)| *o == op && p == path)) {
+                return Err(io::Error::other(format!("注入的故障：{op:?}")));
+            }
         }
-        #[cfg(not(test))]
-        {
-            let _ = to;
-            false
-        }
+        let _ = (op, path);
+        Ok(())
     }
 }
 
@@ -1200,7 +1261,7 @@ mod tests {
             }
         }
         let _clear = Clear;
-        tests_hook::fail_copy_to(&stage_dir.join(STAGE_ROOT));
+        tests_hook::inject(Fault::CopyTo, &stage_dir.join(STAGE_ROOT));
         let err = install(&core, &tmp, &stage.stage_id, "demo", true).unwrap_err();
         // 与 install 拼路径的方式一致（Windows 上错误信息里的分隔符才对得上）
         let incoming = user_skills_dir(&core).join(format!(".demo.installing-{}", stage.stage_id));
@@ -1220,6 +1281,50 @@ mod tests {
         assert!(again.to_string().contains("不完整"), "{again}");
         assert!(!core.join("skills/demo/new.md").exists());
         // 作废的暂存仍可放弃
+        discard(&tmp, &stage.stage_id).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retired_stage_is_refused_even_when_marker_and_cleanup_both_fail() {
+        let root = temp("retire-no-fs");
+        let core = root.join("core");
+        let tmp = root.join("tmp");
+        write(&core.join("skills/demo/SKILL.md"), SKILL);
+        let zip = ZipBuilder::new()
+            .file("x-main/SKILL.md", SKILL)
+            .file("x-main/new.md", "new")
+            .finish();
+        let stage = stage_zip(&tmp, &zip, "x", None).unwrap();
+        let stage_dir = stage_root(&tmp).join(&stage.stage_id);
+        let blocker = core.join(format!("skills/.demo.replaced-{}", stage.stage_id));
+        write(&blocker.join("busy"), "x");
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                tests_hook::clear();
+            }
+        }
+        let _clear = Clear;
+        // 放回暂存时复制中途失败，复制了一半的暂存删不掉，作废标记也写不进去
+        tests_hook::inject(Fault::CopyTo, &stage_dir.join(STAGE_ROOT));
+        tests_hook::inject(Fault::Cleanup, &stage_dir.join(STAGE_ROOT));
+        tests_hook::inject(Fault::WriteMarker, &stage_dir.join(STAGE_BROKEN));
+        let err = install(&core, &tmp, &stage.stage_id, "demo", true).unwrap_err();
+        assert!(
+            err.to_string().contains("作废标记"),
+            "写入失败要上报：{err}"
+        );
+        // 文件层面看不出作废：没有标记，暂存里留着一份看起来能装的内容
+        assert!(!stage_dir.join(STAGE_BROKEN).exists());
+        assert!(stage_dir.join(STAGE_ROOT).join("SKILL.md").is_file());
+        // 解除占用后，同一个 stage_id 仍被拒绝，旧目录不动
+        std::fs::remove_dir_all(&blocker).unwrap();
+        tests_hook::clear();
+        let again = install(&core, &tmp, &stage.stage_id, "demo", true).unwrap_err();
+        assert!(again.to_string().contains("不完整"), "{again}");
+        assert!(core.join("skills/demo/SKILL.md").is_file());
+        assert!(!core.join("skills/demo/new.md").exists());
         discard(&tmp, &stage.stage_id).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
