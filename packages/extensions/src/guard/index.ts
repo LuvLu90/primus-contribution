@@ -3,12 +3,12 @@
 // 三种权限模式（界面输入框左下角的“权限”菜单，经 `/primus-mode <模式>` 设置）：
 //   ask   每次询问：修改文件、运行命令、联网，以及读取工作区以外的文件，都先征求同意
 //   edit  自动编辑：工作区内的读写直接执行；运行命令、联网与工作区以外的文件仍询问
-//   full  完全访问：不再询问
+//   full  完全访问：所有操作直接放行，不询问也不拒绝（含受保护路径与强制推送、下载后执行的命令）
 // 询问走扩展 UI 的 select 对话框（RPC 的 extension_ui_request），用户可选“允许”“本会话内始终允许”或“拒绝”。
-// 受保护路径（.env*、.git/、~/.ssh、<安装目录>\data）的写入不论模式一律拒绝，读取需要确认；
+// 询问 / 自动编辑模式下，受保护路径（.env*、.git/、~/.ssh、<安装目录>\data）的写入拒绝，读取需要确认；
 // 两处例外（ADR 0016）：Core 已加载技能目录内的读取任何模式都放行（目录取自 before_agent_start）；
 // 用户级 MCP 配置 <agentDir>/mcp.json 的读写按工作区外的文件处理（完全访问放行，其他模式询问）。
-// 强制推送与下载后直接执行的命令在每次询问、自动编辑模式下必定询问，且不能“始终允许”；完全访问不询问。路径按 Core 的规则解析并跟随符号链接比较。
+// 强制推送与下载后直接执行的命令在每次询问、自动编辑模式下必定询问，且不能“始终允许”。路径按 Core 的规则解析并跟随符号链接比较。
 // 没有界面（hasUI 为 false）时需要询问的调用一律拒绝；处理出错时 Core 按失败即拦截处理。
 // 当前模式经 setWidget("primus:mode") 告知前端。
 // 计划模式（primus-plan 经 plan/gate.ts 打开只读开关）压过上面三种模式：修改文件一律拒绝，命令按只读分类器
@@ -348,7 +348,7 @@ const defaultEnv = (): GuardEnv => ({
 
 export type Decision = "allow" | "ask" | "deny";
 
-/** 按模式判断一次工具调用：放行、询问或拒绝（受保护路径的写入不论模式一律拒绝） */
+/** 按模式判断一次工具调用：放行、询问或拒绝（完全访问一律放行；其他模式下受保护路径的写入拒绝） */
 export function decide(
   mode: PermissionMode,
   call: ToolCall,
@@ -356,6 +356,8 @@ export function decide(
   annotations?: { readOnlyHint?: boolean; openWorldHint?: boolean },
   ge: GuardEnv = defaultEnv(),
 ): Decision {
+  // 完全访问：所有操作直接放行，包括受保护路径的读写与始终询问的命令（计划模式另由 decidePlan 判断）
+  if (mode === "full") return "allow";
   const raw = targetPath(call);
   const abs = raw === undefined ? undefined : resolveToolPath(raw, cwd, ge.platform, ge.home);
   const isRead = READ_TOOLS.has(call.toolName);
@@ -370,7 +372,7 @@ export function decide(
       return isEdit ? "deny" : "ask";
     // 用户级 MCP 配置 <agentDir>/mcp.json：读写都按工作区外的文件处理（完全访问放行，其他模式询问），
     // 计划模式的修改已在 decidePlan 拒绝（ADR 0016）
-    if (isUserMcpConfig(abs, ge)) return mode === "full" ? "allow" : "ask";
+    if (isUserMcpConfig(abs, ge)) return "ask";
     // 已加载技能目录内的读取：任何模式都放行（技能按需读取 SKILL.md 与其引用的文件，ADR 0016）。
     // grep 会递归读取目录里的文件内容（含隐藏文件，如技能目录里的 .env），只对单个文件放行
     if (isRead && insideLoadedSkill(abs, ge) && (call.toolName !== "grep" || !isDirectory(real)))
@@ -381,7 +383,6 @@ export function decide(
     )
       return isEdit ? "deny" : "ask";
   }
-  if (mode === "full") return "allow";
   const command = call.input?.command;
   if (
     (call.toolName === "bash" || call.toolName === "powershell") &&
