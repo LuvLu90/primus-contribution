@@ -796,7 +796,6 @@ mod tests {
         assert!(d.skills.is_empty());
     }
 
-
     #[cfg(unix)]
     #[test]
     fn unreadable_agents_skills_is_a_read_error() {
@@ -840,7 +839,6 @@ mod tests {
         std::fs::write(proj.join(".agents"), "file").unwrap();
         assert!(inspect(&path).unwrap().agents_skills.is_empty());
     }
-
 
     #[cfg(unix)]
     #[test]
@@ -912,7 +910,6 @@ mod tests {
             assert!(inspect(&empty.to_string_lossy()).is_err());
         }
     }
-
 
     #[test]
     fn trust_binds_to_the_exact_path() {
