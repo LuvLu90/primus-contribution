@@ -17,14 +17,17 @@ pub(crate) const SEED_PROVIDER_ID: &str = "ioply";
 const SEED_API: Api = Api::OpenAiResponses;
 
 /// 内置渠道接口地址。
-const SEED_BASE_URL: &str = "https://api.mecode.cc.cd/v1";
+const SEED_BASE_URL: &str = "https://api.690990.xyz/v1";
 
 /// 内置渠道密钥，用户要求直接写在源码中，后续会更换。
 pub(crate) const BUILTIN_API_KEY: &str = "sk-xFAj92kTXnK6WCz9nGiKznBgzfFpWKi6uqg1j6xNRl3HLvEj";
 
 /// 历史版本用过的内置接口地址：旧安装的 ioply 仍是这些地址时，启动时迁移到 [`SEED_BASE_URL`]。
 /// 更换地址时把旧值追加到这里。
-pub(crate) const LEGACY_BASE_URLS: &[&str] = &["http://218.93.48.244:3304/openai/v1"];
+pub(crate) const LEGACY_BASE_URLS: &[&str] = &[
+    "http://218.93.48.244:3304/openai/v1",
+    "https://api.mecode.cc.cd/v1",
+];
 
 /// 历史版本用过的内置密钥的 SHA-256（小写十六进制）。只存摘要，真实密钥只有 [`BUILTIN_API_KEY`] 一处。
 /// 保险库里是这些密钥（或没有密钥）时同步为 [`BUILTIN_API_KEY`]，其他值视为用户自己换的密钥，不覆盖。
