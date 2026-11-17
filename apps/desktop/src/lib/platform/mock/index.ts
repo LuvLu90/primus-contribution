@@ -115,7 +115,7 @@ interface MockProvider {
 /** 内置渠道的种子配置（与薄壳 `builtin.rs` 同名同协议同地址） */
 const MOCK_SEED_ID = "ioply";
 const MOCK_SEED_API: ProviderApi = "openai-responses";
-const MOCK_SEED_BASE_URL = "https://api.690990.xyz/v1";
+const MOCK_SEED_BASE_URL = "https://api.mecode.cc.cd/v1";
 
 /** 与薄壳 `is_pristine_builtin` 一致：未被修改且启用的内置渠道隐藏，不能修改或删除 */
 const isPristineBuiltin = (p: Pick<MockProvider, "id" | "name" | "api" | "baseUrl" | "enabled">) =>
