@@ -1,7 +1,8 @@
 //! 能力中心·MCP（ADR 0017）：读写用户级 MCP 配置 `<Core 用户目录>/mcp.json`。
 //!
 //! 薄壳只做文件层面的事：读出原文与版本（内容的 SHA-256，文件不存在为空串），写入前确认文件仍是读出时的版本
-//! （Agent 或用户在别处改过时返回 [`McpConfigError::Conflict`]，界面重新读取后再改），大小不超过 1 MiB、
+//! （Agent 或用户在别处改过时返回 [`McpConfigError::Conflict`]，界面重新读取后再改；版本复核与替换在本进程的
+//! 提交临界区里紧挨着完成），大小不超过 1 MiB、
 //! 是带 `mcpServers` 对象（可省略）的 JSON 对象，原子替换。服务器条目的校验、合并与格式保留在前端（与 Core 的
 //! 校验规则一致）；连接测试、登录、登出经 Core 命令行（[`crate::supervisor::Supervisor::run_cli`]）。
 
@@ -125,18 +126,59 @@ pub(crate) fn validate(text: &str) -> Result<(), McpConfigError> {
 
 /// 写入 `mcp.json`：文件当前版本须等于 `expected`（读出时的版本），否则返回冲突、不写。返回新版本。
 pub(crate) fn write(core_dir: &Path, text: &str, expected: &str) -> Result<String, McpConfigError> {
+    write_with(core_dir, text, expected, || {})
+}
+
+/// 本进程内对 `mcp.json` 的提交互斥：版本复核与替换在同一临界区里完成，两笔并发保存只有一笔成功、另一笔返回冲突。
+static COMMIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 当前文件内容（不存在为 None）。原文件过大或不是文本也照常取出：只要版本对得上就允许整体替换。
+fn current_bytes(file: &Path) -> Result<Option<Vec<u8>>, McpConfigError> {
+    read_bytes(file).or_else(|e| match e {
+        McpConfigError::Invalid(_) => std::fs::read(file).map(Some).map_err(Into::into),
+        e => Err(e),
+    })
+}
+
+/// [`write`] 的实现。先把新内容完整写进同目录的临时文件，再进入提交临界区：重新读取文件、复核版本、改名替换。
+/// 复核与改名之间不再有写内容的耗时步骤，Core 或编辑器在此前任何时刻改过文件都会被复核发现。
+/// `before_commit` 在进入临界区后、复核前调用（测试用来模拟“比较之后、替换之前”的另一笔写入）。
+fn write_with(
+    core_dir: &Path,
+    text: &str,
+    expected: &str,
+    before_commit: impl FnOnce(),
+) -> Result<String, McpConfigError> {
     validate(text)?;
     let file = config_path(core_dir);
-    let current = read_bytes(&file).or_else(|e| match e {
-        // 原文件过大或不是文本也允许整体替换，只要版本对得上
-        McpConfigError::Invalid(_) => std::fs::read(&file).map(Some).map_err(Into::into),
-        e => Err(e),
-    })?;
-    if version_of(current.as_deref()) != expected {
+    // 先做一次便宜的检查：版本已经不对就不必写临时文件
+    if version_of(current_bytes(&file)?.as_deref()) != expected {
         return Err(McpConfigError::Conflict);
     }
-    crate::providers::write_atomic(&file, text)?;
-    Ok(version_of(Some(text.as_bytes())))
+    let dir = file
+        .parent()
+        .ok_or_else(|| McpConfigError::Invalid("配置路径无效".into()))?;
+    std::fs::create_dir_all(dir)?;
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = dir.join(format!(
+        "mcp.json.{}.{}.tmp",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let result = (|| {
+        std::fs::write(&tmp, text)?;
+        let _guard = COMMIT.lock().unwrap_or_else(|p| p.into_inner());
+        before_commit();
+        if version_of(current_bytes(&file)?.as_deref()) != expected {
+            return Err(McpConfigError::Conflict);
+        }
+        std::fs::rename(&tmp, &file)?;
+        Ok(version_of(Some(text.as_bytes())))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -174,6 +216,53 @@ mod tests {
         // 别处改了文件
         std::fs::write(config_path(&dir), "{\"mcpServers\":{\"x\":{}}}").unwrap();
         assert_eq!(write(&dir, "{}", &v1).unwrap_err().code(), Some("conflict"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn write_between_check_and_replace_is_a_conflict() {
+        let dir = temp();
+        let v0 = read(&dir).unwrap().version;
+        // 另一笔写入发生在初次比较之后、替换之前：复核发现，返回冲突，保留对方写入的内容
+        let other = "{\"mcpServers\":{\"other\":{\"command\":\"x\"}}}";
+        let err = write_with(&dir, "{}", &v0, || {
+            std::fs::write(config_path(&dir), other).unwrap();
+        })
+        .unwrap_err();
+        assert_eq!(err.code(), Some("conflict"));
+        assert_eq!(read(&dir).unwrap().text.as_deref(), Some(other));
+        // 没有留下临时文件
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_saves_from_the_same_version_only_one_wins() {
+        let dir = temp();
+        let v0 = read(&dir).unwrap().version;
+        let results: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..8)
+                .map(|i| {
+                    let (dir, v0) = (&dir, &v0);
+                    s.spawn(move || write(dir, &format!("{{\"n\":{i}}}"), v0))
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let ok: Vec<_> = results.iter().filter_map(|r| r.as_ref().ok()).collect();
+        assert_eq!(ok.len(), 1, "{results:?}");
+        assert!(
+            results
+                .iter()
+                .filter_map(|r| r.as_ref().err())
+                .all(|e| e.code() == Some("conflict"))
+        );
+        assert_eq!(&read(&dir).unwrap().version, ok[0]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
