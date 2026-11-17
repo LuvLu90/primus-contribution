@@ -154,7 +154,7 @@ describe("primus-guard 权限判断", () => {
       const ge = { platform: p, home, env: {} };
       expect(
         decide(
-          "full",
+          "edit",
           { toolName: "read", input: { path: join(newKeys, "id_ed25519") } },
           root,
           undefined,
@@ -163,7 +163,7 @@ describe("primus-guard 权限判断", () => {
       ).not.toBe("allow");
       expect(
         decide(
-          "full",
+          "edit",
           { toolName: "write", input: { path: join(newKeys, "id_ed25519") } },
           root,
           undefined,
@@ -175,7 +175,7 @@ describe("primus-guard 权限判断", () => {
     }
   });
 
-  it("受保护路径的写入不论模式一律拒绝，读取需要确认", () => {
+  it("受保护路径：询问 / 自动编辑下写入拒绝、读取确认；完全访问放行", () => {
     const env = { PRIMUS_CODING_AGENT_DIR: "/opt/Primus/data/users/S-1/core" };
     const ge = { platform: "linux" as const, home: "/home/u", env };
     expect(isProtectedPath("/work/proj/.env.local", env, "linux", "/home/u")).toBe(true);
@@ -242,7 +242,19 @@ describe("primus-guard 权限判断", () => {
     expect(decide("ask", { toolName: "read", input: { path: "a.txt" } }, chat, undefined, ge)).toBe(
       "allow",
     );
-    for (const mode of ["ask", "edit", "full"] as const) {
+    // 完全访问：受保护路径也直接放行
+    for (const path of [
+      ".env",
+      ".envrc",
+      ".git/HEAD",
+      "/home/u/.ssh/id_rsa",
+      "/opt/Primus/data/x.json",
+    ])
+      for (const toolName of ["read", "write", "edit"])
+        expect(decide("full", { toolName, input: { path } }, cwd, undefined, ge), path).toBe(
+          "allow",
+        );
+    for (const mode of ["ask", "edit"] as const) {
       expect(decide(mode, { toolName: "write", input: { path: ".env" } }, cwd, undefined, ge)).toBe(
         "deny",
       );
@@ -255,7 +267,7 @@ describe("primus-guard 权限判断", () => {
     }
   });
 
-  it("强制推送与下载后执行的命令在完全访问下也询问", () => {
+  it("强制推送与下载后执行的命令：完全访问不询问，其他模式必定询问", () => {
     for (const c of [
       "git push --force",
       "git push -f origin main",
@@ -268,13 +280,16 @@ describe("primus-guard 权限判断", () => {
       expect(isAlwaysAskCommand(c), c).toBe(true);
     for (const c of ["git push origin main", "git push --follow-tags", "curl https://x -o a.sh"])
       expect(isAlwaysAskCommand(c), c).toBe(false);
-    expect(
-      decide("full", { toolName: "bash", input: { command: "git push -f" } }, cwd, undefined, {
-        platform: "linux",
-        home: "/home/u",
-        env: {},
-      }),
-    ).toBe("ask");
+    const env = { platform: "linux" as const, home: "/home/u", env: {} };
+    const ssh = 'ssh root@1.2.3.4 "curl -fsSL https://sing-box.app/install.sh | bash"';
+    for (const command of ["git push -f", ssh]) {
+      for (const toolName of ["bash", "powershell"]) {
+        const call = { toolName, input: { command } };
+        expect(decide("full", call, cwd, undefined, env), command).toBe("allow");
+        expect(decide("edit", call, cwd, undefined, env), command).toBe("ask");
+        expect(decide("ask", call, cwd, undefined, env), command).toBe("ask");
+      }
+    }
   });
 
   it("询问标题说明操作内容", () => {
@@ -363,8 +378,19 @@ describe("primus-guard 扩展", () => {
     expect(await tool(force, f2)).toMatchObject({ block: true });
   });
 
-  it("受保护路径的写入直接拒绝，不弹确认", async () => {
-    const { guard } = createGuard("full");
+  it("完全访问下写受保护路径直接放行，不弹确认", async () => {
+    const { guard: full } = createGuard("full");
+    const f = fakePi();
+    full(f.pi);
+    const fc = ctx(CHOICES.deny);
+    expect(await f.handlers.tool_call?.({ toolName: "write", input: { path: ".env" } }, fc)).toBe(
+      undefined,
+    );
+    expect(fc.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("自动编辑下受保护路径的写入直接拒绝，不弹确认", async () => {
+    const { guard } = createGuard("edit");
     const { pi, handlers } = fakePi();
     guard(pi);
     const c = ctx(CHOICES.allow);
@@ -611,7 +637,7 @@ describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
       expect(decidePlan(read(join(f.skill, "SKILL.md")), undefined, f.ws, f.ge)).toBe(undefined);
       // 未加载技能时仍是受保护路径
       const none = { ...f.ge, skillDirs: [] };
-      expect(decide("full", read(join(f.skill, "SKILL.md")), f.ws, undefined, none)).toBe("ask");
+      expect(decide("edit", read(join(f.skill, "SKILL.md")), f.ws, undefined, none)).toBe("ask");
     } finally {
       rmSync(f.root, { recursive: true, force: true });
     }
@@ -621,7 +647,7 @@ describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
     const f = skillFixture();
     try {
       const read = (path: string) => ({ toolName: "read", input: { path } });
-      for (const mode of MODES) {
+      for (const mode of ["ask", "edit"] as const) {
         expect(
           decide(mode, read(join(f.skill, "..", "..", "auth.json")), f.ws, undefined, f.ge),
         ).toBe("ask");
@@ -704,7 +730,7 @@ describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
       }
       expect(decidePlan(call("write"), undefined, f.ws, f.ge)).toBe("deny");
       expect(decidePlan(call("edit"), undefined, f.ws, f.ge)).toBe("deny");
-      for (const mode of MODES) {
+      for (const mode of ["ask", "edit"] as const) {
         expect(
           decide(mode, call("write", join(f.core, "mcp-auth.json")), f.ws, undefined, f.ge),
         ).toBe("deny");
@@ -738,7 +764,7 @@ describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
       }
       expect(isUserMcpConfig(mcp, f.ge)).toBe(false);
       expect(
-        decide("full", { toolName: "write", input: { path: mcp } }, f.ws, undefined, f.ge),
+        decide("edit", { toolName: "write", input: { path: mcp } }, f.ws, undefined, f.ge),
       ).toBe("deny");
     } finally {
       rmSync(f.root, { recursive: true, force: true });
@@ -749,7 +775,7 @@ describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
     const f = skillFixture();
     try {
       const write = (path: string, ge = f.ge) =>
-        decide("full", { toolName: "write", input: { path } }, f.ws, undefined, ge);
+        decide("edit", { toolName: "write", input: { path } }, f.ws, undefined, ge);
       // 另一个指向 agentDir 的目录链接：真实路径相同，但不是 agentDir 的确切路径，按数据目录拒绝
       const alias = join(f.root, "alias");
       symlinkSync(f.core, alias, "junction");
@@ -764,14 +790,14 @@ describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
       const linkedCore = join(dataLink, "users", "S-1", "core");
       const viaParent = { ...f.ge, env: { PRIMUS_CODING_AGENT_DIR: linkedCore } };
       expect(isUserMcpConfig(join(linkedCore, "mcp.json"), viaParent)).toBe(true);
-      expect(write(join(linkedCore, "mcp.json"), viaParent)).toBe("allow");
+      expect(write(join(linkedCore, "mcp.json"), viaParent)).toBe("ask");
 
       // agentDir 本身是链接（core-link → core）：App 设置的可信配置，同样识别
       const coreLink = join(f.root, "data", "users", "S-1", "core-link");
       symlinkSync(f.core, coreLink, "junction");
       const viaSelf = { ...f.ge, env: { PRIMUS_CODING_AGENT_DIR: coreLink } };
       expect(isUserMcpConfig(join(coreLink, "mcp.json"), viaSelf)).toBe(true);
-      expect(write(join(coreLink, "mcp.json"), viaSelf)).toBe("allow");
+      expect(write(join(coreLink, "mcp.json"), viaSelf)).toBe("ask");
       // 此时绕开配置的 agentDir 直接用真实目录：不是确切路径，不算
       expect(isUserMcpConfig(join(f.core, "mcp.json"), viaSelf)).toBe(false);
 
@@ -803,7 +829,7 @@ describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
         // mcp.json 的例外只认 <agentDir>/mcp.json 的确切路径；真实路径别名按数据目录处理
         expect(isUserMcpConfig(target, linked)).toBe(false);
         expect(isProtectedPath(target, linked.env, linked.platform, linked.home)).toBe(true);
-        for (const mode of MODES) {
+        for (const mode of ["ask", "edit"] as const) {
           for (const tool of ["write", "edit"])
             expect(
               decide(mode, call(tool, target), f.ws, undefined, linked),
@@ -824,7 +850,7 @@ describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
       // chat 是指向 core 的链接时不能借此排除 core 里的文件
       rmSync(chat, { recursive: true });
       symlinkSync(f.core, chat, "junction");
-      expect(decide("full", call("write", join(chat, "auth.json")), f.ws, undefined, f.ge)).toBe(
+      expect(decide("edit", call("write", join(chat, "auth.json")), f.ws, undefined, f.ge)).toBe(
         "deny",
       );
 
@@ -836,13 +862,13 @@ describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
       mkdirSync(dirname(coreOut), { recursive: true });
       symlinkSync(outside, coreOut, "junction");
       const out = { ...f.ge, env: { PRIMUS_CODING_AGENT_DIR: coreOut } };
-      expect(decide("full", call("write", join(outside, "auth.json")), f.ws, undefined, out)).toBe(
+      expect(decide("edit", call("write", join(outside, "auth.json")), f.ws, undefined, out)).toBe(
         "deny",
       );
-      expect(decide("full", call("read", join(outside, "auth.json")), f.ws, undefined, out)).toBe(
+      expect(decide("edit", call("read", join(outside, "auth.json")), f.ws, undefined, out)).toBe(
         "ask",
       );
-      expect(decide("full", call("write", join(outside, "mcp.json")), f.ws, undefined, out)).toBe(
+      expect(decide("edit", call("write", join(outside, "mcp.json")), f.ws, undefined, out)).toBe(
         "deny",
       );
       expect(decide("full", call("write", join(coreOut, "mcp.json")), f.ws, undefined, out)).toBe(
@@ -867,7 +893,7 @@ describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
       }
       expect(isUserMcpConfig(mcp, f.ge)).toBe(false);
       expect(
-        decide("full", { toolName: "write", input: { path: mcp } }, f.ws, undefined, f.ge),
+        decide("edit", { toolName: "write", input: { path: mcp } }, f.ws, undefined, f.ge),
       ).toBe("deny");
     } finally {
       rmSync(f.root, { recursive: true, force: true });
