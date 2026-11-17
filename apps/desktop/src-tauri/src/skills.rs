@@ -1202,7 +1202,8 @@ mod tests {
         let _clear = Clear;
         tests_hook::fail_copy_to(&stage_dir.join(STAGE_ROOT));
         let err = install(&core, &tmp, &stage.stage_id, "demo", true).unwrap_err();
-        let incoming = core.join(format!("skills/.demo.installing-{}", stage.stage_id));
+        // 与 install 拼路径的方式一致（Windows 上错误信息里的分隔符才对得上）
+        let incoming = user_skills_dir(&core).join(format!(".demo.installing-{}", stage.stage_id));
         assert!(
             err.to_string().contains(&incoming.display().to_string()),
             "{err}"
