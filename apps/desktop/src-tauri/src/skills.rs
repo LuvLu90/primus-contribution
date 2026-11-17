@@ -506,8 +506,38 @@ fn stage_retired(id: &str) -> bool {
         .contains(id)
 }
 
+/// 本进程内正在安装或放弃的暂存编号：同一个暂存的安装与放弃串行进行。替换失败、新来源正在回迁暂存时，另一个
+/// 请求不能读到回迁了一半的暂存，也不能在作废记录写入前把它装进去或删掉。
+static BUSY_STAGES: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// 占用一个暂存编号，离开作用域时释放。
+struct StageLock(String);
+
+impl Drop for StageLock {
+    fn drop(&mut self) {
+        BUSY_STAGES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.0);
+    }
+}
+
+/// 占用 `id`；已被另一个请求占用时直接返回错误，不等待。
+fn lock_stage(id: &str) -> Result<StageLock, SkillError> {
+    let inserted = BUSY_STAGES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(id.to_owned());
+    if inserted {
+        Ok(StageLock(id.to_owned()))
+    } else {
+        Err(invalid("这次暂存正在处理，请稍候再试"))
+    }
+}
+
 /// 放弃一次暂存。
 pub(crate) fn discard(tmp_dir: &Path, id: &str) -> Result<(), SkillError> {
+    let _lock = lock_stage(id)?;
     let dir = stage_dir(tmp_dir, id)?;
     remove_entry(&dir)?;
     Ok(())
@@ -736,6 +766,8 @@ pub(crate) fn install(
             "技能名称只能包含字母、数字、-、_ 和 .，且不超过 64 个字符",
         ));
     }
+    // 先占用这个暂存，再查作废记录：同一个暂存的其他请求要等这次（含回迁与作废）结束
+    let _lock = lock_stage(stage_id)?;
     // 先查进程内的作废记录，不依赖任何文件操作是否成功
     if stage_retired(stage_id) {
         return Err(invalid("这次暂存已不完整，不能再安装，请重新选择来源"));
@@ -838,6 +870,7 @@ fn move_dir(from: &Path, to: &Path) -> Result<(), SkillError> {
     std::fs::create_dir(to)?;
     let mut budget = Budget::default();
     let copied = copy_contents(from, to, &mut budget).and_then(|()| {
+        tests_hook::copied(to);
         if fault {
             Err(io::Error::other("注入的故障：复制中途失败").into())
         } else {
@@ -893,9 +926,37 @@ mod tests_hook {
         FAULTS.with(|f| f.borrow_mut().push((op, path.to_path_buf())));
     }
 
+    /// 复制完成（报错之前）时调用的回调。
+    #[cfg(test)]
+    type Hook = (std::path::PathBuf, Box<dyn Fn()>);
+
+    #[cfg(test)]
+    thread_local! {
+        static HOOKS: std::cell::RefCell<Vec<Hook>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// 测试用：本线程的 [`super::move_dir`] 复制到 `path` 完成时调用 `f`（如停下来等另一个线程）。
+    #[cfg(test)]
+    pub(super) fn on_copied(path: &Path, f: impl Fn() + 'static) {
+        HOOKS.with(|h| h.borrow_mut().push((path.to_path_buf(), Box::new(f))));
+    }
+
     #[cfg(test)]
     pub(super) fn clear() {
         FAULTS.with(|f| f.borrow_mut().clear());
+        HOOKS.with(|h| h.borrow_mut().clear());
+    }
+
+    pub(super) fn copied(path: &Path) {
+        #[cfg(test)]
+        HOOKS.with(|h| {
+            for (p, f) in h.borrow().iter() {
+                if p == path {
+                    f();
+                }
+            }
+        });
+        let _ = path;
     }
 
     /// 登记了（`op`，`path`）时返回注入的错误。
@@ -1373,6 +1434,60 @@ mod tests {
         tests_hook::clear();
         install(&core, &tmp, &stage.stage_id, "demo", true).unwrap();
         assert!(skills.join("demo/new.md").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn same_stage_requests_wait_for_the_restore_and_retirement() {
+        use std::sync::mpsc;
+        let root = temp("stage-lock");
+        let core = root.join("core");
+        let tmp = root.join("tmp");
+        write(&core.join("skills/demo/SKILL.md"), SKILL);
+        let zip = ZipBuilder::new()
+            .file("x-main/SKILL.md", SKILL)
+            .file("x-main/new.md", "new")
+            .finish();
+        let stage = stage_zip(&tmp, &zip, "x", None).unwrap();
+        let id = stage.stage_id.clone();
+        let source = stage_root(&tmp).join(&id).join(STAGE_ROOT);
+        // 旧目录换不下来；新来源回迁暂存时复制完内容后停住，再报错（模拟跨卷复制中途失败）
+        let blocker = core.join(format!("skills/.demo.replaced-{id}"));
+        write(&blocker.join("busy"), "x");
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let first = {
+            let (core, tmp, id, source) = (core.clone(), tmp.clone(), id.clone(), source.clone());
+            std::thread::spawn(move || {
+                tests_hook::inject(Fault::CopyTo, &source);
+                tests_hook::on_copied(&source, move || {
+                    ready_tx.send(()).unwrap();
+                    go_rx.recv().unwrap();
+                });
+                let r = install(&core, &tmp, &id, "demo", true);
+                tests_hook::clear();
+                r.map_err(|e| e.to_string())
+            })
+        };
+        ready_rx.recv().unwrap();
+        // 这时暂存里是回迁了一半的内容（已含 SKILL.md），作废记录还没写：同一个暂存的其他请求直接被拒
+        assert!(source.join("SKILL.md").is_file());
+        let busy = install(&core, &tmp, &id, "other", false).unwrap_err();
+        assert!(busy.to_string().contains("正在处理"), "{busy}");
+        assert!(
+            !core.join("skills/other").exists(),
+            "不能装进回迁中的半成品"
+        );
+        let busy = discard(&tmp, &id).unwrap_err();
+        assert!(busy.to_string().contains("正在处理"), "{busy}");
+        go_tx.send(()).unwrap();
+        let err = first.join().unwrap().unwrap_err();
+        assert!(err.contains("新内容也没能放回暂存"), "{err}");
+        // 第一个请求结束后作废已记下：再装被拒，放弃可以
+        let again = install(&core, &tmp, &id, "other", false).unwrap_err();
+        assert!(again.to_string().contains("不完整"), "{again}");
+        assert!(!core.join("skills/other").exists());
+        discard(&tmp, &id).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 
