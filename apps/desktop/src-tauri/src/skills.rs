@@ -372,7 +372,8 @@ pub(crate) fn locate(
     let skills = list(core_dir, home, &Map::new());
     let found = skills
         .into_iter()
-        .find(|s| s.file == file)
+        // 按路径比较而不是按字符串：Windows 上 `/` 与 `\` 同为分隔符，界面或调用方拼出的路径分隔符可能与列表不同
+        .find(|s| Path::new(&s.file) == Path::new(file))
         .ok_or_else(|| invalid("找不到这个技能，可能已被删除"))?;
     let path = PathBuf::from(&found.file);
     let base = match found.scope {
