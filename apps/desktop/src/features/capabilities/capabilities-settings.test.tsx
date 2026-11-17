@@ -163,6 +163,31 @@ describe("设置·能力中心·技能", () => {
     );
   });
 
+  it("页签内容是与页签关联的 tabpanel：只显示当前的，访问过的保持挂载，没访问过的不挂载", async () => {
+    setup();
+    await row(ts.installedTitle, "pdf");
+    const skillsTab = screen.getByRole("tab", { name: t.tabs.skills });
+    const mcpTab = screen.getByRole("tab", { name: t.tabs.mcp });
+    const skillsPanel = screen.getByRole("tabpanel", { name: t.tabs.skills });
+    expect(skillsTab.getAttribute("aria-controls")).toBe(skillsPanel.id);
+    expect(skillsPanel.getAttribute("aria-labelledby")).toBe(skillsTab.id);
+    // MCP 还没打开过：不挂载
+    expect(screen.queryAllByRole("tabpanel", { hidden: true })).toHaveLength(1);
+    openMcp();
+    await row(tm.title, "filesystem");
+    const mcpPanel = screen.getByRole("tabpanel", { name: t.tabs.mcp });
+    expect(mcpTab.getAttribute("aria-controls")).toBe(mcpPanel.id);
+    expect(mcpPanel.getAttribute("aria-labelledby")).toBe(mcpTab.id);
+    // 技能面板仍挂载，只是隐藏
+    expect(skillsPanel.isConnected).toBe(true);
+    expect(skillsPanel.hidden).toBe(true);
+    expect(mcpPanel.hidden).toBe(false);
+    expect(screen.getAllByRole("tabpanel")).toEqual([mcpPanel]);
+    fireEvent.mouseDown(skillsTab);
+    expect(skillsPanel.hidden).toBe(false);
+    expect(mcpPanel.hidden).toBe(true);
+  });
+
   it("删除前确认", async () => {
     const platform = setup();
     const remove = vi.spyOn(platform, "skillDelete");
