@@ -134,13 +134,13 @@ fn is_pristine_builtin(provider: &Provider) -> bool {
         && provider.enabled
 }
 
-/// 旧安装里仍使用历史内置地址的 ioply（名称、协议与种子一致），启动时迁移到当前内置地址。
-fn is_legacy_builtin(provider: &Provider) -> bool {
+/// 旧安装里地址不是当前内置地址的 ioply（名称、协议与种子一致），启动时迁移到当前内置地址。
+fn is_outdated_builtin(provider: &Provider) -> bool {
     let seed = crate::builtin::seed_provider();
     provider.id == seed.id
         && provider.name == seed.name
         && provider.api == seed.api
-        && crate::builtin::LEGACY_BASE_URLS.contains(&provider.base_url.as_str())
+        && provider.base_url != seed.base_url
 }
 
 /// 隐藏的内置渠道无法从界面更新密钥：保险库里没有密钥或是历史内置密钥时同步为当前常量；
@@ -154,7 +154,7 @@ fn sync_builtin_key(vault: &Vault, provider_id: &str) -> io::Result<bool> {
         Err(_) => true,
     };
     if stale {
-        vault.ensure(&secret, crate::builtin::BUILTIN_API_KEY)
+        vault.ensure(&secret, crate::builtin::api_key().as_str())
     } else {
         Ok(false)
     }
@@ -499,7 +499,7 @@ impl ModelConfigState {
             // 先存密钥再写文件：密钥存不进去时不写文件，下次启动重试
             if let Err(e) = vault.ensure(
                 &providers::secret_name(&provider.id),
-                crate::builtin::BUILTIN_API_KEY,
+                crate::builtin::api_key().as_str(),
             ) {
                 eprintln!("[core_config] 内置渠道密钥写入保险库失败：{e}");
                 return false;
@@ -530,8 +530,8 @@ impl ModelConfigState {
         else {
             return false;
         };
-        // 内置地址更换后，旧安装里仍是旧内置地址的 ioply 迁移到新地址；旧网关的模型清单作废，清空后重新获取
-        if is_legacy_builtin(&store.providers[index]) {
+        // 内置地址更换后，旧安装里地址不同的 ioply 迁移到当前地址；旧网关的模型清单作废，清空后重新获取
+        if is_outdated_builtin(&store.providers[index]) {
             let provider = &mut store.providers[index];
             provider.base_url = crate::builtin::seed_provider().base_url;
             provider.models.clear();
@@ -1123,17 +1123,17 @@ mod tests {
         );
         assert_eq!(
             vault.get("provider:ioply").unwrap().as_deref(),
-            Some(crate::builtin::BUILTIN_API_KEY)
+            Some(crate::builtin::api_key().as_str())
         );
         let text = fs::read_to_string(root.join("app").join(PROVIDERS_FILE)).unwrap();
-        assert!(!text.contains(crate::builtin::BUILTIN_API_KEY));
+        assert!(!text.contains(crate::builtin::api_key().as_str()));
         let list = state.providers_list().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].provider.id, "ioply");
         assert!(list[0].has_key);
         assert_eq!(
             list[0].key_hint,
-            providers::key_hint(crate::builtin::BUILTIN_API_KEY)
+            providers::key_hint(crate::builtin::api_key().as_str())
         );
         assert!(list[0].hidden);
         let json = serde_json::to_string(&list).unwrap();
@@ -1143,7 +1143,7 @@ mod tests {
                 && json.contains("\"hidden\":true")
         );
         assert!(
-            !json.contains(crate::builtin::BUILTIN_API_KEY),
+            !json.contains(crate::builtin::api_key().as_str()),
             "不返回密钥"
         );
         vault
@@ -1152,7 +1152,7 @@ mod tests {
         assert!(state.prepare_builtin(), "空模型继续重试");
         assert_eq!(
             vault.get("provider:ioply").unwrap().as_deref(),
-            Some(crate::builtin::BUILTIN_API_KEY),
+            Some(crate::builtin::api_key().as_str()),
             "隐藏渠道的历史内置密钥同步为当前内置密钥"
         );
         vault.set("provider:ioply", "sk-user-own-key").unwrap();
@@ -1166,7 +1166,7 @@ mod tests {
         assert!(state.prepare_builtin());
         assert_eq!(
             vault.get("provider:ioply").unwrap().as_deref(),
-            Some(crate::builtin::BUILTIN_API_KEY),
+            Some(crate::builtin::api_key().as_str()),
             "缺少密钥时补上内置密钥"
         );
 
@@ -1208,14 +1208,16 @@ mod tests {
     }
 
     #[test]
-    fn legacy_builtin_endpoint_is_migrated_and_hidden() {
+    fn outdated_builtin_endpoint_is_migrated_and_hidden() {
+        // 测试用的旧内置地址（任意与当前内置地址不同的值）
+        const OLD_BUILTIN_BASE_URL: &str = "https://old-builtin.example/v1";
         let (root, state) = state("legacy-endpoint");
         let vault = Vault::new(&root.join("vault"));
         assert!(state.prepare_builtin());
         let file = root.join("app").join(PROVIDERS_FILE);
         // 模拟旧安装：旧内置地址、旧内置密钥、旧网关的模型清单
         let mut store = ProviderStore::load(&file).unwrap().unwrap();
-        store.providers[0].base_url = crate::builtin::LEGACY_BASE_URLS[0].to_owned();
+        store.providers[0].base_url = OLD_BUILTIN_BASE_URL.to_owned();
         store.providers[0].models = vec![model("old")];
         store.save(&file).unwrap();
         vault
@@ -1234,12 +1236,12 @@ mod tests {
         assert!(state.providers_list().unwrap()[0].hidden, "迁移后重新隐藏");
         assert_eq!(
             vault.get("provider:ioply").unwrap().as_deref(),
-            Some(crate::builtin::BUILTIN_API_KEY)
+            Some(crate::builtin::api_key().as_str())
         );
 
         // 停用的旧地址渠道也迁移地址，但保持停用、可见，不触发获取
         let mut store = ProviderStore::load(&file).unwrap().unwrap();
-        store.providers[0].base_url = crate::builtin::LEGACY_BASE_URLS[0].to_owned();
+        store.providers[0].base_url = OLD_BUILTIN_BASE_URL.to_owned();
         store.providers[0].enabled = false;
         store.save(&file).unwrap();
         assert!(!state.prepare_builtin());
@@ -1251,14 +1253,11 @@ mod tests {
         // 用户改过名称的渠道不动
         let mut store = ProviderStore::load(&file).unwrap().unwrap();
         store.providers[0].name = "我的 ioply".to_owned();
-        store.providers[0].base_url = crate::builtin::LEGACY_BASE_URLS[0].to_owned();
+        store.providers[0].base_url = OLD_BUILTIN_BASE_URL.to_owned();
         store.save(&file).unwrap();
         assert!(!state.prepare_builtin());
         let store = ProviderStore::load(&file).unwrap().unwrap();
-        assert_eq!(
-            store.providers[0].base_url,
-            crate::builtin::LEGACY_BASE_URLS[0]
-        );
+        assert_eq!(store.providers[0].base_url, OLD_BUILTIN_BASE_URL);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1298,7 +1297,7 @@ mod tests {
         assert!(!changed.fetch_builtin_models, "已有模型不获取");
         assert_eq!(
             vault.get("provider:ioply").unwrap().as_deref(),
-            Some(crate::builtin::BUILTIN_API_KEY),
+            Some(crate::builtin::api_key().as_str()),
             "恢复种子配置时同步缺失的密钥"
         );
         let _ = fs::remove_dir_all(&root);
@@ -1311,7 +1310,7 @@ mod tests {
         ));
         assert!(!crate::builtin::is_legacy_api_key("sk-user-own-key"));
         assert!(!crate::builtin::is_legacy_api_key(
-            crate::builtin::BUILTIN_API_KEY
+            crate::builtin::api_key().as_str()
         ));
     }
 

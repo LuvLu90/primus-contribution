@@ -112,10 +112,10 @@ interface MockProvider {
   apiKey: string | null;
 }
 
-/** 内置渠道的种子配置（与薄壳 `builtin.rs` 同名同协议同地址） */
+/** 内置渠道的种子配置（与薄壳 `builtin.rs` 同名同协议；地址只是占位，真实地址只在 `builtin.rs` 的 `SEED_BASE_URL`） */
 const MOCK_SEED_ID = "ioply";
 const MOCK_SEED_API: ProviderApi = "openai-responses";
-const MOCK_SEED_BASE_URL = "https://api.mecode.cc.cd/v1";
+const MOCK_SEED_BASE_URL = "https://ioply.example/v1";
 
 /** 与薄壳 `is_pristine_builtin` 一致：未被修改且启用的内置渠道隐藏，不能修改或删除 */
 const isPristineBuiltin = (p: Pick<MockProvider, "id" | "name" | "api" | "baseUrl" | "enabled">) =>
@@ -125,7 +125,7 @@ const isPristineBuiltin = (p: Pick<MockProvider, "id" | "name" | "api" | "baseUr
   p.baseUrl === MOCK_SEED_BASE_URL &&
   p.enabled;
 
-/** 预置渠道（与薄壳首次启动写入的内置渠道同名同地址；密钥只是占位，模型只是示意，不连接任何端点） */
+/** 预置渠道（与薄壳首次启动写入的内置渠道同名；地址、密钥只是占位，模型只是示意，不连接任何端点） */
 const MOCK_SEED_PROVIDERS: MockProvider[] = [
   {
     id: MOCK_SEED_ID,

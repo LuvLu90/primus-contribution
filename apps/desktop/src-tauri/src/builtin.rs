@@ -5,7 +5,8 @@
 //! - 密钥只有下面一个常量：种子写入时存进 DPAPI 保险库（`provider:ioply`），`models.json` 里只放取密钥命令。
 //! - 模型清单起初为空；只要渠道仍是种子配置且清单为空，每次启动都会在后台重试获取（`lib.rs`）。
 //!   已停用的渠道改回种子配置并保存时也会立即后台获取，无需重启。
-//! - 更换内置地址后，旧安装里仍是旧内置地址的 ioply 在启动时迁移到新地址（清空模型清单后重新获取），
+//! - 内置地址只写在 [`SEED_BASE_URL`] 一处：更换时只改它。自动更新后，名称与协议仍是种子配置的 ioply
+//!   只要地址与它不同，启动时就迁移到当前地址（清空模型清单后重新获取），旧地址不需要保留；
 //!   保险库里的旧内置密钥同步为当前常量；用户自己换过的密钥不覆盖。
 
 use crate::providers::{Api, Provider};
@@ -16,18 +17,32 @@ pub(crate) const SEED_PROVIDER_ID: &str = "ioply";
 /// 内置渠道协议。
 const SEED_API: Api = Api::OpenAiResponses;
 
-/// 内置渠道接口地址。
-const SEED_BASE_URL: &str = "https://api.mecode.cc.cd/v1";
+/// 内置渠道接口地址：内置地址只写在这里，更换时只改这一处。
+const SEED_BASE_URL: &str = "https://api.690990.xyz/v1";
 
-/// 内置渠道密钥，用户要求直接写在源码中，后续会更换。
-pub(crate) const BUILTIN_API_KEY: &str = "sk-xFAj92kTXnK6WCz9nGiKznBgzfFpWKi6uqg1j6xNRl3HLvEj";
+/// 内置渠道密钥（简单加密：按 [`KEY_MASK`] 循环异或后转十六进制），运行时由 [`api_key`] 还原。
+/// 更换密钥时只改这一行，生成新值：
+/// `python3 -c "import sys;m=b'primus-builtin';k=sys.argv[1].encode();print(bytes(b^m[i%len(m)] for i,b in enumerate(k)).hex())" <新密钥>`
+/// 并把旧密钥的摘要追加到 [`LEGACY_API_KEY_SHA256`]。
+pub(crate) const BUILTIN_API_KEY: &str = "031944153332475b4702382c072546252a174c1d6a0b3e1302360e141634193a3e1a1b17040e5d1e5f163e20055e3d3f5b271f";
 
-/// 历史版本用过的内置接口地址：旧安装的 ioply 仍是这些地址时，启动时迁移到 [`SEED_BASE_URL`]。
-/// 更换地址时把旧值追加到这里。
-pub(crate) const LEGACY_BASE_URLS: &[&str] = &["http://218.93.48.244:3304/openai/v1"];
+/// 密钥加密用的异或掩码。
+const KEY_MASK: &[u8] = b"primus-builtin";
 
-/// 历史版本用过的内置密钥的 SHA-256（小写十六进制）。只存摘要，真实密钥只有 [`BUILTIN_API_KEY`] 一处。
-/// 保险库里是这些密钥（或没有密钥）时同步为 [`BUILTIN_API_KEY`]，其他值视为用户自己换的密钥，不覆盖。
+/// 还原内置渠道密钥。
+pub(crate) fn api_key() -> String {
+    let bytes: Vec<u8> = (0..BUILTIN_API_KEY.len())
+        .step_by(2)
+        .zip(KEY_MASK.iter().cycle())
+        .map(|(i, m)| {
+            u8::from_str_radix(&BUILTIN_API_KEY[i..i + 2], 16).expect("内置密钥不是十六进制") ^ m
+        })
+        .collect();
+    String::from_utf8(bytes).expect("内置密钥不是 UTF-8")
+}
+
+/// 历史版本用过的内置密钥的 SHA-256（小写十六进制）。只存摘要，内置密钥只有 [`BUILTIN_API_KEY`] 一处（加密存放）。
+/// 保险库里是这些密钥（或没有密钥）时同步为 [`api_key`]，其他值视为用户自己换的密钥，不覆盖。
 /// 更换密钥时把旧密钥的摘要追加到这里。
 const LEGACY_API_KEY_SHA256: &[&str] =
     &["54a2f0dbde8b80d465fb9272ef0f10ad8bec1075f1994bad12d430fbc8664fbd"];
@@ -69,6 +84,20 @@ mod tests {
         let p = seed_provider();
         crate::providers::check_provider(&p).unwrap();
         assert!(p.models.is_empty() && p.enabled);
-        assert!(!serde_json::to_string(&p).unwrap().contains(BUILTIN_API_KEY));
+        assert!(
+            !serde_json::to_string(&p)
+                .unwrap()
+                .contains(api_key().as_str())
+        );
+    }
+
+    #[test]
+    fn api_key_is_decoded() {
+        let key = api_key();
+        assert!(key.starts_with("sk-"));
+        assert!(
+            !BUILTIN_API_KEY.contains(key.as_str()),
+            "源码中不出现明文密钥"
+        );
     }
 }
