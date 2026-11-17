@@ -4,6 +4,7 @@ import {
   joinCommandLine,
   listServers,
   nameConflict,
+  ownValue,
   parseMcpDocument,
   parseMcpList,
   parsePairs,
@@ -111,6 +112,25 @@ describe("mcp.json 修改", () => {
     expect(list[1]).toMatchObject({ transport: "http", enabled: false, exposure: "direct" });
     expect(list[3]?.error).toContain("冲突");
     expect(list[4]?.error).toContain("SSE");
+  });
+
+  it("暴露方式只认自有的别名：__proto__ 等原型上的名字原样保留并报错", () => {
+    const names = ["__proto__", "toString", "constructor", "codemode-deferred"];
+    const doc = parseMcpDocument(
+      JSON.stringify({
+        mcpServers: Object.fromEntries(names.map((x, i) => [`s${i}`, { command: "x", exposure: x }])),
+      }),
+    );
+    const list = listServers(doc);
+    for (const [i, x] of names.slice(0, 3).entries()) {
+      expect(list[i]?.exposure).toBe(x);
+      expect(typeof list[i]?.exposure).toBe("string");
+      expect(list[i]?.error).toContain("exposure");
+    }
+    expect(list[3]).toMatchObject({ exposure: "codemode", error: null });
+    expect(ownValue({ a: 1 }, "a")).toBe(1);
+    expect(ownValue({ a: 1 }, "__proto__")).toBeUndefined();
+    expect(ownValue({ a: 1 }, "toString")).toBeUndefined();
   });
 
   it("文件不存在或为空时视为空配置；格式错误时报错", () => {

@@ -16,6 +16,16 @@ export const MCP_EXPOSURES: readonly McpExposure[] = ["codemode", "deferred", "d
 export const DEFAULT_EXPOSURE: McpExposure = "codemode";
 const EXPOSURE_ALIASES: Readonly<Record<string, McpExposure>> = { "codemode-deferred": "codemode" };
 
+/** 表里自有的值；`__proto__`、`toString` 等原型上的名字不算 */
+export function ownValue<T>(table: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
+/** 暴露方式的别名换成正式写法（只认自有键） */
+function exposureName(v: string): string {
+  return ownValue(EXPOSURE_ALIASES, v) ?? v;
+}
+
 const SERVER_NAME = /^[A-Za-z0-9_-]+$/;
 const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 
@@ -120,7 +130,7 @@ function checkExposures(entry: Obj): string | null {
   const { exposure, toolExposure } = entry;
   const valid = (v: unknown) =>
     typeof v === "string" &&
-    (MCP_EXPOSURES as readonly string[]).includes(EXPOSURE_ALIASES[v] ?? v);
+    (MCP_EXPOSURES as readonly string[]).includes(exposureName(v));
   const list = MCP_EXPOSURES.join("、");
   if (exposure !== undefined && !valid(exposure)) return fill(msg.exposure, { list });
   if (toolExposure !== undefined) {
@@ -256,7 +266,7 @@ export function listServers(doc: McpDocument): McpServerView[] {
       enabled: rec.enabled !== false,
       exposure:
         typeof rec.exposure === "string"
-          ? (EXPOSURE_ALIASES[rec.exposure] ?? rec.exposure)
+          ? exposureName(rec.exposure)
           : DEFAULT_EXPOSURE,
       description: typeof rec.description === "string" ? rec.description : null,
       error,

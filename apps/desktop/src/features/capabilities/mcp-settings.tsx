@@ -33,6 +33,7 @@ import {
   type McpListResult,
   type McpServerView,
   type McpTransport,
+  ownValue,
   parseMcpDocument,
   parseMcpList,
   parsePairs,
@@ -237,9 +238,9 @@ export function McpSettings() {
                     <p className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
                       <span className="truncate font-medium">{s.name}</span>
                       {s.transport && <Badge>{tm.transports[s.transport]}</Badge>}
-                      <Tooltip content={tm.exposureHints[s.exposure as McpExposure] ?? s.exposure}>
+                      <Tooltip content={ownValue(tm.exposureHints, s.exposure) ?? s.exposure}>
                         <span>
-                          <Badge>{tm.exposures[s.exposure as McpExposure] ?? s.exposure}</Badge>
+                          <Badge>{ownValue(tm.exposures, s.exposure) ?? s.exposure}</Badge>
                         </span>
                       </Tooltip>
                     </p>
