@@ -43,7 +43,7 @@ export function ImageLightbox({
           onClick={(e) => {
             if (e.target === e.currentTarget) onClose();
           }}
-          className="glass-pop fixed inset-0 z-50 grid place-items-center p-10 outline-none [--glass-origin:center]"
+          className="glass-pop fixed inset-0 z-50 grid place-items-center overflow-hidden p-10 outline-none [--glass-origin:center]"
         >
           <DialogPrimitive.Title className="sr-only">{alt || t.imagePreview}</DialogPrimitive.Title>
           {src && (
@@ -52,7 +52,8 @@ export function ImageLightbox({
               src={src}
               alt={alt}
               draggable={false}
-              className="max-h-full max-w-full rounded-xl object-contain"
+              // 网格行高是 auto，max-h-full 不生效（大图按原尺寸撑出窗口）：直接按视口减去四周 p-10 限制
+              className="max-h-[calc(100dvh-5rem)] max-w-[calc(100vw-5rem)] rounded-xl object-contain"
             />
           )}
           <div className="absolute top-4 right-4 flex items-center gap-2">
