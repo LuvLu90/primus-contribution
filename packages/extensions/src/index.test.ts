@@ -4,6 +4,7 @@ import auth from "./auth/index.ts";
 import checkpoint from "./checkpoint/index.ts";
 import contextStats from "./context-stats/index.ts";
 import guard from "./guard/index.ts";
+import imagegen from "./imagegen/index.ts";
 import primus, { modules } from "./index.ts";
 import narrate from "./narrate/index.ts";
 import plan from "./plan/index.ts";
@@ -15,9 +16,9 @@ describe("primus-bundle 扩展入口", () => {
     expect(typeof primus).toBe("function");
   });
 
-  it("注册全部 9 个第一方扩展且不重复", () => {
-    expect(modules).toHaveLength(9);
-    expect(new Set(modules).size).toBe(9);
+  it("注册全部 10 个第一方扩展且不重复", () => {
+    expect(modules).toHaveLength(10);
+    expect(new Set(modules).size).toBe(10);
     for (const ext of modules) expect(typeof ext).toBe("function");
     expect(modules).toEqual(
       expect.arrayContaining([
@@ -30,6 +31,7 @@ describe("primus-bundle 扩展入口", () => {
         contextStats,
         attach,
         preview,
+        imagegen,
       ]),
     );
   });

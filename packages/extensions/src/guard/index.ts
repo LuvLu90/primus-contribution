@@ -18,6 +18,7 @@ import { lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from "n
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { IMAGEGEN_TOOL } from "@primus/protocol";
 import { type PlanGate, planGate } from "../plan/gate.ts";
 import { classifyCommand, shellWords, splitSegments } from "../plan/readonly.ts";
 
@@ -358,6 +359,7 @@ export function decide(
 ): Decision {
   // 完全访问：所有操作直接放行，包括受保护路径的读写与始终询问的命令（计划模式另由 decidePlan 判断）
   if (mode === "full") return "allow";
+  if (call.toolName === IMAGEGEN_TOOL) return decideImageGen(mode, call, cwd, ge);
   const raw = targetPath(call);
   const abs = raw === undefined ? undefined : resolveToolPath(raw, cwd, ge.platform, ge.home);
   const isRead = READ_TOOLS.has(call.toolName);
@@ -398,6 +400,40 @@ export function decide(
   return "ask";
 }
 
+/** 生成的图片所在目录 `users/<SID>/images`（与 primus-imagegen 的 imagesDirOf 一致）；未配置为 undefined */
+function imagesDirOf(env: Record<string, string | undefined>): string | undefined {
+  const core = agentDirOf(env);
+  return core ? resolve(core, "..", "images") : undefined;
+}
+
+/**
+ * 图片生成（generate_image，ADR 0018）：只联网、只写 App 自己的图片目录，不带参考图时直接放行；
+ * 参考图会上传到图片服务，每张按 read 的规则判断（受保护路径、工作区外都要确认），
+ * 之前生成的图片（图片目录内、不是机密路径）可以直接作为参考图。只会放行或询问，不会拒绝。
+ */
+function decideImageGen(mode: PermissionMode, call: ToolCall, cwd: string, ge: GuardEnv): Decision {
+  const images = call.input?.images;
+  if (images === undefined) return "allow";
+  if (!Array.isArray(images)) return "ask";
+  const dir = imagesDirOf(ge.env);
+  for (const raw of images) {
+    if (typeof raw !== "string" || !raw.trim()) return "ask";
+    const abs = resolveToolPath(raw, cwd, ge.platform, ge.home);
+    const real = realPath(abs, ge.real);
+    if (
+      dir &&
+      within(dir, abs, ge.platform) &&
+      within(realDir(dir, ge.real), real, ge.platform) &&
+      !isSecretPath(abs, ge.platform, ge.home, ge.real) &&
+      !isSecretPath(real, ge.platform, ge.home, ge.real)
+    )
+      continue;
+    if (decide(mode, { toolName: "read", input: { path: raw } }, cwd, undefined, ge) !== "allow")
+      return "ask";
+  }
+  return "allow";
+}
+
 /**
  * 计划模式（primus-plan，只读）的判断，压过权限模式（完全访问也一样）：
  * 修改文件一律拒绝；命令按只读分类器放行、拒绝或询问；读取类工具与声明只读且不联网的工具交给常规规则（返回 undefined）；
@@ -411,6 +447,8 @@ export function decidePlan(
 ): Decision | undefined {
   if (EDIT_TOOLS.has(call.toolName)) return "deny";
   if (READ_TOOLS.has(call.toolName)) return undefined;
+  // 图片生成不改工作区：交给常规规则（参考图按读取判断）
+  if (call.toolName === IMAGEGEN_TOOL) return undefined;
   if (call.toolName === "bash" || call.toolName === "powershell") {
     const command = call.input?.command;
     if (typeof command !== "string") return "ask";
@@ -658,6 +696,12 @@ export function describeCall(call: ToolCall, cwd: string): string {
     case "find":
     case "ls":
       return `读取工作区以外的内容：${where}`;
+    case IMAGEGEN_TOOL: {
+      const refs = Array.isArray(input.images)
+        ? input.images.map((p) => (typeof p === "string" ? resolveToolPath(p, cwd) : String(p)))
+        : [];
+      return `把参考图上传到图片服务生成图片：${refs.join("、")}`;
+    }
     default: {
       let args = "";
       try {

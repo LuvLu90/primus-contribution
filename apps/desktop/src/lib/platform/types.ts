@@ -253,6 +253,11 @@ export interface Platform {
   dialogPickFolder(): Promise<string | null>;
   /** 系统文件对话框（可多选）；只返回本地路径，文件不复制 */
   dialogPickFiles(): Promise<string[]>;
+  /**
+   * 把对话内生成的图片（数据目录 `users/<SID>/images` 内，ADR 0018）经系统“另存为”对话框复制到用户选的位置。
+   * 取消时返回 null，成功返回保存的路径；不是生成的图片或图片已删除时报错（错误文案可直接显示）
+   */
+  imageSave(path: string): Promise<string | null>;
 
   /**
    * 会话列表：最后活动时间倒序、每页 50 条、不含已归档。`workspace` 为 null 时列出全部工作区，
@@ -555,6 +560,7 @@ export const COMMANDS = {
   workspaceTrust: "workspace_trust",
   dialogPickFolder: "dialog_pick_folder",
   dialogPickFiles: "dialog_pick_files",
+  imageSave: "image_save",
   sessionDefaultWorkspace: "session_default_workspace",
   sessionList: "session_list",
   sessionSearch: "session_search",

@@ -1,6 +1,12 @@
 "use client";
 
-import { type AgentMessage, PLAN_SUBMIT_TOOL, type PlanSubmitDetails } from "@primus/protocol";
+import {
+  type AgentMessage,
+  IMAGEGEN_TOOL,
+  type ImageGenDetails,
+  PLAN_SUBMIT_TOOL,
+  type PlanSubmitDetails,
+} from "@primus/protocol";
 import {
   memo,
   type ReactNode,
@@ -18,6 +24,7 @@ import type { SessionState, TimelineContent, ToolRun } from "@/stores/session-st
 import { CopyButton, revealOnTurnHover } from "./copy-button";
 import { type ErrorActions, ErrorCard, RetryNotice } from "./error-card";
 import { fileIconForName } from "./file-ref";
+import { ImageGenCard } from "./image-gen-card";
 import { MarkdownText } from "./message-content";
 import { PlanCard } from "./plan-card";
 
@@ -45,6 +52,7 @@ const toolKinds: Record<string, ToolKind> = {
   find: "search",
   ls: "search",
   glob: "search",
+  [IMAGEGEN_TOOL]: "image",
 };
 
 const toolIcons: Record<ToolKind, IconName> = {
@@ -55,6 +63,7 @@ const toolIcons: Record<ToolKind, IconName> = {
   search: "search",
   skill: "bulb",
   mcp: "server",
+  image: "image",
   other: "tool",
 };
 
@@ -93,6 +102,8 @@ interface TurnLayout {
   answer: { key: string; text: string; live: boolean }[];
   /** 计划模式提交的计划（plan_submit）：不放进工作过程，单独显示成计划卡片 */
   plans: ToolCallBlock[];
+  /** 生成图片（generate_image）：工作过程里照常有一行，图片另在总结前显示成图片卡片（ADR 0018） */
+  images: ToolCallBlock[];
   /** 最后一条助手消息（停止、出错的标记跟在总结后面） */
   last?: Extract<AgentMessage, { role: "assistant" }>;
   end?: number;
@@ -130,6 +141,7 @@ function layoutTurn(messages: AgentMessage[], streaming: boolean): TurnLayout {
 
   const steps: Step[] = [];
   const plans: ToolCallBlock[] = [];
+  const images: ToolCallBlock[] = [];
   const answer: TurnLayout["answer"] = [];
   assistants.forEach((m, mi) => {
     const content = ((m.content as TimelineContent[]) ?? []).filter(Boolean);
@@ -150,6 +162,7 @@ function layoutTurn(messages: AgentMessage[], streaming: boolean): TurnLayout {
           plans.push(block);
           return;
         }
+        if (block.name === IMAGEGEN_TOOL) images.push(block);
         const prev = steps.at(-1);
         if (prev?.kind === "tools") prev.calls.push(block);
         else steps.push({ kind: "tools", key, calls: [block] });
@@ -162,6 +175,7 @@ function layoutTurn(messages: AgentMessage[], streaming: boolean): TurnLayout {
   return {
     steps,
     plans,
+    images,
     answer,
     last,
     end: stamps.length ? Math.max(...stamps) : undefined,
@@ -221,6 +235,7 @@ function argOf(call: ToolCallBlock): string {
     pick("pattern") ??
     pick("query") ??
     pick("url") ??
+    pick("prompt") ??
     ""
   );
 }
@@ -512,7 +527,7 @@ export const AgentTurn = memo(function AgentTurn({
   errorActions,
   providerNames,
 }: AgentTurnProps) {
-  const { steps, plans, answer, last, end, results } = layoutTurn(messages, streaming);
+  const { steps, plans, images, answer, last, end, results } = layoutTurn(messages, streaming);
   // 展开状态：用户点过就听用户的；否则运行中展开、结束后自动收起
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
   useEffect(() => {
@@ -590,6 +605,19 @@ export const AgentTurn = memo(function AgentTurn({
             args={call.arguments}
             details={details}
             running={!result && running}
+          />
+        );
+      })}
+      {images.map((call) => {
+        const result = results.get(call.id);
+        const run = toolRuns[call.id];
+        const details = (result?.details ?? run?.result?.details) as ImageGenDetails | undefined;
+        return (
+          <ImageGenCard
+            key={call.id}
+            args={call.arguments}
+            details={details}
+            running={!result && running && (run?.status ?? "running") === "running"}
           />
         );
       })}

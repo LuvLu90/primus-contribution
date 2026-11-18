@@ -1018,6 +1018,12 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       `${MOCK_WORKSPACE}\\src\\main.ts`,
       `${MOCK_WORKSPACE}\\设计稿.png`,
     ],
+    // 浏览器预览没有本机文件：只校验路径格式，假装用户在对话框里选了“下载”文件夹
+    imageSave: async (path) => {
+      const absolute = mockAbsolutePath(path);
+      const name = absolute.split(/[\\/]/).pop() ?? "image.png";
+      return `C:\\Users\\demo\\Downloads\\${name}`;
+    },
     workspaceTrust: async (path, trusted) => {
       const ws = workspaces.get(path);
       if (ws) Object.assign(ws, { trusted, needsTrust: false });

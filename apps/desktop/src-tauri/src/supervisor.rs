@@ -4,7 +4,8 @@
 //! - 启动参数（第 5.3 节）：`node.exe <agent-core>/rpc-entry.js [--session <文件>] --approve|--no-approve
 //!   -e <agent-core>/extensions/primus-bundle.js`，工作目录为项目目录。
 //! - 环境变量（第 4.4 节）：`PRIMUS_CODING_AGENT_DIR`、`PRIMUS_CODING_AGENT_SESSION_DIR`、`TEMP`/`TMP` 指向
-//!   `data/users/<SID>`，`PRIMUS_SKIP_VERSION_CHECK=1`、`PRIMUS_TELEMETRY`、`PRIMUS_OFFLINE`，并清空 `NODE_OPTIONS`；
+//!   `data/users/<SID>`，`PRIMUS_SKIP_VERSION_CHECK=1`、`PRIMUS_TELEMETRY`、`PRIMUS_OFFLINE`，内置图片生成用的
+//!   `PRIMUS_IMAGE_BASE_URL` 与 `PRIMUS_EXE`（ADR 0018），并清空 `NODE_OPTIONS`；
 //!   开着 Windows 系统代理时另设 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`（`platform::proxy`）。
 //!   其余环境变量（如 `PATH`）照常继承，工具命令需要它们。
 //! - 内置 Python（ADR 0010）：`resources/runtime/python` 存在时把它与用户包的 `bin/` 放到 `PATH` 最前，
@@ -307,7 +308,13 @@ fn apply_core_env(
         .env("TMP", &tmp)
         .env("PRIMUS_SKIP_VERSION_CHECK", "1")
         .env("PRIMUS_TELEMETRY", if telemetry { "1" } else { "0" })
+        // 内置图片生成（ADR 0018）：primus-imagegen 用 PRIMUS_EXE 拉起 `--secret builtin:image` 取密钥
+        .env("PRIMUS_IMAGE_BASE_URL", crate::builtin::IMAGE_BASE_URL)
         .env_remove("NODE_OPTIONS");
+    match std::env::current_exe() {
+        Ok(exe) => cmd.env("PRIMUS_EXE", exe),
+        Err(_) => cmd.env_remove("PRIMUS_EXE"),
+    };
     if offline {
         cmd.env("PRIMUS_OFFLINE", "1");
     } else {
@@ -1307,6 +1314,19 @@ pub(crate) mod tests {
         assert_eq!(env_of(&cmd, "PRIMUS_TELEMETRY"), Some(Some("0".into())));
         assert_eq!(env_of(&cmd, "PRIMUS_OFFLINE"), Some(Some("1".into())));
         assert_eq!(
+            env_of(&cmd, "PRIMUS_IMAGE_BASE_URL"),
+            Some(Some(crate::builtin::IMAGE_BASE_URL.into()))
+        );
+        assert_eq!(
+            env_of(&cmd, "PRIMUS_EXE"),
+            Some(Some(
+                std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            ))
+        );
+        assert_eq!(
             env_of(&cmd, "NODE_OPTIONS"),
             Some(None),
             "NODE_OPTIONS 应被清除"
@@ -1350,6 +1370,8 @@ pub(crate) mod tests {
             "PRIMUS_SKIP_VERSION_CHECK",
             "PRIMUS_TELEMETRY",
             "PRIMUS_OFFLINE",
+            "PRIMUS_IMAGE_BASE_URL",
+            "PRIMUS_EXE",
             "NODE_OPTIONS",
         ] {
             assert_eq!(env_of(&cmd, name), env_of(&session, name), "{name}");

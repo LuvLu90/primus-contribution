@@ -6,7 +6,8 @@
 //! - 写入先写同目录临时文件再替换，避免中途崩溃留下半个文件。
 //! - `Primus.exe --secret provider:<渠道 ID>`：不打开窗口，确认自己在本 App 的 Core 作业内后把该渠道的密钥写到 stdout 并退出，
 //!   供 `models.json` 的 `"apiKey": "!<Primus.exe> --secret provider:<id>"` 使用；密钥不进命令行参数、环境变量与会话文件。
-//!   只接受 `provider:<id>` 形式的名字，其他名字一律按不存在处理。
+//!   只接受 `provider:<id>` 形式的名字与内置图片生成服务的 `builtin:image`（ADR 0018，值来自 builtin.rs，不在保险库里），
+//!   其他名字一律按不存在处理。
 //! - macOS / Linux 的 Keychain / Secret Service 见第 20 章，当前非 Windows 平台加解密直接报不支持，
 //!   绝不退回明文落盘。
 
@@ -36,7 +37,10 @@ pub(crate) fn is_valid_id(id: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b':')
 }
 
-/// `--secret` 模式接受的名字：只有 `provider:<渠道 ID>`。
+/// 内置图片生成服务密钥的名字（primus-imagegen 扩展用 `--secret builtin:image` 取）。
+pub(crate) const BUILTIN_IMAGE_SECRET: &str = "builtin:image";
+
+/// `--secret` 模式接受的保险库名字：只有 `provider:<渠道 ID>`（内置的 [`BUILTIN_IMAGE_SECRET`] 另行处理）。
 pub(crate) fn is_secret_name(name: &str) -> bool {
     name.strip_prefix(crate::providers::SECRET_PREFIX)
         .is_some_and(crate::providers::is_valid_id)
@@ -252,12 +256,17 @@ pub(crate) fn run_secret_mode(id: &str) -> SecretExit {
 }
 
 fn secret_value(id: &str) -> Result<String, SecretExit> {
-    if !is_secret_name(id) {
+    let builtin_image = id == BUILTIN_IMAGE_SECRET;
+    if !builtin_image && !is_secret_name(id) {
         return Err(SecretExit::NotFound);
     }
+    // 内置密钥同样只交给本 App 的 Core 作业内的调用方
     let job = std::env::var(crate::job::JOB_NAME_ENV).map_err(|_| SecretExit::Denied)?;
     if !crate::job::caller_in_job(&job).unwrap_or(false) {
         return Err(SecretExit::Denied);
+    }
+    if builtin_image {
+        return Ok(crate::builtin::image_api_key());
     }
     let core_dir = std::env::var_os("PRIMUS_CODING_AGENT_DIR").ok_or(SecretExit::Denied)?;
     let user_id = crate::platform::current_user_id().map_err(|_| SecretExit::Failed)?;
@@ -489,6 +498,12 @@ mod tests {
     fn secret_mode_denies_callers_outside_core_job() {
         // 测试进程不在任何乾元作业里：无论环境如何都拒绝，且不输出任何值
         assert_eq!(secret_value("provider:ioply"), Err(SecretExit::Denied));
+        assert_eq!(
+            secret_value(BUILTIN_IMAGE_SECRET),
+            Err(SecretExit::Denied),
+            "内置图片密钥同样只给作业内的调用方"
+        );
+        assert_eq!(secret_value("builtin:other"), Err(SecretExit::NotFound));
         assert_eq!(secret_value("BAD ID"), Err(SecretExit::NotFound));
         assert_eq!(
             secret_value("model-token"),

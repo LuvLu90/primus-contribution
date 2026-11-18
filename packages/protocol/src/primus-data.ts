@@ -339,3 +339,51 @@ export function planToMarkdown(plan: PlanDoc): string {
   section("假设", plan.assumptions);
   return `${out.join("\n")}\n`;
 }
+
+// ---------- primus-imagegen：对话内图片生成（ADR 0018） ----------
+
+/** 图片生成工具名（primus-imagegen 注册的自定义工具） */
+export const IMAGEGEN_TOOL = "generate_image";
+
+/**
+ * 生成意图（模型按场景选择，扩展映射到具体模型）：
+ * default 通用；fast 草图、多方案、快速迭代；quality 海报、写实、细节与文字要求高
+ */
+export const IMAGEGEN_INTENTS = ["default", "fast", "quality"] as const;
+export type ImageGenIntent = (typeof IMAGEGEN_INTENTS)[number];
+
+/** 允许的尺寸：方图、横图、竖图，或由服务决定 */
+export const IMAGEGEN_SIZES = ["1024x1024", "1536x1024", "1024x1536", "auto"] as const;
+export type ImageGenSize = (typeof IMAGEGEN_SIZES)[number];
+
+/** 一次最多生成的张数、最多参考的图片数 */
+export const IMAGEGEN_MAX_COUNT = 4;
+export const IMAGEGEN_MAX_REFERENCES = 4;
+
+/** 生成结果的状态：done 已生成；failed 失败（原因在 error）；cancelled 用户停止 */
+export type ImageGenStatus = "done" | "failed" | "cancelled";
+
+/** 一张生成的图片：保存在数据目录 `users/<SID>/images` 下 */
+export interface ImageGenImage {
+  /** 绝对路径 */
+  path: string;
+  width?: number;
+  height?: number;
+}
+
+/** 图片生成工具结果的 details（前端据此显示图片卡片） */
+export interface ImageGenDetails {
+  status: ImageGenStatus;
+  prompt: string;
+  intent: ImageGenIntent;
+  size: ImageGenSize;
+  /** 实际出图的模型（失败时为最后尝试的模型） */
+  model?: string;
+  images: ImageGenImage[];
+  /** 服务改写后的提示词 */
+  revisedPrompt?: string;
+  /** 是否改图（带参考图） */
+  edit?: boolean;
+  /** 失败原因（给用户看） */
+  error?: string;
+}

@@ -270,6 +270,10 @@ impl DataPaths {
     pub(crate) fn python_packages_dir(&self) -> PathBuf {
         self.python_dir().join("site-packages")
     }
+    /// `users/<SID>/images`：对话内生成的图片（ADR 0018），由 Core 的 primus-imagegen 按需创建
+    pub(crate) fn images_dir(&self) -> PathBuf {
+        self.user_dir().join("images")
+    }
     /// `users/<SID>/updates`：自动更新的待装包与 pending.json（ADR 0007）
     pub(crate) fn updates_dir(&self) -> PathBuf {
         self.user_dir().join("updates")
@@ -600,6 +604,7 @@ mod tests {
         assert_eq!(p.webview_dir(), user.join("webview"));
         assert_eq!(p.tmp_dir(), user.join("tmp"));
         assert_eq!(p.updates_dir(), user.join("updates"));
+        assert_eq!(p.images_dir(), user.join("images"));
     }
 
     #[test]
