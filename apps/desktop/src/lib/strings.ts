@@ -411,8 +411,15 @@ export const strings = {
       branch: "Git 分支",
       detached: "分离的 HEAD",
       workspace: "工作区",
-      todo: "计划进度",
-      todoAll: "全部步骤",
+    },
+    /** 计划进度卡片（输入框上方，ADR 0019） */
+    progress: {
+      label: "计划进度",
+      /** {n}：剩余步数 */
+      left: "还剩 {n} 步",
+      allDone: "全部步骤已完成",
+      collapse: "收起步骤",
+      expand: "展开步骤",
     },
     plan: {
       toggle: "计划模式",

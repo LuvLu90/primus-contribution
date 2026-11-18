@@ -2,7 +2,6 @@ import type { PlanDoc } from "@primus/protocol";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { AskCard } from "./ask-card";
-import { TodoProgress } from "./composer-lip";
 import { PlanApproval, PlanCard, planOfArgs } from "./plan-card";
 
 const PLAN: PlanDoc = {
@@ -111,26 +110,5 @@ describe("ask_user 提问卡片", () => {
     fireEvent.click(screen.getByRole("button", { name: "不回答" }));
     fireEvent.keyDown(screen.getByRole("button", { name: "三级" }), { key: "Escape" });
     expect(onCancel).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe("唇条的计划进度", () => {
-  it("只显示当前步骤与进度；全部完成后不显示", () => {
-    const { container, rerender } = render(
-      <TodoProgress
-        items={[
-          { id: "1", text: "协议类型", status: "completed" },
-          { id: "2", text: "扩展", status: "in_progress" },
-          { id: "3", text: "前端", status: "pending" },
-        ]}
-      />,
-    );
-    const trigger = screen.getByRole("button", { name: "计划进度 1/3：扩展" });
-    expect(trigger.textContent).toContain("扩展");
-    expect(trigger.textContent).not.toContain("前端");
-    // 进行中的一步用转动的加载图标
-    expect(trigger.querySelector(".session-spinner")).toBeTruthy();
-    rerender(<TodoProgress items={[{ id: "1", text: "a", status: "completed" }]} />);
-    expect(container.textContent).toBe("");
   });
 });
