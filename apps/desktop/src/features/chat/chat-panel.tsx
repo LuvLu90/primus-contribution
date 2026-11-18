@@ -311,12 +311,33 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   // “+”菜单里的技能与 MCP（全局 + 当前项目），选中的以“/名称”标签挂在输入框上方，发送时注明
   // 项目能力按会话自己的工作区加载：历史会话锁定在它的工作区，与全局选择同一路径时沿用其信任状态，否则按未信任处理
   const tabWorkspace = tab?.workspace ?? null;
+  // 会话工作区不是全局当前工作区时，从工作区列表查它实际的信任状态；查到之前按未信任处理（不列项目能力）
+  const [tabTrust, setTabTrust] = useState<{ path: string; trusted: boolean } | null>(null);
+  useEffect(() => {
+    // 每次重查都先丢掉旧结果：撤销信任后，旧的 trusted 不能在新结果回来前放行项目能力
+    setTabTrust(null);
+    if (!tabWorkspace || workspace?.path === tabWorkspace) return;
+    let alive = true;
+    getPlatform()
+      .then((p) => p.workspaceList())
+      .then((list) => {
+        const found = list.find((w) => w.path === tabWorkspace);
+        if (alive) setTabTrust({ path: tabWorkspace, trusted: !!found?.trusted });
+      })
+      .catch(() => {
+        if (alive) setTabTrust({ path: tabWorkspace, trusted: false });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [tabWorkspace, workspace?.path]);
   const capsWorkspace: WorkspaceInfo | null = useMemo(() => {
     if (tabWorkspace === null) return workspace;
     if (!tabWorkspace) return null;
     if (workspace?.path === tabWorkspace) return workspace;
-    return { path: tabWorkspace, name: baseName(tabWorkspace), trusted: false, needsTrust: false };
-  }, [tabWorkspace, workspace]);
+    const trusted = tabTrust?.path === tabWorkspace && tabTrust.trusted;
+    return { path: tabWorkspace, name: baseName(tabWorkspace), trusted, needsTrust: false };
+  }, [tabWorkspace, workspace, tabTrust]);
   const capabilities = useComposerCapabilities(capsWorkspace);
   const [pickedCaps, setPickedCaps] = useState<ComposerCapability[]>([]);
   // 工作区或信任状态变化：清掉旧项目的能力选择，保留全局的

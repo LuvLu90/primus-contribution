@@ -1312,8 +1312,27 @@ describe("对话区（mock 事件流）", () => {
     fireEvent.click(screen.getByRole("button", { name: openName(t.attachments.sentImage) }));
     const dialog = await screen.findByRole("dialog", { name: t.attachments.sentImage });
     expect(within(dialog).getByRole("img", { name: t.attachments.sentImage })).toBeTruthy();
-    fireEvent.click(within(dialog).getByRole("button", { name: t.attachments.closePreview }));
+    fireEvent.keyDown(dialog, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("键盘打开大图后按 Esc 关闭，焦点回到打开的按钮", async () => {
+    render(
+      <UserBubble
+        text="看图"
+        index={0}
+        images={[{ type: "image", mimeType: "image/png", data: "AAAA" }]}
+      />,
+    );
+    const opener = screen.getByRole("button", {
+      name: t.attachments.open.replace("{name}", t.attachments.sentImage),
+    });
+    opener.focus();
+    fireEvent.click(opener);
+    const dialog = await screen.findByRole("dialog", { name: t.attachments.sentImage });
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(opener));
   });
 
   it("回复出错显示错误卡片，重试重新发送上一条消息；可去设置检查渠道", async () => {

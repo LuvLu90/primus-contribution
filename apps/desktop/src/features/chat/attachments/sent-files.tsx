@@ -45,18 +45,24 @@ export function SentFiles({ files }: { files: FileTag[] }) {
 }
 
 function SentFileButton({ name, path }: { name: string; path: string | null }) {
-  return (
+  const button = (
     <button
       type="button"
       aria-label={t.open.replace("{name}", name)}
       disabled={!path}
-      title={path ? undefined : t.cannotPreview}
       onClick={() => path && showPreview(path)}
       className="flex h-7 min-w-0 cursor-pointer items-center gap-1.5 rounded-[9px] bg-tile px-2 text-xs outline-none ring-1 ring-tile-ring transition-colors enabled:hover:bg-hover focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-default"
     >
       <FileIcon name={fileIconForName(name)} size="sm" />
       <span className="min-w-0 truncate">{name}</span>
     </button>
+  );
+  if (path) return button;
+  // 禁用的按钮收不到悬停事件：提示挂在外层
+  return (
+    <Tooltip content={t.cannotPreview}>
+      <span className="flex min-w-0">{button}</span>
+    </Tooltip>
   );
 }
 
