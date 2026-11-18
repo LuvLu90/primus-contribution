@@ -206,11 +206,11 @@ export const strings = {
     attach: "添加附件",
     add: {
       title: "添加",
-      files: "文件",
+      files: "文件和文件夹",
       planHint: "先出计划，批准后再执行",
       planOnHint: "已开启，再点关闭",
       image: "生成图片",
-      imageHint: "这条消息直接出图",
+      imageHint: "使用AI生成图片",
       skills: "技能",
       mcp: "MCP",
       loading: "正在读取…",

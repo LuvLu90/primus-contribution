@@ -462,13 +462,10 @@ export function AddMenu({
                 label={t.plan.toggle}
                 hint={planOn ? t.add.planOnHint : t.add.planHint}
                 trailing={
-                  <span className="flex shrink-0 items-center gap-2">
-                    <kbd className="font-sans text-2xs text-muted">Shift+Tab</kbd>
-                    <span aria-hidden className="flex w-3.5 justify-center">
-                      <Menu.ItemIndicator>
-                        <Icon name="check" size="sm" />
-                      </Menu.ItemIndicator>
-                    </span>
+                  <span aria-hidden className="flex w-3.5 shrink-0 justify-center">
+                    <Menu.ItemIndicator>
+                      <Icon name="check" size="sm" />
+                    </Menu.ItemIndicator>
                   </span>
                 }
               />
