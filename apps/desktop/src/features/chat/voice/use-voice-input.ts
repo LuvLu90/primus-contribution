@@ -15,6 +15,12 @@ export const WAVE_BARS = 18;
 const WAVE_STEP_MS = 80;
 /** 点停止后再采集的时长：大于一块采集缓冲（128ms），保证最后一块音频交出 */
 const TAIL_MS = 160;
+/**
+ * 停止后最多等识别收尾这么久，再收起录音胶囊。平时识别在 1 秒内收尾；慢的时候（第一次连接识别服务、
+ * 额度用完换下一款模型重放录音、服务迟迟不回结果）后台可能要十几秒以上，不能让用户一直关不掉。
+ * 到时间先结束界面上的录音，已显示的临时文字照常插入；之后迟到的识别结果不再插入。
+ */
+export const STOP_WAIT_MS = 1500;
 
 /** 语音转文字的错误（文案固定） */
 export interface VoiceError {
@@ -69,6 +75,8 @@ export function useVoiceInput({
   const sessionId = useRef<Promise<number> | null>(null);
   // 已在结束的会话（停止或发送失败），避免重复结束
   const stopping = useRef<symbol | null>(null);
+  // 已向平台发出停止请求的会话：强制收起时不重复发
+  const stopSent = useRef<symbol | null>(null);
   const unavailable = useCallback(
     () => setError((prev) => prev ?? { message: strings.chat.voice.unavailable }),
     [],
@@ -94,9 +102,24 @@ export function useVoiceInput({
         .then(async (n) => {
           const p = await getPlatform();
           // 等待期间这次会话可能已结束、又开始了新会话：不能把新会话停掉
-          if (session.current === token) await p.speechStop(n);
+          if (session.current === token && stopSent.current !== token) {
+            stopSent.current = token;
+            await p.speechStop(n);
+          }
         })
         .catch(() => finish(token));
+    },
+    [finish],
+  );
+
+  /** 不再等识别收尾：结束界面上的录音（插入已显示的临时文字），平台那边还没停的一并停掉 */
+  const abandon = useCallback(
+    (token: symbol, id: Promise<number>) => {
+      if (session.current !== token) return;
+      finish(token);
+      if (stopSent.current === token) return;
+      stopSent.current = token;
+      void id.then(async (n) => (await getPlatform()).speechStop(n)).catch(() => {});
     },
     [finish],
   );
@@ -195,8 +218,10 @@ export function useVoiceInput({
       if (session.current !== token) return;
       setCapturing(false);
       void audioSent.current.then(() => endSession(token, id));
+      // 识别收尾慢时不让录音胶囊一直关不掉（见 STOP_WAIT_MS）
+      setTimeout(() => abandon(token, id), STOP_WAIT_MS);
     }, TAIL_MS);
-  }, [endSession]);
+  }, [abandon, endSession]);
 
   // 录音中：波形与计时
   useEffect(() => {

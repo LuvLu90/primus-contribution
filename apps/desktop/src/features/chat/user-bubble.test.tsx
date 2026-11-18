@@ -133,3 +133,21 @@ describe("用户消息的复制按钮", () => {
     expect(screen.getByRole("list", { name: t.attachments.sent }).textContent).toContain("a.png");
   });
 });
+
+describe("随消息使用的能力", () => {
+  it("图片生成、技能、MCP 显示成气泡上方的标签，说明原文不进气泡", () => {
+    const c = t.capabilities;
+    const text = `${c.useImage}\n${c.useSkills.replace("{names}", "/pdf、/lint")}\n${c.useMcp.replace("{names}", "/github")}\n\n一只橘猫`;
+    render(<UserBubble index={0} text={text} />);
+    const tags = screen.getByRole("list", { name: c.sentLabel });
+    expect(
+      within(tags)
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual([c.image, "/pdf", "/lint", "/github"]);
+    const bubble = screen.getByRole("article", { name: t.you });
+    expect(bubble.textContent).not.toContain(c.useImage);
+    expect(bubble.textContent).not.toContain("请使用以下");
+    expect(screen.getByText("一只橘猫")).toBeTruthy();
+  });
+});

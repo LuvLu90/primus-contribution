@@ -3,7 +3,7 @@
 // 输入框周边的弹出菜单：“+”添加菜单、选择工作区、权限模式；以及附件（本地路径引用）小标签。
 import { appendFileTags } from "@primus/protocol";
 import { DropdownMenu as Menu } from "radix-ui";
-import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { FileIcon, Icon, type IconName } from "@/components/icons";
 import {
   GlassPopover,
@@ -338,10 +338,6 @@ function CapabilitySection({
       </Menu.Label>
       {list === null ? (
         <p className="px-4 py-1.5 text-xs text-muted">{t.add.loading}</p>
-      ) : list.length === 0 ? (
-        <p className="px-4 py-1.5 text-xs text-muted">
-          {kind === "skill" ? t.add.noSkills : t.add.noMcp}
-        </p>
       ) : (
         shown?.map((c) => (
           <Menu.CheckboxItem
@@ -401,6 +397,8 @@ export function AddMenu({
   onPickFiles,
   planOn,
   onPlanChange,
+  imageOn,
+  onImageChange,
   capabilities,
   selected,
   onToggleCapability,
@@ -413,6 +411,9 @@ export function AddMenu({
   onPickFiles: () => void;
   planOn: boolean;
   onPlanChange: (on: boolean) => void;
+  /** 图片生成模式：选中后输入框上方出现“图片生成”标签，这条消息直接出图 */
+  imageOn: boolean;
+  onImageChange: (on: boolean) => void;
   /** 可选的技能与 MCP；null 表示还在读取 */
   capabilities: ComposerCapability[] | null;
   /** 已选项的 capabilityKey */
@@ -461,32 +462,48 @@ export function AddMenu({
                 label={t.plan.toggle}
                 hint={planOn ? t.add.planOnHint : t.add.planHint}
                 trailing={
-                  <span className="flex shrink-0 items-center gap-2">
-                    <kbd className="font-sans text-2xs text-muted">Shift+Tab</kbd>
-                    <span aria-hidden className="flex w-3.5 justify-center">
-                      <Menu.ItemIndicator>
-                        <Icon name="check" size="sm" />
-                      </Menu.ItemIndicator>
-                    </span>
+                  <span aria-hidden className="flex w-3.5 shrink-0 justify-center">
+                    <Menu.ItemIndicator>
+                      <Icon name="check" size="sm" />
+                    </Menu.ItemIndicator>
+                  </span>
+                }
+              />
+            </Menu.CheckboxItem>
+            <Menu.CheckboxItem
+              className={rowClass}
+              textValue={t.add.image}
+              checked={imageOn}
+              onCheckedChange={(v) => onImageChange(v === true)}
+            >
+              <AddRow
+                icon="image"
+                label={t.add.image}
+                hint={t.add.imageHint}
+                trailing={
+                  <span aria-hidden className="flex w-3.5 shrink-0 justify-center">
+                    <Menu.ItemIndicator>
+                      <Icon name="check" size="sm" />
+                    </Menu.ItemIndicator>
                   </span>
                 }
               />
             </Menu.CheckboxItem>
           </Menu.Group>
-          <Menu.Separator className={separatorClass} />
-          <CapabilitySection
-            kind="skill"
-            items={capabilities}
-            selected={selected}
-            onToggle={onToggleCapability}
-          />
-          <Menu.Separator className={separatorClass} />
-          <CapabilitySection
-            kind="mcp"
-            items={capabilities}
-            selected={selected}
-            onToggle={onToggleCapability}
-          />
+          {/* 全局与项目里都没有技能 / MCP 时整段不显示（读取中仍显示“正在读取…”） */}
+          {(["skill", "mcp"] as const)
+            .filter((k) => capabilities === null || capabilities.some((c) => c.kind === k))
+            .map((k) => (
+              <Fragment key={k}>
+                <Menu.Separator className={separatorClass} />
+                <CapabilitySection
+                  kind={k}
+                  items={capabilities}
+                  selected={selected}
+                  onToggle={onToggleCapability}
+                />
+              </Fragment>
+            ))}
         </div>
       </GlassPopoverContent>
     </GlassPopover>
@@ -498,15 +515,35 @@ export function CapabilityChips({
   items,
   onRemove,
   locked = false,
+  image = false,
+  onRemoveImage,
 }: {
   items: ComposerCapability[];
   onRemove: (c: ComposerCapability) => void;
   /** 提交中不能移除 */
   locked?: boolean;
+  /** 图片生成模式已开启：排在最前，可移除 */
+  image?: boolean;
+  onRemoveImage?: () => void;
 }) {
-  if (items.length === 0) return null;
+  if (items.length === 0 && !image) return null;
   return (
     <ul aria-label={t.capabilities.label} className="flex flex-wrap gap-1.5 px-1 pb-1">
+      {image && (
+        <li className="flex h-7 items-center gap-1.5 rounded-[9px] bg-accent/10 pl-2 pr-1 text-xs text-accent ring-1 ring-accent/20">
+          <Icon name="image" size="sm" className="shrink-0" />
+          <span>{t.capabilities.image}</span>
+          <button
+            type="button"
+            aria-label={t.capabilities.removeImage}
+            disabled={locked}
+            onClick={onRemoveImage}
+            className="grid size-5 shrink-0 place-items-center rounded-md outline-none hover:bg-accent/15"
+          >
+            <Icon name="x" size="xs" />
+          </button>
+        </li>
+      )}
       {items.map((c) => (
         <li
           key={capabilityKey(c)}

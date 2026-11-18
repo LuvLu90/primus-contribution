@@ -12,6 +12,7 @@ mod commands;
 mod core_config;
 mod fs_watch;
 mod git;
+mod images;
 mod job;
 mod mcp_config;
 mod model_catalog;
@@ -294,6 +295,7 @@ pub fn run() {
             commands::mcp_logout,
             commands::dialog_pick_folder,
             commands::dialog_pick_files,
+            commands::image_save,
             commands::session_default_workspace,
             commands::session_list,
             commands::session_search,

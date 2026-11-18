@@ -217,6 +217,34 @@ pub(crate) fn dialog_pick_files(window: tauri::WebviewWindow) -> Result<Vec<Stri
         .collect()
 }
 
+/// 把对话内生成的图片另存到用户选的位置（附录 B `image_save`，ADR 0018）：只接受数据目录
+/// `users/<SID>/images` 内的图片，弹系统“另存为”对话框后复制。取消时返回 None，成功返回保存的路径。
+#[tauri::command(async)]
+pub(crate) fn image_save(
+    window: tauri::WebviewWindow,
+    paths: State<'_, DataPaths>,
+    path: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let src = crate::images::check_generated(&paths.images_dir(), &path)?;
+    let ext = crate::images::image_ext(&src).unwrap_or_else(|| "png".into());
+    let Some(picked) = window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_file_name(crate::images::default_file_name(&src))
+        .add_filter("图片", &[ext.as_str()])
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let dest = picked
+        .into_path()
+        .map_err(|e| format!("所选位置不是本地路径：{e}"))?;
+    crate::images::copy_to(&src, &dest)?;
+    Ok(Some(dest.to_string_lossy().into_owned()))
+}
+
 /// `session_open` 的返回值。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

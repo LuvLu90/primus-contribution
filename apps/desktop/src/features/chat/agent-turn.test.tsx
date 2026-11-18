@@ -118,3 +118,56 @@ describe("工具行的文件类型图标", () => {
     expect(icons).toEqual(["react-ts", "markdown"]);
   });
 });
+
+describe("生成图片（ADR 0018）", () => {
+  it("generate_image 在工作过程里有一行，生成中另显示图片占位卡片", () => {
+    renderTurn(
+      [
+        assistant([
+          {
+            type: "toolCall",
+            id: "g1",
+            name: "generate_image",
+            arguments: { prompt: "一只橘猫", size: "1024x1536" },
+          },
+        ]),
+      ],
+      true,
+      false,
+    );
+    // 工作过程里的一行与生成框左下角的文字
+    expect(screen.getAllByText(t.tools.image.running)).toHaveLength(2);
+    expect(screen.getByText("一只橘猫")).toBeTruthy();
+    expect(screen.getByRole("region", { name: strings.chat.imagegen.card })).toBeTruthy();
+  });
+
+  it("失败的结果显示原因", () => {
+    renderTurn(
+      [
+        assistant([
+          { type: "toolCall", id: "g1", name: "generate_image", arguments: { prompt: "猫" } },
+        ]),
+        {
+          role: "toolResult",
+          toolCallId: "g1",
+          toolName: "generate_image",
+          content: [{ type: "text", text: "[failed]" }],
+          details: {
+            status: "failed",
+            prompt: "猫",
+            intent: "default",
+            size: "1024x1024",
+            images: [],
+            error: "无法连接图片服务",
+          },
+          isError: true,
+          timestamp: 3,
+        } as unknown as AgentMessage,
+        assistant([{ type: "text", text: "抱歉，图片服务暂时连不上。" }]),
+      ],
+      false,
+      false,
+    );
+    expect(screen.getByText(`${strings.chat.imagegen.failed}：无法连接图片服务`)).toBeTruthy();
+  });
+});

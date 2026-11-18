@@ -951,3 +951,61 @@ describe("primus-guard 技能目录与用户级 mcp.json（ADR 0016）", () => {
     }
   });
 });
+
+describe("primus-guard 图片生成（generate_image，ADR 0018）", () => {
+  const env = { PRIMUS_CODING_AGENT_DIR: "/opt/Primus/data/users/S-1/core" };
+  const ge = { platform: "linux" as const, home: "/home/u", env, real: (p: string) => p };
+  const gen = (input: Record<string, unknown>) => ({ toolName: "generate_image", input });
+  const annotations = { readOnlyHint: false, openWorldHint: true };
+
+  it("不带参考图：任何模式都直接放行（联网但只写 App 的图片目录）", () => {
+    for (const mode of MODES)
+      expect(decide(mode, gen({ prompt: "一只猫" }), cwd, annotations, ge)).toBe("allow");
+  });
+
+  it("参考图按读取规则：工作区内放行，工作区外、机密路径、App 数据目录询问", () => {
+    expect(decide("ask", gen({ prompt: "x", images: ["src/a.png"] }), cwd, annotations, ge)).toBe(
+      "allow",
+    );
+    expect(decide("ask", gen({ prompt: "x", images: ["/tmp/a.png"] }), cwd, annotations, ge)).toBe(
+      "ask",
+    );
+    expect(decide("edit", gen({ prompt: "x", images: [".env/a.png"] }), cwd, annotations, ge)).toBe(
+      "ask",
+    );
+    expect(
+      decide(
+        "ask",
+        gen({ prompt: "x", images: ["/opt/Primus/data/users/S-1/vault/a.png"] }),
+        cwd,
+        annotations,
+        ge,
+      ),
+    ).toBe("ask");
+    // 参数格式不对：询问
+    expect(decide("ask", gen({ prompt: "x", images: "a.png" }), cwd, annotations, ge)).toBe("ask");
+    expect(decide("ask", gen({ prompt: "x", images: [1] }), cwd, annotations, ge)).toBe("ask");
+    // 完全访问：一律放行
+    expect(decide("full", gen({ prompt: "x", images: ["/tmp/a.png"] }), cwd, annotations, ge)).toBe(
+      "allow",
+    );
+  });
+
+  it("之前生成的图片（users/<SID>/images 内）可直接作为参考图", () => {
+    const img = "/opt/Primus/data/users/S-1/images/s1/call-1.png";
+    expect(decide("ask", gen({ prompt: "x", images: [img] }), cwd, annotations, ge)).toBe("allow");
+    // 其他用户的图片目录不算
+    const other = "/opt/Primus/data/users/S-2/images/s1/call-1.png";
+    expect(decide("ask", gen({ prompt: "x", images: [other] }), cwd, annotations, ge)).toBe("ask");
+    // 图片目录里的链接指向目录外：按真实路径判断
+    const link = (p: string) => (p === img ? "/opt/Primus/data/users/S-1/vault/secrets.bin" : p);
+    expect(
+      decide("ask", gen({ prompt: "x", images: [img] }), cwd, annotations, { ...ge, real: link }),
+    ).toBe("ask");
+  });
+
+  it("计划模式交给常规规则，询问时说明要上传的参考图", () => {
+    expect(decidePlan(gen({ prompt: "x" }), annotations, cwd, ge)).toBeUndefined();
+    expect(describeCall(gen({ prompt: "x", images: ["/tmp/a.png"] }), cwd)).toContain("/tmp/a.png");
+  });
+});

@@ -9,6 +9,7 @@ import {
   capabilityKey,
   loadCapabilities,
   mergeCapabilities,
+  stripCapabilities,
   useComposerCapabilities,
   withCapabilities,
 } from "./composer-capabilities";
@@ -50,6 +51,12 @@ describe("“+”菜单的技能与 MCP", () => {
         `${strings.chat.capabilities.useMcp.replace("{names}", "/github")}\n\n修一下测试`,
     );
     expect(withCapabilities("", [cap("skill", "review")])).not.toMatch(/\n$/);
+  });
+
+  it("图片生成模式：出图说明排在最前，索引里不显示", () => {
+    const text = withCapabilities("一只橘猫", [cap("skill", "review")], { image: true });
+    expect(text.split("\n")[0]).toBe(strings.chat.capabilities.useImage);
+    expect(stripCapabilities(text).body).toBe("一只橘猫");
   });
 });
 

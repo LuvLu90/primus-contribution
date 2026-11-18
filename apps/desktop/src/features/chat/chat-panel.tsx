@@ -347,6 +347,8 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
       list.some((c) => c.scope === "project") ? list.filter((c) => c.scope !== "project") : list,
     );
   }, [capsWorkspace?.path, capsWorkspace?.trusted]);
+  // 图片生成模式（“+”菜单开启，输入框上方显示可移除标签）：只作用于下一条消息
+  const [imageOn, setImageOn] = useState(false);
   const pickedKeys = useMemo(() => new Set(pickedCaps.map(capabilityKey)), [pickedCaps]);
   // 提交中锁定：这次发送的正文已按提交时的选择拼好，成功后会清空选择，期间的改动会丢失
   const toggleCap = useCallback((c: ComposerCapability) => {
@@ -564,27 +566,30 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
 
   // 欢迎页离场：开始对话后先淡出上移，动画结束再卸载
   const conversationStarted = started || pendingUser !== null;
-  const [welcomeGone, setWelcomeGone] = useState(conversationStarted);
+  // 打开的历史会话不显示欢迎页（动态标志只属于新对话）：否则历史加载完成前会闪出标志并播放离场动画
+  const isHistory = Boolean(tab?.sessionPath);
+  const [welcomeGone, setWelcomeGone] = useState(conversationStarted || isHistory);
   // 欢迎页离场动画播放中：先不显示对话内容，动画结束、欢迎页卸载后消息再淡入，衔接处不会叠影或闪烁
   const welcomeLeaving = conversationStarted && !welcomeGone;
   useEffect(() => {
     if (!conversationStarted) {
-      setWelcomeGone(false);
+      setWelcomeGone(isHistory);
       return;
     }
-    if (reducedMotion) {
+    if (reducedMotion || isHistory) {
       setWelcomeGone(true);
       return;
     }
     const id = setTimeout(() => setWelcomeGone(true), WELCOME_EXIT_MS);
     return () => clearTimeout(id);
-  }, [conversationStarted, reducedMotion]);
+  }, [conversationStarted, reducedMotion, isHistory]);
 
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
     const text = draft.trim();
     if (
       (!text && !attachments.hasContent && pickedCaps.length === 0) ||
+      (imageOn && !text) ||
       attachments.pending ||
       voice.recording ||
       state.running ||
@@ -598,7 +603,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     stickToBottom.current = true;
     // 能看图的模型：读取好的图片随 prompt 发送；其余文件（及不看图时的图片）按路径引用
     const { images, paths } = attachments.build();
-    const message = withAttachments(withCapabilities(text, pickedCaps), paths);
+    const message = withAttachments(withCapabilities(text, pickedCaps, { image: imageOn }), paths);
     setPendingUser({ text: message, index: state.messages.length, images });
     // 发送成功后才清空输入，失败时保留草稿、附件和所选技能以便重试
     void send(message, images)
@@ -610,6 +615,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
         setDraft("");
         attachments.clear();
         setPickedCaps([]);
+        setImageOn(false);
         setExpanded(false);
       })
       .finally(() => {
@@ -970,7 +976,13 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     </p>
                   )
                 )}
-                <CapabilityChips items={pickedCaps} onRemove={toggleCap} locked={submitting} />
+                <CapabilityChips
+                  items={pickedCaps}
+                  onRemove={toggleCap}
+                  locked={submitting}
+                  image={imageOn}
+                  onRemoveImage={() => setImageOn(false)}
+                />
                 <AttachmentStrip
                   items={attachments.items}
                   onRemove={attachments.remove}
@@ -980,7 +992,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   <textarea
                     ref={inputRef}
                     aria-label={t.inputLabel}
-                    placeholder={t.inputPlaceholder}
+                    placeholder={imageOn ? t.imagePlaceholder : t.inputPlaceholder}
                     value={shownDraft}
                     readOnly={submitting || voice.recording}
                     aria-busy={submitting}
@@ -1055,6 +1067,8 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     onPickFiles={() => void pickFiles()}
                     planOn={planOn}
                     onPlanChange={(on) => void setPlanMode(on)}
+                    imageOn={imageOn}
+                    onImageChange={setImageOn}
                     capabilities={capabilities.items}
                     selected={pickedKeys}
                     onToggleCapability={toggleCap}
@@ -1172,7 +1186,8 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                           modelConfig.unavailable ||
                           attachments.pending ||
                           voice.recording ||
-                          (!draft.trim() && !attachments.hasContent && pickedCaps.length === 0)
+                          (!draft.trim() && !attachments.hasContent && pickedCaps.length === 0) ||
+                          (imageOn && !draft.trim())
                         }
                         className="grid aspect-square size-8 shrink-0 place-items-center rounded-full bg-fg text-surface transition-[opacity,transform] active:scale-95 disabled:opacity-20 disabled:active:scale-100"
                       >

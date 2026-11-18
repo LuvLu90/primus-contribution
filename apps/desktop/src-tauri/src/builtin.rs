@@ -8,6 +8,7 @@
 //! - 内置地址只写在 [`SEED_BASE_URL`] 一处：更换时只改它。自动更新后，名称与协议仍是种子配置的 ioply
 //!   只要地址与它不同，启动时就迁移到当前地址（清空模型清单后重新获取），旧地址不需要保留；
 //!   保险库里的旧内置密钥同步为当前常量；用户自己换过的密钥不覆盖。
+//! - 内置图片生成服务（ADR 0018）的地址与密钥也只在本文件各一处：[`IMAGE_BASE_URL`]、[`BUILTIN_IMAGE_API_KEY`]。
 
 use crate::providers::{Api, Provider};
 
@@ -31,12 +32,15 @@ const KEY_MASK: &[u8] = b"primus-builtin";
 
 /// 还原内置渠道密钥。
 pub(crate) fn api_key() -> String {
-    let bytes: Vec<u8> = (0..BUILTIN_API_KEY.len())
+    decode(BUILTIN_API_KEY)
+}
+
+/// 按 [`KEY_MASK`] 循环异或还原十六进制编码的内置密钥。
+fn decode(hex: &str) -> String {
+    let bytes: Vec<u8> = (0..hex.len())
         .step_by(2)
         .zip(KEY_MASK.iter().cycle())
-        .map(|(i, m)| {
-            u8::from_str_radix(&BUILTIN_API_KEY[i..i + 2], 16).expect("内置密钥不是十六进制") ^ m
-        })
+        .map(|(i, m)| u8::from_str_radix(&hex[i..i + 2], 16).expect("内置密钥不是十六进制") ^ m)
         .collect();
     String::from_utf8(bytes).expect("内置密钥不是 UTF-8")
 }
@@ -58,6 +62,19 @@ pub(crate) fn is_legacy_api_key(key: &str) -> bool {
         return true;
     }
     LEGACY_API_KEY_SHA256.contains(&crate::updater::sha256_hex(key.as_bytes()).as_str())
+}
+
+/// 内置图片生成服务（ADR 0018，OpenAI Images 兼容）：地址明文，更换时只改这一处；
+/// 经环境变量 `PRIMUS_IMAGE_BASE_URL` 传给 Core 的 primus-imagegen 扩展。
+pub(crate) const IMAGE_BASE_URL: &str = "https://image.a-j.app/v1";
+
+/// 内置图片生成服务密钥（与 [`BUILTIN_API_KEY`] 同样按 [`KEY_MASK`] 循环异或后转十六进制），运行时由 [`image_api_key`] 还原。
+/// 只经 `Primus.exe --secret builtin:image` 交给 Core 作业内的调用方，不写入任何文件。更换时只改这一行（生成命令同上）。
+pub(crate) const BUILTIN_IMAGE_API_KEY: &str = "0319441806165f4f130b0916515f4217590f4445195746080e420d594340515d13121b00445c5841472c2f3a2a00381d400b195e2d2b255e47163c152a2269183f003c1b3818211b135c072640282d045935190d";
+
+/// 还原内置图片生成服务密钥。
+pub(crate) fn image_api_key() -> String {
+    decode(BUILTIN_IMAGE_API_KEY)
 }
 
 /// 旧版内置模型配置在保险库中的令牌 ID：启动时删除（迁移）。
@@ -99,5 +116,14 @@ mod tests {
             !BUILTIN_API_KEY.contains(key.as_str()),
             "源码中不出现明文密钥"
         );
+    }
+
+    #[test]
+    fn image_api_key_is_decoded() {
+        let key = image_api_key();
+        assert!(key.starts_with("sk-"));
+        assert!(!BUILTIN_IMAGE_API_KEY.contains(key.as_str()));
+        assert_ne!(key, api_key());
+        assert!(IMAGE_BASE_URL.starts_with("https://") && !IMAGE_BASE_URL.ends_with('/'));
     }
 }

@@ -87,6 +87,8 @@ export const ICONS = {
   // 工作过程（工具调用）
   terminal: { source: "Programming" },
   tool: { source: "Sledgehammer" },
+  // 对话内生成图片（ADR 0018）：工作过程里的工具行与图片卡片
+  image: { source: "ImageSparkle" },
   // 思考：主星 + 两颗小星（三个 path，顺序：右上小星、主星、右下小星），进行中由 CSS 分别做动画
   thinking: { source: "Sparkles" },
   "pen-edit": { source: "Pen2" },
