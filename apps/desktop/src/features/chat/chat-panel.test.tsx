@@ -1176,7 +1176,8 @@ describe("对话区（mock 事件流）", () => {
   });
 
   it("运行中可以停止：1 秒内恢复发送，半截回复标为已停止，之后可以继续对话", async () => {
-    setPlatformForTesting(createMockPlatform({ intervalMs: 20, batchSize: 2 }));
+    // 欢迎页离场约 620ms 后回复才显示：流放慢一些，停止时回复一定还没说完
+    setPlatformForTesting(createMockPlatform({ intervalMs: 60, batchSize: 2 }));
     render(<ChatPanel />);
     const input = screen.getByRole("textbox", { name: t.inputLabel });
     fireEvent.change(input, { target: { value: "长任务" } });
@@ -1197,7 +1198,7 @@ describe("对话区（mock 事件流）", () => {
     );
     expect(performance.now() - started).toBeLessThan(1000);
     expect(screen.getByText(t.stopped)).toBeTruthy();
-    expect(screen.queryByText(/mock 平台/)).toBeNull();
+    expect(screen.queryByText(/你刚才说：「长任务」/)).toBeNull();
 
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(screen.getByText(/你刚才说：「继续」/)).toBeTruthy(), {
