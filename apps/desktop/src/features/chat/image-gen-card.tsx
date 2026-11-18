@@ -548,6 +548,110 @@ function ImageFrame({
   );
 }
 
+/** 多图时的轮播：一次只显示一张，左右箭头 + 底部圆点切换，水平滑动过渡（参考 Codex 的多图展示） */
+function ImageCarousel({
+  images,
+  count,
+  size,
+  alt,
+  label,
+  seconds,
+  animateIn,
+}: {
+  images: (ImageGenImage | undefined)[];
+  count: number;
+  size?: string;
+  alt: string;
+  label: string;
+  seconds: number;
+  animateIn: boolean;
+}) {
+  const [index, setIndex] = useState(0);
+  const active = Math.min(index, count - 1);
+  // 各张尺寸一致（同一次请求），用第一张已知尺寸或请求尺寸定框
+  const firstDims = images.find((im) => im?.width && im?.height);
+  const natural =
+    firstDims?.width && firstDims?.height
+      ? { w: firstDims.width, h: firstDims.height }
+      : parseSize(size);
+  const box = frameBox(natural?.w, natural?.h);
+  const go = (delta: number) => setIndex((i) => Math.max(0, Math.min(count - 1, i + delta)));
+
+  return (
+    <div className="flex flex-col items-center gap-2" style={{ width: box.w }}>
+      <div className="group/carousel relative overflow-hidden" style={{ width: box.w }}>
+        <div
+          className="flex transition-transform duration-300 ease-out motion-reduce:transition-none"
+          style={{ transform: `translateX(-${active * box.w}px)` }}
+        >
+          {images.map((image, i) => (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: 轮播项按位置对应第 i 张图
+              key={i}
+              className="shrink-0"
+              style={{ width: box.w }}
+              inert={i !== active}
+            >
+              <ImageFrame
+                image={image}
+                size={size}
+                alt={alt}
+                label={label}
+                seconds={seconds}
+                animateIn={animateIn}
+              />
+            </div>
+          ))}
+        </div>
+        {/* 张数角标 */}
+        <span className="pointer-events-none absolute right-2 top-2 rounded-full bg-scrim px-2 py-0.5 text-2xs font-medium text-on-scrim tabular-nums">
+          {active + 1}/{count}
+        </span>
+        {/* 左右箭头：悬停时出现，到头时隐藏 */}
+        {active > 0 && (
+          <button
+            type="button"
+            aria-label={t.prev}
+            onClick={() => go(-1)}
+            style={{ top: box.h / 2 }}
+            className="absolute left-2 grid size-7 -translate-y-1/2 place-items-center rounded-full bg-scrim text-on-scrim opacity-0 outline-none transition-opacity duration-150 hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-on-scrim group-hover/carousel:opacity-100"
+          >
+            <Icon name="chevron-left" size="sm" />
+          </button>
+        )}
+        {active < count - 1 && (
+          <button
+            type="button"
+            aria-label={t.next}
+            onClick={() => go(1)}
+            style={{ top: box.h / 2 }}
+            className="absolute right-2 grid size-7 -translate-y-1/2 place-items-center rounded-full bg-scrim text-on-scrim opacity-0 outline-none transition-opacity duration-150 hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-on-scrim group-hover/carousel:opacity-100"
+          >
+            <Icon name="chevron-right" size="sm" />
+          </button>
+        )}
+      </div>
+      {/* 底部圆点 */}
+      <div className="flex items-center justify-center gap-1.5">
+        {Array.from({ length: count }, (_, i) => (
+          <button
+            // biome-ignore lint/suspicious/noArrayIndexKey: 圆点按位置对应第 i 张图
+            key={i}
+            type="button"
+            aria-label={t.goTo.replace("{n}", String(i + 1))}
+            aria-current={i === active || undefined}
+            onClick={() => setIndex(i)}
+            className={cn(
+              "size-1.5 rounded-full outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-accent/40",
+              i === active ? "bg-fg" : "bg-track-strong hover:bg-muted",
+            )}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function ImageGenCard({
   args,
   details,
@@ -581,20 +685,28 @@ export function ImageGenCard({
         <p className="flex h-5 items-baseline text-sm text-fg">
           {!generating && <span className="step-in">{t.generated}</span>}
         </p>
-        <div className="flex flex-wrap gap-2">
-          {Array.from({ length: count }, (_, i) => (
+        {count > 1 ? (
+          <ImageCarousel
+            images={Array.from({ length: count }, (_, i) => doneImages[i])}
+            count={count}
+            size={size}
+            alt={alt}
+            label={editing ? t.editing : t.generating}
+            seconds={seconds}
+            animateIn={animateIn}
+          />
+        ) : (
+          <div className="flex flex-wrap gap-2">
             <ImageFrame
-              // biome-ignore lint/suspicious/noArrayIndexKey: 生成框按位置对应结果里的第 i 张图
-              key={i}
-              image={doneImages[i]}
+              image={doneImages[0]}
               size={size}
               alt={alt}
               label={editing ? t.editing : t.generating}
               seconds={seconds}
               animateIn={animateIn}
             />
-          ))}
-        </div>
+          </div>
+        )}
       </section>
     );
   }

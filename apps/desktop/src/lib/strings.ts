@@ -397,6 +397,10 @@ export const strings = {
       cancelled: "已停止生成图片",
       missing: "图片已不存在",
       loading: "正在载入图片",
+      prev: "上一张",
+      next: "下一张",
+      goTo: "第 {n} 张",
+      counter: "第 {n} 张，共 {total} 张",
     },
     lip: {
       branch: "Git 分支",

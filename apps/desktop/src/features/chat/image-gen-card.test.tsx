@@ -59,6 +59,26 @@ describe("图片生成卡片", () => {
     expect(screen.queryByText("已生成图片")).toBeNull();
   });
 
+  it("多图结果以轮播显示：圆点和箭头切换当前图", async () => {
+    const two: ImageGenDetails = {
+      ...DONE,
+      images: [
+        { path: "C:\\data\\a.png", width: 1024, height: 1024 },
+        { path: "C:\\data\\b.png", width: 1024, height: 1024 },
+      ],
+    };
+    render(<ImageGenCard args={{ prompt: "猫", n: 2 }} details={two} running={false} />);
+    expect(await screen.findByText("1/2")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "第 1 张" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "第 2 张" })).toBeTruthy();
+    // 第一张时没有“上一张”，有“下一张”
+    expect(screen.queryByRole("button", { name: "上一张" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "下一张" }));
+    expect(screen.getByText("2/2")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "上一张" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "下一张" })).toBeNull();
+  });
+
   it("倒计时每秒翻页", () => {
     vi.useFakeTimers();
     try {
