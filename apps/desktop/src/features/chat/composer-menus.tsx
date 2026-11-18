@@ -16,6 +16,11 @@ import type { WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import type { PermissionMode } from "@/stores/app-store";
+import {
+  type CapabilityKind,
+  type ComposerCapability,
+  capabilityKey,
+} from "./composer-capabilities";
 import { fileIconForName } from "./file-ref";
 import { TrustDialog } from "./trust-dialog";
 
@@ -280,15 +285,17 @@ function AddRow({
   label,
   hint,
   trailing,
+  iconClassName,
 }: {
   icon: IconName;
   label: string;
   hint?: string;
   trailing?: ReactNode;
+  iconClassName?: string;
 }) {
   return (
     <>
-      <Icon name={icon} size="sm" className="shrink-0 text-muted" />
+      <Icon name={icon} size="sm" className={cn("shrink-0 text-muted", iconClassName)} />
       <span className="min-w-0 flex-1 truncate">
         {label}
         {hint && <span className="ml-2 text-muted">{hint}</span>}
@@ -298,10 +305,95 @@ function AddRow({
   );
 }
 
+/** 技能 / MCP 超过这个数量时先折叠，只显示前 COLLAPSED_COUNT 个 */
+export const COLLAPSE_THRESHOLD = 6;
+export const COLLAPSED_COUNT = 5;
+
+/** “+”菜单里的一个小节：技能或 MCP。每项前加“/”，勾选即挂到输入框上方；数量多时折叠 */
+function CapabilitySection({
+  kind,
+  items,
+  selected,
+  onToggle,
+}: {
+  kind: CapabilityKind;
+  /** null：还在读取 */
+  items: ComposerCapability[] | null;
+  selected: ReadonlySet<string>;
+  onToggle: (c: ComposerCapability) => void;
+}) {
+  const labelId = useId();
+  const [expanded, setExpanded] = useState(false);
+  const list = items?.filter((c) => c.kind === kind) ?? null;
+  const collapsible = list !== null && list.length > COLLAPSE_THRESHOLD;
+  const shown = list && collapsible && !expanded ? list.slice(0, COLLAPSED_COUNT) : list;
+  const title = kind === "skill" ? t.add.skills : t.add.mcp;
+  return (
+    <Menu.Group aria-labelledby={labelId}>
+      <Menu.Label
+        id={labelId}
+        className="truncate px-4 pt-1.5 pb-1 text-2xs font-medium text-muted"
+      >
+        {title}
+      </Menu.Label>
+      {list === null ? (
+        <p className="px-4 py-1.5 text-xs text-muted">{t.add.loading}</p>
+      ) : list.length === 0 ? (
+        <p className="px-4 py-1.5 text-xs text-muted">
+          {kind === "skill" ? t.add.noSkills : t.add.noMcp}
+        </p>
+      ) : (
+        shown?.map((c) => (
+          <Menu.CheckboxItem
+            key={capabilityKey(c)}
+            className={rowClass}
+            textValue={`/${c.name}`}
+            checked={selected.has(capabilityKey(c))}
+            onCheckedChange={() => onToggle(c)}
+            // 可连续勾选多项：选中后菜单不关闭
+            onSelect={(e) => e.preventDefault()}
+            title={c.description ?? undefined}
+          >
+            <AddRow
+              icon={kind === "skill" ? "bulb" : "server"}
+              label={`/${c.name}`}
+              hint={c.scope === "project" ? t.add.scopeProject : t.add.scopeGlobal}
+              trailing={
+                <span aria-hidden className="flex w-3.5 shrink-0 justify-center">
+                  <Menu.ItemIndicator>
+                    <Icon name="check" size="sm" />
+                  </Menu.ItemIndicator>
+                </span>
+              }
+            />
+          </Menu.CheckboxItem>
+        ))
+      )}
+      {collapsible && (
+        <Menu.Item
+          className={cn(rowClass, "text-muted")}
+          textValue={expanded ? t.add.showLess : t.add.showAll}
+          onSelect={(e) => {
+            e.preventDefault();
+            setExpanded((v) => !v);
+          }}
+        >
+          <AddRow
+            icon="chevron-down"
+            iconClassName={expanded ? "rotate-180" : undefined}
+            label={expanded ? t.add.showLess : t.add.showAll.replace("{n}", String(list.length))}
+          />
+        </Menu.Item>
+      )}
+    </Menu.Group>
+  );
+}
+
 /**
  * 输入框左下角的“+”菜单：与模型选择同款的玻璃弹层，向上展开。
  * “添加”小节：文件（系统对话框，只引用本地路径；薄壳不支持时不显示）、计划模式（勾选项，Shift+Tab 同样切换）。
- * 以后的功能（目标、绘图、插件等）按小节加在这里
+ * 其下列出全局与当前项目的全部技能、MCP 服务器（每项前加“/”，多了折叠），勾选后以标签挂在输入框上方。
+ * 打开时调用 `onOpen` 重新读取技能与 MCP
  */
 export function AddMenu({
   canPickFiles,
@@ -309,6 +401,10 @@ export function AddMenu({
   onPickFiles,
   planOn,
   onPlanChange,
+  capabilities,
+  selected,
+  onToggleCapability,
+  onOpen,
   children,
 }: {
   canPickFiles: boolean;
@@ -317,11 +413,17 @@ export function AddMenu({
   onPickFiles: () => void;
   planOn: boolean;
   onPlanChange: (on: boolean) => void;
+  /** 可选的技能与 MCP；null 表示还在读取 */
+  capabilities: ComposerCapability[] | null;
+  /** 已选项的 capabilityKey */
+  selected: ReadonlySet<string>;
+  onToggleCapability: (c: ComposerCapability) => void;
+  onOpen?: () => void;
   children: ReactNode;
 }) {
   const labelId = useId();
   return (
-    <GlassPopover>
+    <GlassPopover onOpenChange={(open) => open && onOpen?.()}>
       <GlassPopoverTrigger asChild>{children}</GlassPopoverTrigger>
       <GlassPopoverContent
         side="top"
@@ -330,48 +432,100 @@ export function AddMenu({
         minWidth={280}
         className="max-w-[360px]"
       >
-        <Menu.Group aria-labelledby={labelId}>
-          <Menu.Label
-            id={labelId}
-            className="truncate px-4 pt-0.5 pb-1 text-2xs font-medium text-muted"
-          >
-            {t.add.title}
-          </Menu.Label>
-          {canPickFiles && (
-            <Menu.Item
-              className={rowClass}
-              textValue={t.add.files}
-              disabled={filesDisabled}
-              onSelect={onPickFiles}
+        <div className="scroll-none max-h-[min(60vh,480px)] overflow-y-auto">
+          <Menu.Group aria-labelledby={labelId}>
+            <Menu.Label
+              id={labelId}
+              className="truncate px-4 pt-0.5 pb-1 text-2xs font-medium text-muted"
             >
-              <AddRow icon="attach" label={t.add.files} />
-            </Menu.Item>
-          )}
-          <Menu.CheckboxItem
-            className={rowClass}
-            textValue={t.plan.toggle}
-            checked={planOn}
-            onCheckedChange={(v) => onPlanChange(v === true)}
-          >
-            <AddRow
-              icon="bulb"
-              label={t.plan.toggle}
-              hint={planOn ? t.add.planOnHint : t.add.planHint}
-              trailing={
-                <span className="flex shrink-0 items-center gap-2">
-                  <kbd className="font-sans text-2xs text-muted">Shift+Tab</kbd>
-                  <span aria-hidden className="flex w-3.5 justify-center">
-                    <Menu.ItemIndicator>
-                      <Icon name="check" size="sm" />
-                    </Menu.ItemIndicator>
+              {t.add.title}
+            </Menu.Label>
+            {canPickFiles && (
+              <Menu.Item
+                className={rowClass}
+                textValue={t.add.files}
+                disabled={filesDisabled}
+                onSelect={onPickFiles}
+              >
+                <AddRow icon="attach" label={t.add.files} />
+              </Menu.Item>
+            )}
+            <Menu.CheckboxItem
+              className={rowClass}
+              textValue={t.plan.toggle}
+              checked={planOn}
+              onCheckedChange={(v) => onPlanChange(v === true)}
+            >
+              <AddRow
+                icon="bulb"
+                label={t.plan.toggle}
+                hint={planOn ? t.add.planOnHint : t.add.planHint}
+                trailing={
+                  <span className="flex shrink-0 items-center gap-2">
+                    <kbd className="font-sans text-2xs text-muted">Shift+Tab</kbd>
+                    <span aria-hidden className="flex w-3.5 justify-center">
+                      <Menu.ItemIndicator>
+                        <Icon name="check" size="sm" />
+                      </Menu.ItemIndicator>
+                    </span>
                   </span>
-                </span>
-              }
-            />
-          </Menu.CheckboxItem>
-        </Menu.Group>
+                }
+              />
+            </Menu.CheckboxItem>
+          </Menu.Group>
+          <Menu.Separator className={separatorClass} />
+          <CapabilitySection
+            kind="skill"
+            items={capabilities}
+            selected={selected}
+            onToggle={onToggleCapability}
+          />
+          <Menu.Separator className={separatorClass} />
+          <CapabilitySection
+            kind="mcp"
+            items={capabilities}
+            selected={selected}
+            onToggle={onToggleCapability}
+          />
+        </div>
       </GlassPopoverContent>
     </GlassPopover>
+  );
+}
+
+/** 输入框上方的已选技能 / MCP 标签：“/名称”，可移除 */
+export function CapabilityChips({
+  items,
+  onRemove,
+  locked = false,
+}: {
+  items: ComposerCapability[];
+  onRemove: (c: ComposerCapability) => void;
+  /** 提交中不能移除 */
+  locked?: boolean;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <ul aria-label={t.capabilities.label} className="flex flex-wrap gap-1.5 px-1 pb-1">
+      {items.map((c) => (
+        <li
+          key={capabilityKey(c)}
+          className="flex h-7 max-w-56 items-center gap-1.5 rounded-[9px] bg-accent/10 pl-2 pr-1 text-xs text-accent ring-1 ring-accent/20"
+        >
+          <Icon name={c.kind === "skill" ? "bulb" : "server"} size="sm" className="shrink-0" />
+          <span className="min-w-0 truncate">/{c.name}</span>
+          <button
+            type="button"
+            aria-label={t.capabilities.remove.replace("{name}", `/${c.name}`)}
+            disabled={locked}
+            onClick={() => onRemove(c)}
+            className="grid size-5 shrink-0 place-items-center rounded-md outline-none hover:bg-accent/15"
+          >
+            <Icon name="x" size="xs" />
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 

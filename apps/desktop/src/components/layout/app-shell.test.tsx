@@ -164,9 +164,11 @@ describe("主界面外壳", () => {
     expect(useRouter().push).toHaveBeenCalledWith("/settings/?group=capabilities");
   });
 
-  it("空会话显示欢迎页，点建议填入输入框", () => {
+  it("空会话显示欢迎页（建议从建议池随机取 3 条），点建议填入输入框", () => {
     render(<AppShell />);
-    const suggestion = strings.chat.suggestions[0];
+    const shown = strings.chat.suggestions.filter((s) => screen.queryByRole("button", { name: s }));
+    expect(shown).toHaveLength(3);
+    const suggestion = shown[0] as string;
     fireEvent.click(screen.getByRole("button", { name: suggestion }));
     const input = screen.getByRole("textbox", { name: strings.chat.inputLabel });
     expect((input as HTMLTextAreaElement).value).toBe(suggestion);

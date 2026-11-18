@@ -3,12 +3,15 @@
 // 一个附件图块（56px）：图片显示缩略图，其他文件显示类型图标与文件名。
 // 排队/读取中外圈有进度环、右上角是加载点（排队时为静止的点）；落地后加载点模糊消失、删除键在同一位置去模糊出现。
 // 读取失败：环变红并抖动一次，保留删除键，悬停看原因。移除：先缩小淡出，再收起宽度让邻居滑过来。
-import { type CSSProperties, useEffect } from "react";
+// 点击图块预览：有路径的在右栏打开；粘贴、拖入的内存图片没有路径，用大图预览打开。
+import { type CSSProperties, useEffect, useState } from "react";
 import { FileIcon, Icon } from "@/components/icons";
 import { Tooltip } from "@/components/ui/tooltip";
+import { showPreview } from "@/features/files/preview-store";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { fileIconForName } from "../file-ref";
+import { ImageLightbox } from "./image-lightbox";
 import { ProgressRing } from "./progress-ring";
 import type { AttachmentView } from "./use-attachments";
 
@@ -44,6 +47,23 @@ export function AttachmentTile({
 
   const isImage = item.kind === "image";
   const status = statusLabel(item);
+  // 内存图片的大图：优先读好的整图，其次原始数据，最后缩略图
+  const [lightbox, setLightbox] = useState<string | null>(null);
+  useEffect(() => {
+    if (!lightbox?.startsWith("blob:")) return;
+    return () => URL.revokeObjectURL(lightbox);
+  }, [lightbox]);
+  const canOpen =
+    !removing && (!!item.path || (isImage && !!(item.image || item.blob || item.thumb)));
+  const open = () => {
+    if (item.path) {
+      showPreview(item.path);
+      return;
+    }
+    if (item.image) setLightbox(`data:${item.image.mimeType};base64,${item.image.data}`);
+    else if (item.blob) setLightbox(URL.createObjectURL(item.blob));
+    else if (item.thumb) setLightbox(item.thumb);
+  };
   const title = [item.path ?? item.name, status].filter(Boolean).join("\n");
   return (
     <li
@@ -73,6 +93,14 @@ export function AttachmentTile({
               )}
               {item.byPath && <span className="att-warn">{t.attachments.byPath}</span>}
             </div>
+            {canOpen && (
+              <button
+                type="button"
+                aria-label={t.attachments.open.replace("{name}", item.name)}
+                onClick={open}
+                className="absolute inset-0 cursor-pointer rounded-[inherit] outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              />
+            )}
             {isImage && <ProgressRing progress={item.progress ?? 0} />}
             {isImage && (
               <span aria-hidden className="att-badge att-spinner">
@@ -115,6 +143,7 @@ export function AttachmentTile({
           </div>
         </div>
       </Tooltip>
+      <ImageLightbox src={lightbox} alt={item.name} onClose={() => setLightbox(null)} />
     </li>
   );
 }
