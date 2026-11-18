@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DISPLAY_EDGE,
+  frameBox,
   ImageGenCard,
   remainingSeconds,
   rippleAt,
@@ -51,7 +52,7 @@ describe("图片生成卡片", () => {
     expect(screen.getAllByText("剩余 30 秒")).toHaveLength(2);
     expect(container.querySelectorAll(".imggen-unfold")).toHaveLength(2);
     expect(container.querySelectorAll("canvas")).toHaveLength(2);
-    expect(container.querySelectorAll(".h-\\[250px\\].w-\\[200px\\]")).toHaveLength(2);
+    expect(container.querySelectorAll('[role="group"]')).toHaveLength(2);
     expect(screen.getByRole("region", { name: "生成的图片" }).getAttribute("aria-busy")).toBe(
       "true",
     );
@@ -163,6 +164,13 @@ describe("图片生成卡片", () => {
     expect(remainingSeconds("default", true, 10_000)).toBe(50);
     expect(remainingSeconds("fast", false, 99_000)).toBe(0);
     expect(remainingSeconds("weird", false, 0)).toBe(45);
+  });
+
+  it("框按图片比例缩进 200×250 内、不裁切，缺宽高时退回默认框", () => {
+    expect(frameBox(1024, 1024)).toEqual({ w: 200, h: 200 });
+    expect(frameBox(1536, 1024)).toEqual({ w: 200, h: 133 });
+    expect(frameBox(1024, 1536)).toEqual({ w: 167, h: 250 });
+    expect(frameBox()).toEqual({ w: 200, h: 250 });
   });
 
   it("波纹：亮环随时间从中心向外扩散，强度不超过 1", () => {

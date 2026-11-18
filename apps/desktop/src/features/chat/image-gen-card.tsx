@@ -9,7 +9,7 @@
 // 图片在数据目录里（约束 C2），经 attachment_image 在内存里读成 data URL 显示；保存走薄壳的 image_save（系统“另存为”）。
 
 import type { ImageGenDetails, ImageGenImage } from "@primus/protocol";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "@/components/icons";
 import { Tooltip } from "@/components/ui/tooltip";
 import { getPlatform } from "@/lib/platform";
@@ -23,6 +23,23 @@ const t = strings.chat.imagegen;
 export const TILE_EDGE = 640;
 /** 大图、复制时读取的最长边：生成的图片最长 1536，读回来基本是原图 */
 export const DISPLAY_EDGE = 2048;
+
+/** 卡片框的最大宽高：图片按自身比例缩放塞进来、不裁切，也不超过这个尺寸（保持现有大小） */
+export const FRAME_MAX_W = 200;
+export const FRAME_MAX_H = 250;
+
+/** 把 w×h 按比例缩进 FRAME_MAX_W×FRAME_MAX_H 内（不放大超过该框）；宽高缺失时退回默认框 */
+export function frameBox(w?: number, h?: number): { w: number; h: number } {
+  if (!w || !h || w <= 0 || h <= 0) return { w: FRAME_MAX_W, h: FRAME_MAX_H };
+  const scale = Math.min(FRAME_MAX_W / w, FRAME_MAX_H / h);
+  return { w: Math.round(w * scale), h: Math.round(h * scale) };
+}
+
+/** 从请求尺寸字符串（如 1024x1536）解析宽高；auto 或无法解析时为 undefined */
+function parseSize(size: string | undefined): { w: number; h: number } | undefined {
+  const m = /^(\d+)x(\d+)$/.exec(size ?? "");
+  return m ? { w: Number(m[1]), h: Number(m[2]) } : undefined;
+}
 
 /** 框内提示的持续时间 */
 const NOTICE_MS = 2200;
@@ -209,7 +226,7 @@ function FlipDigit({ digit }: { digit: string }) {
       className="relative block w-[11px] overflow-hidden rounded-[3px] bg-track [perspective:70px]"
     >
       <DigitHalf digit={digit} half="top" />
-      <DigitHalf digit={from} half="bottom" />
+      <DigitHalf digit={digit} half="bottom" />
       {key > 0 && (
         <span key={key} className="pointer-events-none absolute inset-0">
           <span className="imggen-flap-fall absolute inset-x-0 top-0">
@@ -294,9 +311,12 @@ function ImageFrame({
   label,
   seconds,
   animateIn,
+  size,
 }: {
   /** 生成好的图片；生成中没有 */
   image: ImageGenImage | undefined;
+  /** 请求的尺寸（1024x1536 等），生成中据此预留与结果一致的框，避免出图时跳动 */
+  size?: string;
   alt: string;
   /** 生成中左下角的文字 */
   label: string;
@@ -315,6 +335,10 @@ function ImageFrame({
   const fullRef = useRef<Promise<string> | null>(null);
   const path = image?.path;
   const canvasRef = useRipple(shown || missing);
+  // 框按图片自身比例缩放（不裁切、不超过默认大小）：有结果用结果宽高，生成中用请求尺寸预留
+  const natural =
+    image?.width && image?.height ? { w: image.width, h: image.height } : parseSize(size);
+  const box = frameBox(natural?.w, natural?.h);
 
   useEffect(() => {
     if (!notice) return;
@@ -405,13 +429,17 @@ function ImageFrame({
   );
 
   return (
-    <div className="group/frame flex w-[200px] flex-col items-start gap-2">
-      <div className={cn("w-[200px] overflow-hidden", animateIn ? "imggen-unfold" : "h-[250px]")}>
+    <div className="group/frame flex flex-col items-start gap-2" style={{ width: box.w }}>
+      <div
+        className={cn("overflow-hidden", animateIn && "imggen-unfold")}
+        style={{ width: box.w, height: box.h, "--imggen-h": `${box.h}px` } as CSSProperties}
+      >
         <div
           role="group"
           aria-live="polite"
           aria-label={shown ? alt : generating ? label : t.loading}
-          className="relative h-[250px] w-[200px] overflow-hidden rounded-2xl border border-track-strong bg-surface shadow-[0_1px_3px_0_rgb(0_0_0/0.08)]"
+          style={{ width: box.w, height: box.h }}
+          className="relative overflow-hidden rounded-2xl border border-track-strong bg-surface shadow-[0_1px_3px_0_rgb(0_0_0/0.08)]"
         >
           <canvas
             ref={canvasRef}
@@ -540,6 +568,7 @@ export function ImageGenCard({
   const generating = running && !details;
   const doneImages = details?.status === "done" ? details.images : [];
   const seconds = useCountdown(generating, args?.intent, editing);
+  const size = details?.size ?? (typeof args?.size === "string" ? args.size : undefined);
 
   if (generating || doneImages.length > 0) {
     const count = generating ? Math.min(4, Math.max(1, Number(args?.n) || 1)) : doneImages.length;
@@ -558,6 +587,7 @@ export function ImageGenCard({
               // biome-ignore lint/suspicious/noArrayIndexKey: 生成框按位置对应结果里的第 i 张图
               key={i}
               image={doneImages[i]}
+              size={size}
               alt={alt}
               label={editing ? t.editing : t.generating}
               seconds={seconds}
