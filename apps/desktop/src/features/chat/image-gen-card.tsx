@@ -1,7 +1,7 @@
 "use client";
 
 // 对话内生成的图片（ADR 0018）。生成框复刻 BoardUI「AI 图像生成」模板（只用现有依赖，自己实现）：
-// - 最大 280×350 的圆角卡片从 0 高度展开进对话（高度 0.55s，淡入去模糊 0.35s）；
+// - 最大 360×450 的圆角卡片从 0 高度展开进对话（高度 0.55s，淡入去模糊 0.35s）；
 // - 框内是画布点阵波纹（一圈圈从中心扩散的亮环，9px 点距，边缘淡出），左下“正在生成图片”流光文字，右下翻页数字倒计时；
 // - 完成后画布淡出，图片以羽化的径向遮罩从中心揭示（--reveal 0% → 132%，1.55s，同时去模糊）；上方出现“已生成图片”；
 // - 框下是操作行（复制、保存、查看大图），操作结果在框内底部以提示条显示。
@@ -19,14 +19,14 @@ import { ImageLightbox } from "./attachments/image-lightbox";
 
 const t = strings.chat.imagegen;
 
-/** 卡片里的缩略图最长边（卡片最大 280×350，按 2 倍屏读取） */
-export const TILE_EDGE = 768;
+/** 卡片里的缩略图最长边（卡片最大 360×450，按 2 倍屏读取） */
+export const TILE_EDGE = 1024;
 /** 大图、复制时读取的最长边：生成的图片最长 1536，读回来基本是原图 */
 export const DISPLAY_EDGE = 2048;
 
-/** 卡片框的最大宽高：图片按自身比例缩放塞进来、不裁切，也不超过这个尺寸（2026-11-18 按用户要求由 200×250 调大） */
-export const FRAME_MAX_W = 280;
-export const FRAME_MAX_H = 350;
+/** 卡片框的最大宽高：图片按自身比例缩放塞进来、不裁切，也不超过这个尺寸（2026-11-18 按用户要求由 200×250 逐步调大） */
+export const FRAME_MAX_W = 360;
+export const FRAME_MAX_H = 450;
 
 /** 把 w×h 按比例缩进 FRAME_MAX_W×FRAME_MAX_H 内（不放大超过该框）；宽高缺失时退回默认框 */
 export function frameBox(w?: number, h?: number): { w: number; h: number } {
