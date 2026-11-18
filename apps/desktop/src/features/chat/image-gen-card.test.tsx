@@ -168,7 +168,7 @@ describe("图片生成卡片", () => {
   it("波纹：亮环随时间从中心向外扩散，强度不超过 1", () => {
     // 0.5 秒时第一圈在半径约 0.19 处，0.9 秒时已扩到约 0.35
     expect(rippleAt(0.5, 0.597, 0.5, 1)).toBeGreaterThan(0.8);
-    expect(rippleAt(0.5, 0.597, 0.9, 1)).toBeLessThan(0.2);
+    expect(rippleAt(0.5, 0.55, 0.9, 1)).toBeLessThan(0.2);
     expect(rippleAt(0.5, 0.675, 0.9, 1)).toBeGreaterThan(0.8);
     for (let i = 0; i < 50; i += 1)
       expect(rippleAt(Math.random(), Math.random(), i / 10, 0.8)).toBeLessThanOrEqual(1);

@@ -54,6 +54,9 @@ export async function copyImage(src: string): Promise<void> {
 
 // ---- 画布波纹 ----
 
+/** 亮环宽度（高斯方差，越大环越宽；模板是 0.0112，加宽到一圈约 3–4 个点，更醒目） */
+const RING_WIDTH = 0.02;
+
 const smoothstep = (a: number, b: number, x: number) => {
   const k = Math.max(0, Math.min(1, (x - a) / (b - a)));
   return k * k * (3 - 2 * k);
@@ -72,9 +75,18 @@ export function rippleAt(x: number, y: number, time: number, aspect: number): nu
     const r = (phase + 1.3 * i) / life;
     if (r > 1) continue;
     const d = dist - r;
-    v += Math.exp(-(d * d) / 0.01119008) * smoothstep(0, 0.1, r) * (1 - smoothstep(0.62, 1, r));
+    v += Math.exp(-(d * d) / RING_WIDTH) * smoothstep(0, 0.1, r) * (1 - smoothstep(0.62, 1, r));
   }
   return Math.min(1, v);
+}
+
+/** 点阵间距（CSS 像素） */
+const DOT_GAP = 10;
+
+/** 减少动态效果时画的静止亮环 */
+function stillRing(x: number, y: number, aspect: number): number {
+  const d = Math.sqrt(((x - 0.5) * aspect) ** 2 + (y - 0.5) ** 2) / 0.5 - 0.45;
+  return Math.exp(-(d * d) / RING_WIDTH);
 }
 
 /** 点阵波纹画布：颜色取主题的前景色与次要色（每 0.5 秒重读一次，跟随深浅色切换） */
@@ -95,19 +107,18 @@ function useRipple(stopped: boolean) {
       dirty = true;
     });
     ro.observe(box);
-    const readColors = () => {
-      const s = getComputedStyle(box);
-      return {
-        active: s.getPropertyValue("--color-fg").trim() || "#1d1d1f",
-        neutral: s.getPropertyValue("--color-muted").trim() || "#6e6e73",
-      };
-    };
-    let colors = readColors();
-    let colorsAt = start;
+    // 底点用次要文字色；亮环用彩虹色，深色外观下提亮。每 0.5 秒重读一次，跟随深浅色切换
+    const readTheme = () => ({
+      neutral: getComputedStyle(box).getPropertyValue("--color-muted").trim() || "#6e6e73",
+      dark: document.documentElement.classList.contains("dark"),
+    });
+    let theme = readTheme();
+    let themeAt = start;
+    let dpr = 1;
     const draw = (now: number) => {
       if (dirty) {
         dirty = false;
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        dpr = Math.min(window.devicePixelRatio || 1, 3);
         const w = Math.max(1, Math.round(rect.width * dpr));
         const h = Math.max(1, Math.round(rect.height * dpr));
         if (canvas.width !== w || canvas.height !== h) {
@@ -116,29 +127,42 @@ function useRipple(stopped: boolean) {
         }
         g.setTransform(dpr, 0, 0, dpr, 0, 0);
       }
-      if (now - colorsAt > 500) {
-        colors = readColors();
-        colorsAt = now;
+      if (now - themeAt > 500) {
+        theme = readTheme();
+        themeAt = now;
       }
       const elapsed = (now - start) / 1000;
-      const gap = 9;
-      const cols = Math.ceil(rect.width / gap) + 1;
-      const rows = Math.ceil(rect.height / gap) + 1;
-      const ox = (rect.width - (cols - 1) * gap) / 2;
-      const oy = (rect.height - (rows - 1) * gap) / 2;
+      const light = theme.dark ? 66 : 52;
+      const cols = Math.ceil(rect.width / DOT_GAP) + 1;
+      const rows = Math.ceil(rect.height / DOT_GAP) + 1;
+      const ox = (rect.width - (cols - 1) * DOT_GAP) / 2;
+      const oy = (rect.height - (rows - 1) * DOT_GAP) / 2;
+      const aspect = rect.width / rect.height;
+      // 点心对齐到物理像素中心：Windows 125% / 150% 缩放下不再被抗锯齿糊成一团
+      const snap = (v: number) => (Math.round(v * dpr - 0.5) + 0.5) / dpr;
       g.clearRect(0, 0, rect.width, rect.height);
       for (let r = 0; r < rows; r += 1) {
-        const y = oy + gap * r;
+        const y = snap(oy + DOT_GAP * r);
         const ny = y / rect.height;
         for (let c = 0; c < cols; c += 1) {
-          const x = ox + gap * c;
+          const x = snap(ox + DOT_GAP * c);
           const nx = x / rect.width;
-          const v = still ? 0.24 : rippleAt(nx, ny, elapsed, rect.width / rect.height);
-          const edge = Math.min(1, 7 * nx, (1 - nx) * 7, 7 * ny, (1 - ny) * 7);
-          g.globalAlpha = Math.max(0, edge) * (0.08 + 0.68 * v * 0.92);
-          g.fillStyle = v > 0.22 ? colors.active : colors.neutral;
-          g.beginPath();
-          g.arc(x, y, 0.72 + 0.48 * v, 0, Math.PI * 2);
+          const v = still ? stillRing(nx, ny, aspect) : rippleAt(nx, ny, elapsed, aspect);
+          const edge = Math.max(0, Math.min(1, 6 * nx, (1 - nx) * 6, 6 * ny, (1 - ny) * 6));
+          if (v > 0.12) {
+            // 色相随角度绕中心分布并缓慢旋转，外圈略偏移，形成流动的彩虹环
+            const angle = Math.atan2(ny - 0.5, (nx - 0.5) * aspect);
+            const hue = ((angle * 180) / Math.PI + elapsed * 60 + 360) % 360;
+            g.globalAlpha = edge * Math.min(1, 0.35 + 0.65 * v);
+            g.fillStyle = `hsl(${hue.toFixed(0)} 90% ${light}%)`;
+            g.beginPath();
+            g.arc(x, y, 1.1 + 1.1 * v, 0, Math.PI * 2);
+          } else {
+            g.globalAlpha = edge * 0.22;
+            g.fillStyle = theme.neutral;
+            g.beginPath();
+            g.arc(x, y, 1, 0, Math.PI * 2);
+          }
           g.fill();
         }
       }
@@ -158,10 +182,10 @@ function useRipple(stopped: boolean) {
 
 function DigitHalf({ digit, half }: { digit: string; half: "top" | "bottom" }) {
   return (
-    <span className="block h-2 overflow-hidden bg-hover">
+    <span className="block h-2 overflow-hidden bg-track">
       <span
         className={cn(
-          "block h-4 text-center leading-4 text-muted tabular-nums",
+          "block h-4 text-center leading-4 text-fg tabular-nums",
           half === "bottom" && "-mt-2",
         )}
       >
@@ -182,7 +206,7 @@ function FlipDigit({ digit }: { digit: string }) {
   return (
     <span
       aria-hidden="true"
-      className="relative block w-[11px] overflow-hidden rounded-[3px] bg-hover [perspective:70px]"
+      className="relative block w-[11px] overflow-hidden rounded-[3px] bg-track [perspective:70px]"
     >
       <DigitHalf digit={digit} half="top" />
       <DigitHalf digit={from} half="bottom" />
@@ -381,13 +405,13 @@ function ImageFrame({
   );
 
   return (
-    <div className="flex w-[200px] flex-col items-start gap-2">
+    <div className="group/frame flex w-[200px] flex-col items-start gap-2">
       <div className={cn("w-[200px] overflow-hidden", animateIn ? "imggen-unfold" : "h-[250px]")}>
         <div
           role="group"
           aria-live="polite"
           aria-label={shown ? alt : generating ? label : t.loading}
-          className="relative h-[250px] w-[200px] overflow-hidden rounded-2xl bg-surface shadow-[0_1px_1px_0_rgb(0_0_0/0.05)] ring-1 ring-border/60"
+          className="relative h-[250px] w-[200px] overflow-hidden rounded-2xl border border-track-strong bg-surface shadow-[0_1px_3px_0_rgb(0_0_0/0.08)]"
         >
           <canvas
             ref={canvasRef}
@@ -439,7 +463,8 @@ function ImageFrame({
         </div>
       </div>
       {image && thumb && (
-        <div className="imggen-toast flex items-center gap-1.5">
+        // 操作行只在鼠标移到图片（或键盘聚焦到按钮）时显示，位置常驻，不让下方内容跳动
+        <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-150 group-focus-within/frame:opacity-100 group-hover/frame:opacity-100">
           <ActionButton icon={done("copy") ? "check" : "copy"} label={t.copy} onClick={copy} />
           <ActionButton
             icon={busy ? "loader" : done("save") ? "check" : "download"}
