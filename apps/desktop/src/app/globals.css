@@ -1828,7 +1828,7 @@ html.window-effects.solid-window body {
 }
 
 .imggen-unfold {
-  height: var(--imggen-h, 250px);
+  height: var(--imggen-h, 350px);
   animation:
     imggen-unfold 0.55s cubic-bezier(0.22, 1, 0.36, 1) backwards,
     imggen-unfold-fade 0.35s ease-out backwards;

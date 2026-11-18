@@ -193,16 +193,45 @@ export function withCapabilities(
   return text ? `${lines.join("\n")}\n\n${text}` : lines.join("\n");
 }
 
-/** 去掉 withCapabilities 加在开头的能力说明，返回正文与说明行（提问索引只看正文） */
-export function stripCapabilities(text: string): { body: string; header: string } {
+/** 用户气泡用：拆出 withCapabilities 加在开头的说明，返回正文与所选能力（气泡里显示成标签，不显示说明原文） */
+export function parseCapabilities(text: string): {
+  body: string;
+  image: boolean;
+  skills: string[];
+  mcp: string[];
+} {
+  const s = strings.chat.capabilities;
+  const { body, lines } = splitHeader(text);
+  const names = (line: string, tpl: string) =>
+    line
+      .slice((tpl.split("{names}")[0] as string).length)
+      .split(s.separator)
+      .map((n) => n.trim().replace(/^\//, ""))
+      .filter(Boolean);
+  const skillPrefix = s.useSkills.split("{names}")[0] as string;
+  const mcpPrefix = s.useMcp.split("{names}")[0] as string;
+  return {
+    body,
+    image: lines.includes(s.useImage),
+    skills: lines.filter((l) => l.startsWith(skillPrefix)).flatMap((l) => names(l, s.useSkills)),
+    mcp: lines.filter((l) => l.startsWith(mcpPrefix)).flatMap((l) => names(l, s.useMcp)),
+  };
+}
+
+function splitHeader(text: string): { body: string; lines: string[] } {
   const s = strings.chat.capabilities;
   const prefixes = [s.useImage, s.useSkills, s.useMcp].map((x) => x.split("{names}")[0] as string);
   const lines = text.split("\n");
   let i = 0;
   while (i < lines.length && prefixes.some((p) => (lines[i] as string).startsWith(p))) i++;
-  if (i === 0) return { body: text, header: "" };
   return {
-    body: lines.slice(i).join("\n").replace(/^\n+/, ""),
-    header: lines.slice(0, i).join(" "),
+    body: i === 0 ? text : lines.slice(i).join("\n").replace(/^\n+/, ""),
+    lines: lines.slice(0, i),
   };
+}
+
+/** 去掉 withCapabilities 加在开头的能力说明，返回正文与说明行（提问索引只看正文） */
+export function stripCapabilities(text: string): { body: string; header: string } {
+  const { body, lines } = splitHeader(text);
+  return { body, header: lines.join(" ") };
 }

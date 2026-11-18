@@ -566,21 +566,23 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
 
   // 欢迎页离场：开始对话后先淡出上移，动画结束再卸载
   const conversationStarted = started || pendingUser !== null;
-  const [welcomeGone, setWelcomeGone] = useState(conversationStarted);
+  // 打开的历史会话不显示欢迎页（动态标志只属于新对话）：否则历史加载完成前会闪出标志并播放离场动画
+  const isHistory = Boolean(tab?.sessionPath);
+  const [welcomeGone, setWelcomeGone] = useState(conversationStarted || isHistory);
   // 欢迎页离场动画播放中：先不显示对话内容，动画结束、欢迎页卸载后消息再淡入，衔接处不会叠影或闪烁
   const welcomeLeaving = conversationStarted && !welcomeGone;
   useEffect(() => {
     if (!conversationStarted) {
-      setWelcomeGone(false);
+      setWelcomeGone(isHistory);
       return;
     }
-    if (reducedMotion) {
+    if (reducedMotion || isHistory) {
       setWelcomeGone(true);
       return;
     }
     const id = setTimeout(() => setWelcomeGone(true), WELCOME_EXIT_MS);
     return () => clearTimeout(id);
-  }, [conversationStarted, reducedMotion]);
+  }, [conversationStarted, reducedMotion, isHistory]);
 
   const submit = (e?: FormEvent) => {
     e?.preventDefault();

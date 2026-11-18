@@ -44,7 +44,7 @@ async function shownImage() {
 }
 
 describe("图片生成卡片", () => {
-  it("生成中：按张数显示展开的 200×250 生成框、波纹画布、流光文字与翻页倒计时", () => {
+  it("生成中：按张数显示展开的 280×350 生成框、波纹画布、流光文字与翻页倒计时", () => {
     const { container } = render(
       <ImageGenCard args={{ prompt: "猫", n: 2, intent: "fast" }} details={undefined} running />,
     );
@@ -186,11 +186,11 @@ describe("图片生成卡片", () => {
     expect(remainingSeconds("weird", false, 0)).toBe(45);
   });
 
-  it("框按图片比例缩进 200×250 内、不裁切，缺宽高时退回默认框", () => {
-    expect(frameBox(1024, 1024)).toEqual({ w: 200, h: 200 });
-    expect(frameBox(1536, 1024)).toEqual({ w: 200, h: 133 });
-    expect(frameBox(1024, 1536)).toEqual({ w: 167, h: 250 });
-    expect(frameBox()).toEqual({ w: 200, h: 250 });
+  it("框按图片比例缩进 280×350 内、不裁切，缺宽高时退回默认框", () => {
+    expect(frameBox(1024, 1024)).toEqual({ w: 280, h: 280 });
+    expect(frameBox(1536, 1024)).toEqual({ w: 280, h: 187 });
+    expect(frameBox(1024, 1536)).toEqual({ w: 233, h: 350 });
+    expect(frameBox()).toEqual({ w: 280, h: 350 });
   });
 
   it("波纹：亮环随时间从中心向外扩散，强度不超过 1", () => {

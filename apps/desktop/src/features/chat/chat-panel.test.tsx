@@ -482,7 +482,10 @@ describe("对话区（mock 事件流）", () => {
         }}
       />,
     );
+    // 历史会话从一开始就不显示欢迎页（动态标志只属于新对话）
+    expect(screen.queryByRole("heading", { name: t.welcomeTitle })).toBeNull();
     expect(await screen.findByText("上次的问题")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: t.welcomeTitle })).toBeNull();
     expect(sessionOpen).toHaveBeenCalledTimes(1);
     expect(sessionOpen.mock.calls[0]?.slice(0, 2)).toEqual(["C:\\work\\demo", entry.path]);
     // 历史会话的工作区锁定显示，不出现选择文件夹条
@@ -833,6 +836,16 @@ describe("对话区（mock 事件流）", () => {
     await waitFor(() =>
       expect(screen.queryByRole("list", { name: t.capabilities.label })).toBeNull(),
     );
+  });
+
+  it("“+”菜单：没有可用技能时不显示技能一段，MCP 照常列出", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting({ ...platform, skillsList: async () => [] });
+    render(<ChatPanel />);
+    await openAddMenu();
+    expect(await screen.findByRole("menuitemcheckbox", { name: /^\/filesystem/ })).toBeTruthy();
+    expect(screen.queryByText(t.add.skills, { selector: "[role=group] > *" })).toBeNull();
+    expect(screen.queryByRole("menuitemcheckbox", { name: /^\/pdf/ })).toBeNull();
   });
 
   it("“+”菜单开启图片生成：输入框上方出现可移除标签，发送时注明出图并清空", async () => {

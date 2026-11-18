@@ -3,7 +3,7 @@
 // 输入框周边的弹出菜单：“+”添加菜单、选择工作区、权限模式；以及附件（本地路径引用）小标签。
 import { appendFileTags } from "@primus/protocol";
 import { DropdownMenu as Menu } from "radix-ui";
-import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { FileIcon, Icon, type IconName } from "@/components/icons";
 import {
   GlassPopover,
@@ -338,10 +338,6 @@ function CapabilitySection({
       </Menu.Label>
       {list === null ? (
         <p className="px-4 py-1.5 text-xs text-muted">{t.add.loading}</p>
-      ) : list.length === 0 ? (
-        <p className="px-4 py-1.5 text-xs text-muted">
-          {kind === "skill" ? t.add.noSkills : t.add.noMcp}
-        </p>
       ) : (
         shown?.map((c) => (
           <Menu.CheckboxItem
@@ -497,20 +493,20 @@ export function AddMenu({
               />
             </Menu.CheckboxItem>
           </Menu.Group>
-          <Menu.Separator className={separatorClass} />
-          <CapabilitySection
-            kind="skill"
-            items={capabilities}
-            selected={selected}
-            onToggle={onToggleCapability}
-          />
-          <Menu.Separator className={separatorClass} />
-          <CapabilitySection
-            kind="mcp"
-            items={capabilities}
-            selected={selected}
-            onToggle={onToggleCapability}
-          />
+          {/* 全局与项目里都没有技能 / MCP 时整段不显示（读取中仍显示“正在读取…”） */}
+          {(["skill", "mcp"] as const)
+            .filter((k) => capabilities === null || capabilities.some((c) => c.kind === k))
+            .map((k) => (
+              <Fragment key={k}>
+                <Menu.Separator className={separatorClass} />
+                <CapabilitySection
+                  kind={k}
+                  items={capabilities}
+                  selected={selected}
+                  onToggle={onToggleCapability}
+                />
+              </Fragment>
+            ))}
         </div>
       </GlassPopoverContent>
     </GlassPopover>
