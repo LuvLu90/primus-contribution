@@ -137,7 +137,8 @@ export async function loadCapabilities(
 }
 
 /**
- * 菜单打开时（`refresh`）重新读取一次；结果为 null 表示还在读取。
+ * 菜单打开时（`setOpen(true)`）重新读取一次；结果为 null 表示还在读取。
+ * 菜单开着时工作区或信任变化，清空后立即重读。
  * 工作区变化时丢弃旧结果，避免列出上一个项目的技能。
  */
 export function useComposerCapabilities(workspace: WorkspaceInfo | null) {
@@ -145,18 +146,28 @@ export function useComposerCapabilities(workspace: WorkspaceInfo | null) {
   const seq = useRef(0);
   const workspaceRef = useRef(workspace);
   workspaceRef.current = workspace;
+  // 菜单是否开着：开着时工作区或信任变化，清空后要立刻重读，不能停在“读取中”
+  const openRef = useRef(false);
   const refresh = useCallback(() => {
     const id = ++seq.current;
     void loadCapabilities(workspaceRef.current).then((list) => {
       if (id === seq.current) setItems(list);
     });
   }, []);
+  const setOpen = useCallback(
+    (open: boolean) => {
+      openRef.current = open;
+      if (open) refresh();
+    },
+    [refresh],
+  );
   // biome-ignore lint/correctness/useExhaustiveDependencies: 工作区变化时清空旧列表
   useEffect(() => {
     seq.current++;
     setItems(null);
+    if (openRef.current) refresh();
   }, [workspace?.path, workspace?.trusted]);
-  return { items, refresh };
+  return { items, refresh, setOpen };
 }
 
 /** 发送时在正文前注明选中的技能与 MCP（模型据此读取对应技能、调用对应 MCP 服务器） */

@@ -1058,7 +1058,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     capabilities={capabilities.items}
                     selected={pickedKeys}
                     onToggleCapability={toggleCap}
-                    onOpen={capabilities.refresh}
+                    onOpenChange={capabilities.setOpen}
                   >
                     <button
                       type="button"

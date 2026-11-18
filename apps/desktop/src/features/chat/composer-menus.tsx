@@ -393,7 +393,7 @@ function CapabilitySection({
  * 输入框左下角的“+”菜单：与模型选择同款的玻璃弹层，向上展开。
  * “添加”小节：文件（系统对话框，只引用本地路径；薄壳不支持时不显示）、计划模式（勾选项，Shift+Tab 同样切换）。
  * 其下列出全局与当前项目的全部技能、MCP 服务器（每项前加“/”，多了折叠），勾选后以标签挂在输入框上方。
- * 打开时调用 `onOpen` 重新读取技能与 MCP
+ * 打开与关闭时调用 `onOpenChange`（打开时重新读取技能与 MCP）
  */
 export function AddMenu({
   canPickFiles,
@@ -404,7 +404,7 @@ export function AddMenu({
   capabilities,
   selected,
   onToggleCapability,
-  onOpen,
+  onOpenChange,
   children,
 }: {
   canPickFiles: boolean;
@@ -418,12 +418,12 @@ export function AddMenu({
   /** 已选项的 capabilityKey */
   selected: ReadonlySet<string>;
   onToggleCapability: (c: ComposerCapability) => void;
-  onOpen?: () => void;
+  onOpenChange?: (open: boolean) => void;
   children: ReactNode;
 }) {
   const labelId = useId();
   return (
-    <GlassPopover onOpenChange={(open) => open && onOpen?.()}>
+    <GlassPopover onOpenChange={onOpenChange}>
       <GlassPopoverTrigger asChild>{children}</GlassPopoverTrigger>
       <GlassPopoverContent
         side="top"

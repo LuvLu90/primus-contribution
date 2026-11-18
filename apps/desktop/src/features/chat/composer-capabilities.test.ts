@@ -1,3 +1,4 @@
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { setPlatformForTesting } from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
@@ -8,6 +9,7 @@ import {
   capabilityKey,
   loadCapabilities,
   mergeCapabilities,
+  useComposerCapabilities,
   withCapabilities,
 } from "./composer-capabilities";
 
@@ -101,5 +103,23 @@ describe("提问索引", () => {
     const sel = [cap("skill", "review")];
     expect(indexText(withCapabilities("修一下测试", sel), false)).toBe("修一下测试");
     expect(indexText(withCapabilities("", sel), false)).toContain("/review");
+  });
+});
+
+describe("菜单开着时信任变化", () => {
+  it("清空列表后立即重读，不停在读取中；菜单关着时只清空", async () => {
+    setPlatformForTesting(createMockPlatform());
+    const ws = { path: "/w", name: "w", trusted: false, needsTrust: false };
+    const { result, rerender } = renderHook(({ w }) => useComposerCapabilities(w), {
+      initialProps: { w: ws },
+    });
+    act(() => result.current.setOpen(true));
+    await waitFor(() => expect(result.current.items).not.toBeNull());
+    rerender({ w: { ...ws, trusted: true } });
+    await waitFor(() => expect(result.current.items).not.toBeNull());
+    act(() => result.current.setOpen(false));
+    rerender({ w: { ...ws, trusted: false } });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(result.current.items).toBeNull();
   });
 });
