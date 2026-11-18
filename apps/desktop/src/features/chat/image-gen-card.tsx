@@ -434,12 +434,11 @@ function ImageFrame({
         className={cn("overflow-hidden", animateIn && "imggen-unfold")}
         style={{ width: box.w, height: box.h, "--imggen-h": `${box.h}px` } as CSSProperties}
       >
-        <div
-          role="group"
+        <fieldset
           aria-live="polite"
           aria-label={shown ? alt : generating ? label : t.loading}
           style={{ width: box.w, height: box.h }}
-          className="relative overflow-hidden rounded-2xl border border-track-strong bg-surface shadow-[0_1px_3px_0_rgb(0_0_0/0.08)]"
+          className="relative m-0 min-w-0 overflow-hidden rounded-2xl border border-track-strong bg-surface p-0 shadow-[0_1px_3px_0_rgb(0_0_0/0.08)]"
         >
           <canvas
             ref={canvasRef}
@@ -488,7 +487,7 @@ function ImageFrame({
             </button>
           )}
           {toast}
-        </div>
+        </fieldset>
       </div>
       {image && thumb && (
         // 操作行只在鼠标移到图片（或键盘聚焦到按钮）时显示，位置常驻，不让下方内容跳动

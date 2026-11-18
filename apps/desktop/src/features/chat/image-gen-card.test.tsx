@@ -52,7 +52,7 @@ describe("图片生成卡片", () => {
     expect(screen.getAllByText("剩余 30 秒")).toHaveLength(2);
     expect(container.querySelectorAll(".imggen-unfold")).toHaveLength(2);
     expect(container.querySelectorAll("canvas")).toHaveLength(2);
-    expect(container.querySelectorAll('[role="group"]')).toHaveLength(2);
+    expect(container.querySelectorAll("fieldset")).toHaveLength(2);
     expect(screen.getByRole("region", { name: "生成的图片" }).getAttribute("aria-busy")).toBe(
       "true",
     );
