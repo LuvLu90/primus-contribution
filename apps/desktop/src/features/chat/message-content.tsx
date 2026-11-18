@@ -4,12 +4,12 @@
 import MarkdownIt from "markdown-it";
 import { type MouseEvent, memo, useEffect, useMemo, useRef, useState } from "react";
 import { useExternalLinkConfirm } from "@/components/external-link-confirm";
-import { Icon } from "@/components/icons";
 import { useDelegatedTooltip } from "@/components/ui/tooltip";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { useFileRefActions } from "./file-ref-actions";
 import { linksPlugin } from "./markdown-links";
+import { ElapsedTimer, ThinkingWave } from "./thinking-wave";
 
 // 不渲染原始 HTML（回复内容不可信，html: false 时所有 HTML 标签按文本转义）；链接自动识别
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true, typographer: false });
@@ -145,10 +145,11 @@ export function ThinkingIndicator({ label = strings.chat.thinkingNow }: { label?
     <div
       role="status"
       aria-live="polite"
-      className="msg-in flex items-center gap-2 self-start text-sm text-muted"
+      className="msg-in flex items-center gap-2.5 self-start text-sm font-medium text-muted"
     >
-      <Icon name="thinking" size="sm" className="think-spark" />
-      <span className="shimmer-text">{label}</span>
+      <ThinkingWave />
+      <span className="think-shimmer">{label}</span>
+      <ElapsedTimer />
     </div>
   );
 }

@@ -33,6 +33,7 @@ import { strings } from "@/lib/strings";
 import { useModelsInfo, useProviderNames } from "@/lib/use-models";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
+import { AgentProgress } from "./agent-progress";
 import { AgentTurn } from "./agent-turn";
 import { ApprovalCard } from "./approval-card";
 import { AskCard } from "./ask-card";
@@ -942,11 +943,18 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                 onRevise={(feedback) => void revisePlan(awaitingPlan.id as string, feedback)}
               />
             )}
-            {/* 唇条：输入框上沿后面的灰色小舌，显示 Git 分支与工作区（选择工作区也在这里）与计划进度 */}
-            {(canUseWorkspaces || state.todos.length > 0) && (
+            {/* 计划进度卡片：有待办时显示在输入框上方，默认收起成一行；有确认 / 提问 / 计划审批时让位 */}
+            {state.todos.length > 0 && (
+              <AgentProgress
+                key={tabId}
+                items={state.todos}
+                hidden={Boolean(pendingUi || state.ask || awaitingPlan?.id)}
+                className="mb-2"
+              />
+            )}
+            {/* 唇条：输入框上沿后面的灰色小舌，显示 Git 分支与工作区（选择工作区也在这里） */}
+            {canUseWorkspaces && (
               <ComposerLip
-                showWorkspace={canUseWorkspaces}
-                todos={state.todos}
                 workspace={shownWorkspace}
                 locked={workspaceLocked}
                 onPicked={setWorkspace}

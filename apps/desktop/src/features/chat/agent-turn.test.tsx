@@ -41,17 +41,17 @@ function renderTurn(messages: AgentMessage[], running: boolean, streaming: boole
 }
 
 describe("工作过程里的思考", () => {
-  it("进行中的思考显示动画星光图标与“正在思考”", () => {
+  it("进行中的思考显示波纹点阵、流光的“正在思考”与计时", () => {
     const { container } = renderTurn(
       [assistant([{ type: "thinking", thinking: "先看看文件结构" }])],
       true,
       true,
     );
-    expect(screen.getByRole("button", { name: t.thinkingNow })).toBeTruthy();
-    const icon = container.querySelector('[data-icon="thinking"]');
-    expect(icon?.getAttribute("class")).toContain("think-spark");
-    // 星光图标是三个 path（右上小星、主星、右下小星），CSS 按顺序分别做动画
-    expect(icon?.querySelectorAll(":scope > path").length).toBe(3);
+    const button = screen.getByRole("button", { name: new RegExp(t.thinkingNow) });
+    expect(button.querySelectorAll(".think-wave-dot")).toHaveLength(9);
+    expect(button.querySelector(".think-shimmer")?.textContent).toBe(t.thinkingNow);
+    expect(button.textContent).toMatch(/\d+\.\ds$/);
+    expect(container.querySelector('[data-icon="thinking"]')).toBeNull();
   });
 
   it("思考结束（后面出现正文）后不再留下思考行", () => {

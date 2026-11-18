@@ -27,6 +27,7 @@ import { fileIconForName } from "./file-ref";
 import { ImageGenCard } from "./image-gen-card";
 import { MarkdownText } from "./message-content";
 import { PlanCard } from "./plan-card";
+import { ElapsedTimer, ThinkingWave } from "./thinking-wave";
 
 // 一轮回复（一条用户消息之后的全部助手消息与工具结果）按“工作过程 + 总结”展示：
 // 业界一般叫 Chain of Thought / 推理与工具调用分组（Vercel AI Elements 的 ChainOfThought、
@@ -264,7 +265,9 @@ function StepButton({
   children,
   live,
   failed,
-  iconClass,
+  lead,
+  trailing,
+  labelClass,
 }: {
   open: boolean;
   onToggle: () => void;
@@ -273,8 +276,12 @@ function StepButton({
   children: ReactNode;
   live?: boolean;
   failed?: boolean;
-  /** 图标的额外类（思考进行中的动画） */
-  iconClass?: string;
+  /** 代替图标显示在行首（思考进行中的波纹点阵） */
+  lead?: ReactNode;
+  /** 文字后面的附加内容（思考计时） */
+  trailing?: ReactNode;
+  /** 文字的额外类（思考进行中的流光；给了就不再用 live 的呼吸） */
+  labelClass?: string;
 }) {
   return (
     <button
@@ -284,8 +291,11 @@ function StepButton({
       onClick={onToggle}
       className="group/step -mx-1.5 flex max-w-full items-center gap-2 rounded-lg px-1.5 py-[3px] text-left text-sm text-muted outline-none transition-colors duration-200 hover:bg-hover/60 hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
     >
-      <Icon name={icon} size="sm" className={cn(failed && "text-danger", iconClass)} />
-      <span className={cn("min-w-0 truncate", live && "text-pulse")}>{children}</span>
+      {lead ?? <Icon name={icon} size="sm" className={cn(failed && "text-danger")} />}
+      <span className={cn("min-w-0 truncate", labelClass ?? (live && "text-pulse"))}>
+        {children}
+      </span>
+      {trailing}
       <Icon
         name="chevron-right"
         size="sm"
@@ -412,7 +422,7 @@ function ToolGroup({
 }
 
 /**
- * 进行中的思考：星光图标动画（主星呼吸旋转、小星交替闪烁）+“正在思考”呼吸，默认展开显示最新几行，可收起。
+ * 进行中的思考：波纹点阵 +“正在思考”流光 + 计时（ADR 0019），默认展开显示最新几行，可收起。
  * 思考结束后这一步不再出现在时间线上（layoutTurn 只收进行中的思考）。
  */
 function ThoughtStep({ text }: { text: string }) {
@@ -441,7 +451,9 @@ function ThoughtStep({ text }: { text: string }) {
         onToggle={() => setOpen(!open)}
         controls={id}
         icon="thinking"
-        iconClass="think-spark"
+        lead={<ThinkingWave className="mx-px" />}
+        labelClass="think-shimmer font-medium"
+        trailing={<ElapsedTimer />}
         live
       >
         {t.thinkingNow}
