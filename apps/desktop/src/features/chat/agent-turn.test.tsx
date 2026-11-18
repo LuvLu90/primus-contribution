@@ -135,9 +135,10 @@ describe("生成图片（ADR 0018）", () => {
       true,
       false,
     );
-    expect(screen.getByText(t.tools.image.running)).toBeTruthy();
+    // 工作过程里的一行与生成框左下角的文字
+    expect(screen.getAllByText(t.tools.image.running)).toHaveLength(2);
     expect(screen.getByText("一只橘猫")).toBeTruthy();
-    expect(screen.getByText(strings.chat.imagegen.generating)).toBeTruthy();
+    expect(screen.getByRole("region", { name: strings.chat.imagegen.card })).toBeTruthy();
   });
 
   it("失败的结果显示原因", () => {

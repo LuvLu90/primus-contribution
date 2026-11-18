@@ -1810,3 +1810,154 @@ html.window-effects.solid-window body {
     animation: none;
   }
 }
+
+/* ---- 对话内生成图片（ADR 0018），复刻 BoardUI「AI 图像生成」模板的生成框 ---- */
+
+/* 生成框从 0 高度展开进对话：高度 0.55s 缓出，透明度与模糊 0.35s */
+@keyframes imggen-unfold {
+  from {
+    height: 0;
+  }
+}
+
+@keyframes imggen-unfold-fade {
+  from {
+    opacity: 0;
+    filter: blur(6px);
+  }
+}
+
+.imggen-unfold {
+  height: 250px;
+  animation:
+    imggen-unfold 0.55s cubic-bezier(0.22, 1, 0.36, 1) backwards,
+    imggen-unfold-fade 0.35s ease-out backwards;
+}
+
+/* 结果揭示：羽化的圆形遮罩从中心扩开（--reveal 0% → 132%），同时淡入、去模糊，1.55s */
+@property --imggen-reveal {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 0%;
+}
+
+.imggen-reveal {
+  --imggen-reveal: 0%;
+  opacity: 0;
+  filter: blur(10px);
+  mask-image: radial-gradient(
+    circle at 50% 50%,
+    #000 calc(var(--imggen-reveal) - 26%),
+    transparent var(--imggen-reveal)
+  );
+  transition:
+    --imggen-reveal 1.55s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 1.55s cubic-bezier(0.4, 0, 0.2, 1),
+    filter 1.55s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.imggen-reveal[data-shown] {
+  --imggen-reveal: 132%;
+  opacity: 1;
+  filter: blur(0);
+}
+
+/* 生成中的流光文字（只在生成框里这一小段文字上用） */
+@keyframes imggen-shimmer {
+  from {
+    background-position: 200%;
+  }
+  to {
+    background-position: -100%;
+  }
+}
+
+.imggen-shimmer {
+  color: transparent;
+  background-image: linear-gradient(
+    100deg,
+    var(--color-muted) 16%,
+    var(--color-muted) 38%,
+    var(--color-fg) 50%,
+    var(--color-muted) 62%,
+    var(--color-muted) 84%
+  );
+  background-position: 200%;
+  background-size: 300% 100%;
+  background-clip: text;
+  animation: imggen-shimmer 3.4s linear infinite;
+}
+
+/* 倒计时的翻页数字：上半页落下、下半页翻起 */
+@keyframes imggen-flap-fall {
+  from {
+    filter: brightness(1);
+    transform: rotateX(0);
+  }
+  to {
+    filter: brightness(0.86);
+    transform: rotateX(-90deg);
+  }
+}
+
+@keyframes imggen-flap-rise {
+  0% {
+    filter: brightness(0.86);
+    transform: rotateX(90deg);
+  }
+  70% {
+    transform: rotateX(-9deg);
+  }
+  86% {
+    transform: rotateX(4deg);
+  }
+  100% {
+    filter: brightness(1);
+    transform: rotateX(0);
+  }
+}
+
+.imggen-flap-fall {
+  transform-origin: bottom;
+  backface-visibility: hidden;
+  animation: imggen-flap-fall 0.15s cubic-bezier(0.55, 0, 0.9, 0.35) forwards;
+}
+
+.imggen-flap-rise {
+  transform-origin: top;
+  backface-visibility: hidden;
+  animation: imggen-flap-rise 0.23s cubic-bezier(0.25, 0.7, 0.35, 1) 0.15s both;
+}
+
+/* 框内提示（已复制、已保存）：上浮淡入、去模糊 */
+@keyframes imggen-toast-in {
+  from {
+    opacity: 0;
+    translate: 0 8px;
+    filter: blur(4px);
+  }
+}
+
+.imggen-toast {
+  animation: imggen-toast-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .imggen-unfold,
+  .imggen-toast {
+    animation: none;
+  }
+  .imggen-reveal {
+    transition-duration: 1ms;
+  }
+  .imggen-shimmer {
+    color: var(--color-muted);
+    background-image: none;
+    animation: none;
+  }
+  .imggen-flap-fall,
+  .imggen-flap-rise {
+    animation-duration: 1ms;
+    animation-delay: 0s;
+  }
+}

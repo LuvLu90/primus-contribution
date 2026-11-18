@@ -380,9 +380,10 @@ export const strings = {
     // 对话内生成的图片（ADR 0018）
     imagegen: {
       card: "生成的图片",
-      generating: "正在生成图片…",
-      editing: "正在修改图片…",
-      generatingHint: "通常需要 20–60 秒",
+      generating: "正在生成图片",
+      editing: "正在修改图片",
+      generated: "已生成图片",
+      remaining: "剩余 {s} 秒",
       alt: "生成的图片：{prompt}",
       open: "查看大图",
       save: "保存图片",
