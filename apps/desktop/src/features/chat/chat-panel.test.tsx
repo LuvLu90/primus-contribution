@@ -835,6 +835,41 @@ describe("对话区（mock 事件流）", () => {
     );
   });
 
+  it("“+”菜单开启图片生成：输入框上方出现可移除标签，发送时注明出图并清空", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const prompts: string[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      const r = record as { type: string; message?: unknown };
+      if (isUserPrompt(r)) prompts.push(String(r.message));
+      return coreSend(key, record);
+    });
+    render(<ChatPanel />);
+    await openAddMenu();
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: new RegExp(t.add.image) }));
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    // 标签可移除，再次开启
+    fireEvent.click(await screen.findByRole("button", { name: t.capabilities.removeImage }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: t.capabilities.removeImage })).toBeNull(),
+    );
+    await openAddMenu();
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: new RegExp(t.add.image) }));
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    const chips = await screen.findByRole("list", { name: t.capabilities.label });
+    expect(chips.textContent).toContain(t.capabilities.image);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    expect(input.getAttribute("placeholder")).toBe(t.imagePlaceholder);
+    fireEvent.change(input, { target: { value: "一只橘猫" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(prompts).toHaveLength(1));
+    expect(prompts[0]).toBe(`${t.capabilities.useImage}\n\n一只橘猫`);
+    await waitFor(() =>
+      expect(screen.queryByRole("list", { name: t.capabilities.label })).toBeNull(),
+    );
+  });
+
   it("计划模式：先回答 ask_user 的提问卡片，再出现计划审批", async () => {
     const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
     setPlatformForTesting(platform);

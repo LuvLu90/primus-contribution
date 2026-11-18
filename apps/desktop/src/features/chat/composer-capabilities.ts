@@ -171,7 +171,11 @@ export function useComposerCapabilities(workspace: WorkspaceInfo | null) {
 }
 
 /** 发送时在正文前注明选中的技能与 MCP（模型据此读取对应技能、调用对应 MCP 服务器） */
-export function withCapabilities(text: string, selected: ComposerCapability[]): string {
+export function withCapabilities(
+  text: string,
+  selected: ComposerCapability[],
+  opts: { image?: boolean } = {},
+): string {
   const s = strings.chat.capabilities;
   const names = (kind: CapabilityKind) =>
     selected
@@ -179,6 +183,8 @@ export function withCapabilities(text: string, selected: ComposerCapability[]): 
       .map((c) => `/${c.name}`)
       .join(s.separator);
   const lines: string[] = [];
+  // 图片生成模式（“+”菜单）：这条消息固定交给 generate_image 出图
+  if (opts.image) lines.push(s.useImage);
   const skills = names("skill");
   const mcp = names("mcp");
   if (skills) lines.push(fill(s.useSkills, { names: skills }));
@@ -190,7 +196,7 @@ export function withCapabilities(text: string, selected: ComposerCapability[]): 
 /** 去掉 withCapabilities 加在开头的能力说明，返回正文与说明行（提问索引只看正文） */
 export function stripCapabilities(text: string): { body: string; header: string } {
   const s = strings.chat.capabilities;
-  const prefixes = [s.useSkills, s.useMcp].map((x) => x.split("{names}")[0] as string);
+  const prefixes = [s.useImage, s.useSkills, s.useMcp].map((x) => x.split("{names}")[0] as string);
   const lines = text.split("\n");
   let i = 0;
   while (i < lines.length && prefixes.some((p) => (lines[i] as string).startsWith(p))) i++;

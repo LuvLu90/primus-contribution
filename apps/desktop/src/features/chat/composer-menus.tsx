@@ -401,6 +401,8 @@ export function AddMenu({
   onPickFiles,
   planOn,
   onPlanChange,
+  imageOn,
+  onImageChange,
   capabilities,
   selected,
   onToggleCapability,
@@ -413,6 +415,9 @@ export function AddMenu({
   onPickFiles: () => void;
   planOn: boolean;
   onPlanChange: (on: boolean) => void;
+  /** 图片生成模式：选中后输入框上方出现“图片生成”标签，这条消息直接出图 */
+  imageOn: boolean;
+  onImageChange: (on: boolean) => void;
   /** 可选的技能与 MCP；null 表示还在读取 */
   capabilities: ComposerCapability[] | null;
   /** 已选项的 capabilityKey */
@@ -472,6 +477,25 @@ export function AddMenu({
                 }
               />
             </Menu.CheckboxItem>
+            <Menu.CheckboxItem
+              className={rowClass}
+              textValue={t.add.image}
+              checked={imageOn}
+              onCheckedChange={(v) => onImageChange(v === true)}
+            >
+              <AddRow
+                icon="image"
+                label={t.add.image}
+                hint={t.add.imageHint}
+                trailing={
+                  <span aria-hidden className="flex w-3.5 shrink-0 justify-center">
+                    <Menu.ItemIndicator>
+                      <Icon name="check" size="sm" />
+                    </Menu.ItemIndicator>
+                  </span>
+                }
+              />
+            </Menu.CheckboxItem>
           </Menu.Group>
           <Menu.Separator className={separatorClass} />
           <CapabilitySection
@@ -498,15 +522,35 @@ export function CapabilityChips({
   items,
   onRemove,
   locked = false,
+  image = false,
+  onRemoveImage,
 }: {
   items: ComposerCapability[];
   onRemove: (c: ComposerCapability) => void;
   /** 提交中不能移除 */
   locked?: boolean;
+  /** 图片生成模式已开启：排在最前，可移除 */
+  image?: boolean;
+  onRemoveImage?: () => void;
 }) {
-  if (items.length === 0) return null;
+  if (items.length === 0 && !image) return null;
   return (
     <ul aria-label={t.capabilities.label} className="flex flex-wrap gap-1.5 px-1 pb-1">
+      {image && (
+        <li className="flex h-7 items-center gap-1.5 rounded-[9px] bg-accent/10 pl-2 pr-1 text-xs text-accent ring-1 ring-accent/20">
+          <Icon name="image" size="sm" className="shrink-0" />
+          <span>{t.capabilities.image}</span>
+          <button
+            type="button"
+            aria-label={t.capabilities.removeImage}
+            disabled={locked}
+            onClick={onRemoveImage}
+            className="grid size-5 shrink-0 place-items-center rounded-md outline-none hover:bg-accent/15"
+          >
+            <Icon name="x" size="xs" />
+          </button>
+        </li>
+      )}
       {items.map((c) => (
         <li
           key={capabilityKey(c)}
