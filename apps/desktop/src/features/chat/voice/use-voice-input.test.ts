@@ -4,7 +4,7 @@ import { setPlatformForTesting } from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
 import type { SpeechEvent } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
-import { useVoiceInput } from "./use-voice-input";
+import { STOP_WAIT_MS, useVoiceInput } from "./use-voice-input";
 
 // 麦克风：测试里直接拿到 onPcm / onError，模拟采到音频
 const mic = vi.hoisted(() => ({
@@ -156,5 +156,68 @@ describe("语音转文字", () => {
     expect(result.current.recording).toBe(true);
     expect(result.current.error).toBeNull();
     expect(speechStop).not.toHaveBeenCalled();
+  });
+
+  it("识别迟迟不收尾时，停止后很快收起录音：插入已显示的临时文字，停止请求只发一次，迟到结果不再插入", async () => {
+    const base = createMockPlatform();
+    let onEvent: ((e: SpeechEvent) => void) | undefined;
+    // 平台收到停止后一直不推 end（第一次连接慢、换模型重放）
+    const speechStop = vi.fn(async (_session: number) => {});
+    setPlatformForTesting({
+      ...base,
+      speechStart: async (cb) => {
+        onEvent = cb;
+        return 7;
+      },
+      speechStop,
+    });
+    const onFinal = vi.fn();
+    const onEnd = vi.fn();
+    const { result } = renderHook(() => useVoiceInput({ onFinal, onEnd }));
+    act(() => result.current.start());
+    await waitFor(() => expect(onEvent).toBeDefined());
+    act(() => onEvent?.({ type: "interim", text: "你好世界" }));
+    const stoppedAt = Date.now();
+    act(() => result.current.stop());
+    await waitFor(() => expect(result.current.recording).toBe(false), {
+      timeout: STOP_WAIT_MS + 1500,
+    });
+    expect(Date.now() - stoppedAt).toBeLessThan(STOP_WAIT_MS + 1000);
+    expect(onFinal).toHaveBeenCalledWith("你好世界");
+    expect(onEnd).toHaveBeenCalledTimes(1);
+    expect(speechStop).toHaveBeenCalledTimes(1);
+    expect(speechStop).toHaveBeenCalledWith(7);
+    // 之后才到的定稿与结束都忽略
+    act(() => {
+      onEvent?.({ type: "final", text: "迟到的一句。" });
+      onEvent?.({ type: "end" });
+    });
+    expect(onFinal).toHaveBeenCalledTimes(1);
+    expect(onEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it("识别及时收尾时不提前收起", async () => {
+    const base = createMockPlatform();
+    let onEvent: ((e: SpeechEvent) => void) | undefined;
+    const speechStop = vi.fn(async (_session: number) => {
+      onEvent?.({ type: "final", text: "说完了。" });
+      onEvent?.({ type: "end" });
+    });
+    setPlatformForTesting({
+      ...base,
+      speechStart: async (cb) => {
+        onEvent = cb;
+        return 8;
+      },
+      speechStop,
+    });
+    const onFinal = vi.fn();
+    const { result } = renderHook(() => useVoiceInput({ onFinal }));
+    act(() => result.current.start());
+    await waitFor(() => expect(onEvent).toBeDefined());
+    act(() => result.current.stop());
+    await waitFor(() => expect(result.current.recording).toBe(false));
+    expect(onFinal.mock.calls).toEqual([["说完了。"]]);
+    expect(speechStop).toHaveBeenCalledTimes(1);
   });
 });
