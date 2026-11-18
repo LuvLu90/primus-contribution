@@ -2,11 +2,16 @@
 
 // 时间线里用户消息的附件：消息末尾的 `<file>` 引用（Core 原生格式）解析成文件标签，
 // 不把路径与内联的文件内容原样铺在气泡里。悬停看完整路径；内联了内容的文本文件注明“已附上内容”。
+// 文件标签点开在右栏预览；图片缩略图点开大图预览。
 import type { FileTag, ImageContent } from "@primus/protocol";
+import { useContext, useState } from "react";
 import { FileIcon } from "@/components/icons";
 import { Tooltip } from "@/components/ui/tooltip";
+import { showPreview } from "@/features/files/preview-store";
 import { strings } from "@/lib/strings";
-import { fileIconForName } from "../file-ref";
+import { fileIconForName, resolveFileRefPath } from "../file-ref";
+import { FileRefBase } from "../file-ref-actions";
+import { ImageLightbox } from "./image-lightbox";
 
 const t = strings.chat.attachments;
 
@@ -15,6 +20,7 @@ function baseName(path: string): string {
 }
 
 export function SentFiles({ files }: { files: FileTag[] }) {
+  const base = useContext(FileRefBase);
   if (files.length === 0) return null;
   return (
     <ul aria-label={t.sent} className="flex max-w-full flex-wrap justify-end gap-1.5">
@@ -28,17 +34,35 @@ export function SentFiles({ files }: { files: FileTag[] }) {
             key={`${i}-${f.path}`}
             content={inlined ? `${f.path}\n${t.inlined}` : f.path}
           >
-            <li
-              aria-label={inlined ? `${name}（${t.inlined}）` : name}
-              className="flex h-7 max-w-56 items-center gap-1.5 rounded-[9px] bg-tile px-2 text-xs ring-1 ring-tile-ring"
-            >
-              <FileIcon name={fileIconForName(name)} size="sm" />
-              <span className="min-w-0 truncate">{name}</span>
+            <li aria-label={inlined ? `${name}（${t.inlined}）` : name} className="flex max-w-56">
+              <SentFileButton name={name} path={resolveFileRefPath(f.path, base)} />
             </li>
           </Tooltip>
         );
       })}
     </ul>
+  );
+}
+
+function SentFileButton({ name, path }: { name: string; path: string | null }) {
+  const button = (
+    <button
+      type="button"
+      aria-label={t.open.replace("{name}", name)}
+      disabled={!path}
+      onClick={() => path && showPreview(path)}
+      className="flex h-7 min-w-0 cursor-pointer items-center gap-1.5 rounded-[9px] bg-tile px-2 text-xs outline-none ring-1 ring-tile-ring transition-colors enabled:hover:bg-hover focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-default"
+    >
+      <FileIcon name={fileIconForName(name)} size="sm" />
+      <span className="min-w-0 truncate">{name}</span>
+    </button>
+  );
+  if (path) return button;
+  // 禁用的按钮收不到悬停事件：提示挂在外层
+  return (
+    <Tooltip content={t.cannotPreview}>
+      <span className="flex min-w-0">{button}</span>
+    </Tooltip>
   );
 }
 
@@ -48,21 +72,30 @@ export function SentFiles({ files }: { files: FileTag[] }) {
  * （如读取失败的图片与粘贴的图片同时发送），按数量推断会把失败文件的引用藏掉
  */
 export function SentImages({ images }: { images: readonly ImageContent[] }) {
+  const [open, setOpen] = useState<string | null>(null);
   if (images.length === 0) return null;
   return (
     <ul aria-label={t.sentImages} className="flex max-w-full flex-wrap justify-end gap-1.5">
       {images.map((img, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: 列表只随消息整体替换，不会重排
         <li key={i} className="overflow-hidden rounded-[9px] ring-1 ring-tile-ring">
-          {/* biome-ignore lint/performance/noImgElement: 静态导出，图片是消息里的 base64 */}
-          <img
-            src={`data:${img.mimeType};base64,${img.data}`}
-            alt={t.sentImage}
-            draggable={false}
-            className="block size-16 bg-tile object-cover"
-          />
+          <button
+            type="button"
+            aria-label={t.open.replace("{name}", t.sentImage)}
+            onClick={() => setOpen(`data:${img.mimeType};base64,${img.data}`)}
+            className="block cursor-zoom-in outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            {/* biome-ignore lint/performance/noImgElement: 静态导出，图片是消息里的 base64 */}
+            <img
+              src={`data:${img.mimeType};base64,${img.data}`}
+              alt={t.sentImage}
+              draggable={false}
+              className="block size-16 bg-tile object-cover"
+            />
+          </button>
         </li>
       ))}
+      <ImageLightbox src={open} alt={t.sentImage} onClose={() => setOpen(null)} />
     </ul>
   );
 }

@@ -1,6 +1,7 @@
 import type { CoreBatch } from "@primus/protocol";
 import {
   act,
+  cleanup,
   fireEvent,
   render,
   renderHook,
@@ -23,6 +24,7 @@ import { strings } from "@/lib/strings";
 import { initialAppState, useAppStore } from "@/stores/app-store";
 import { ChatPanel, indexText } from "./chat-panel";
 import { useChatSession } from "./use-chat-session";
+import { UserBubble } from "./user-bubble";
 
 /**
  * 悬停直到出现统一 Tooltip，返回它（role="tooltip"）。对话区在流式输出时会自动滚动，
@@ -802,6 +804,37 @@ describe("对话区（mock 事件流）", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: t.plan.turnOff })).toBeNull());
   });
 
+  it("“+”菜单列出全局技能与 MCP（每项带 /），勾选后挂到输入框上方，发送时注明并清空", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const prompts: string[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      const r = record as { type: string; message?: unknown };
+      if (isUserPrompt(r)) prompts.push(String(r.message));
+      return coreSend(key, record);
+    });
+    render(<ChatPanel />);
+    await openAddMenu();
+    const skill = await screen.findByRole("menuitemcheckbox", { name: /^\/pdf/ });
+    fireEvent.click(skill);
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: /^\/filesystem/ }));
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    const chips = await screen.findByRole("list", { name: t.capabilities.label });
+    expect(chips.textContent).toContain("/pdf");
+    expect(chips.textContent).toContain("/filesystem");
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "合并两份 PDF" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(prompts).toHaveLength(1));
+    expect(prompts[0]).toContain("/pdf");
+    expect(prompts[0]).toContain("/filesystem");
+    expect(prompts[0]).toMatch(/合并两份 PDF$/);
+    await waitFor(() =>
+      expect(screen.queryByRole("list", { name: t.capabilities.label })).toBeNull(),
+    );
+  });
+
   it("计划模式：先回答 ask_user 的提问卡片，再出现计划审批", async () => {
     const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
     setPlatformForTesting(platform);
@@ -1143,7 +1176,8 @@ describe("对话区（mock 事件流）", () => {
   });
 
   it("运行中可以停止：1 秒内恢复发送，半截回复标为已停止，之后可以继续对话", async () => {
-    setPlatformForTesting(createMockPlatform({ intervalMs: 20, batchSize: 2 }));
+    // 欢迎页离场约 620ms 后回复才显示：流放慢一些，停止时回复一定还没说完
+    setPlatformForTesting(createMockPlatform({ intervalMs: 60, batchSize: 2 }));
     render(<ChatPanel />);
     const input = screen.getByRole("textbox", { name: t.inputLabel });
     fireEvent.change(input, { target: { value: "长任务" } });
@@ -1164,7 +1198,7 @@ describe("对话区（mock 事件流）", () => {
     );
     expect(performance.now() - started).toBeLessThan(1000);
     expect(screen.getByText(t.stopped)).toBeTruthy();
-    expect(screen.queryByText(/mock 平台/)).toBeNull();
+    expect(screen.queryByText(/你刚才说：「长任务」/)).toBeNull();
 
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(screen.getByText(/你刚才说：「继续」/)).toBeTruthy(), {
@@ -1253,6 +1287,53 @@ describe("对话区（mock 事件流）", () => {
     expect(bubble.textContent).toContain("看看这些");
     expect(bubble.textContent).not.toContain("很长的内容");
     expect(bubble.textContent).not.toContain("<file");
+    // 已发送的文件标签可以点开，在右栏预览
+    fireEvent.click(
+      screen.getByRole("button", { name: t.attachments.open.replace("{name}", "表.xlsx") }),
+    );
+    expect(usePreviewStore.getState().path).toBe("C:\\a\\表.xlsx");
+  });
+
+  it("输入框里的附件能点开：有路径的在右栏预览，已发送的图片点开大图", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50, attachmentDelayMs: 1 });
+    setPlatformForTesting(platform);
+    const openName = (n: string) => t.attachments.open.replace("{name}", n);
+    render(<ChatPanel />);
+    await pickFilesFromMenu();
+    fireEvent.click(await screen.findByRole("button", { name: openName("README.md") }));
+    expect(usePreviewStore.getState().path).toBe("C:\\Users\\mock\\示例工作区\\README.md");
+    cleanup();
+    render(
+      <UserBubble
+        text="看图"
+        index={0}
+        images={[{ type: "image", mimeType: "image/png", data: "AAAA" }]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: openName(t.attachments.sentImage) }));
+    const dialog = await screen.findByRole("dialog", { name: t.attachments.sentImage });
+    expect(within(dialog).getByRole("img", { name: t.attachments.sentImage })).toBeTruthy();
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("键盘打开大图后按 Esc 关闭，焦点回到打开的按钮", async () => {
+    render(
+      <UserBubble
+        text="看图"
+        index={0}
+        images={[{ type: "image", mimeType: "image/png", data: "AAAA" }]}
+      />,
+    );
+    const opener = screen.getByRole("button", {
+      name: t.attachments.open.replace("{name}", t.attachments.sentImage),
+    });
+    opener.focus();
+    fireEvent.click(opener);
+    const dialog = await screen.findByRole("dialog", { name: t.attachments.sentImage });
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(opener));
   });
 
   it("回复出错显示错误卡片，重试重新发送上一条消息；可去设置检查渠道", async () => {

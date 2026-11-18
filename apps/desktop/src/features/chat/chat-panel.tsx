@@ -16,9 +16,9 @@ import {
   useRef,
   useState,
 } from "react";
-import { LogoMark } from "@/components/brand/logo";
+import { LogoAssemble } from "@/components/brand/logo";
 import { Icon } from "@/components/icons";
-import { glassButtonClass, useGlassStyle } from "@/components/layout/glass-panel";
+import { useGlassStyle } from "@/components/layout/glass-panel";
 import { useMediaQuery } from "@/components/theme/appearance-controller";
 import { GlassButton } from "@/components/ui/glass-button";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -38,10 +38,18 @@ import { ApprovalCard } from "./approval-card";
 import { AskCard } from "./ask-card";
 import { AttachmentStrip } from "./attachments/attachment-strip";
 import { useAttachments } from "./attachments/use-attachments";
+import {
+  type ComposerCapability,
+  capabilityKey,
+  stripCapabilities,
+  useComposerCapabilities,
+  withCapabilities,
+} from "./composer-capabilities";
 import { composerGhostClass } from "./composer-ghost";
 import { ComposerLip } from "./composer-lip";
 import {
   AddMenu,
+  CapabilityChips,
   failure,
   PermissionPicker,
   permissionMeta,
@@ -85,8 +93,10 @@ function textOf(content: unknown): string {
 /** 消息索引里的一行：正文；只有附件时列出文件名；只有图片时显示“图片” */
 export function indexText(text: string, hasImages: boolean): string {
   const { message, files } = splitFileTags(text, { imageHints: hasImages });
-  const line = message || files.map((f) => f.path.split(/[\\/]/).pop() ?? f.path).join("、");
-  return line || (hasImages ? t.attachments.sentImage : "");
+  // 能力说明（“请使用以下技能：…”）不进索引；只有说明没有正文时才用它
+  const { body, header } = stripCapabilities(message);
+  const line = body || files.map((f) => f.path.split(/[\\/]/).pop() ?? f.path).join("、");
+  return line || (hasImages ? t.attachments.sentImage : header);
 }
 
 /** 一轮：一条用户消息 + 其后的助手消息与工具结果（会话开头若没有用户消息，user 为空） */
@@ -114,22 +124,50 @@ function groupTurns(messages: AgentMessage[]): Turn[] {
   return turns;
 }
 
-// 欢迎页：标志 + 标题 + 三个液态玻璃建议按钮
-function Welcome({ onPick }: { onPick: (text: string) => void }) {
+/** 欢迎页一次显示的建议条数 */
+const SUGGESTION_COUNT = 3;
+
+/** 从建议池中随机取 n 条（不重复，顺序随机） */
+export function pickSuggestions(
+  pool: readonly string[],
+  n: number,
+  random = Math.random,
+): string[] {
+  const rest = [...pool];
+  const picked: string[] = [];
+  while (picked.length < n && rest.length > 0) {
+    const [item] = rest.splice(Math.floor(random() * rest.length), 1);
+    if (item !== undefined) picked.push(item);
+  }
+  return picked;
+}
+
+// 欢迎页：动态标志 + 标题 + 三个随机的淡色液态玻璃建议按钮
+function Welcome({ onPick, leaving }: { onPick: (text: string) => void; leaving: boolean }) {
   const glass = useGlassStyle();
+  // 静态导出会预渲染页面：随机建议在挂载后再取，避免与预渲染的 HTML 不一致
+  const [suggestions, setSuggestions] = useState<string[] | null>(null);
+  useEffect(() => setSuggestions(pickSuggestions(t.suggestions, SUGGESTION_COUNT)), []);
   return (
     <div className="m-auto flex max-w-2xl flex-col items-center gap-5 text-center">
-      <LogoMark size={60} className="text-fg/80" />
-      <h2 className="font-serif text-3xl font-medium tracking-tight">{t.welcomeTitle}</h2>
+      <LogoAssemble size={60} leaving={leaving} className="text-fg/80" />
+      <h2
+        className={cn("font-serif text-3xl font-medium tracking-tight", leaving && "welcome-out")}
+      >
+        {t.welcomeTitle}
+      </h2>
       <p className="sr-only">{strings.layout.emptyTimeline}</p>
-      <div className="flex flex-wrap justify-center gap-2.5">
-        {t.suggestions.map((s) => (
+      <div
+        className={cn("flex min-h-9 flex-wrap justify-center gap-2.5", leaving && "welcome-out")}
+      >
+        {suggestions?.map((s) => (
           <GlassButton
             key={s}
             variant="capsule"
             size={36}
-            {...glass}
-            className={glassButtonClass}
+            tint={glass.tint * 0.6}
+            tintColor={glass.tintColor}
+            className="msg-in text-muted shadow-[0_1px_2px_rgb(0_0_0/0.04)] ring-1 ring-black/[0.04] transition-colors hover:text-fg dark:ring-white/[0.05]"
             onClick={() => onPick(s)}
           >
             <span className="text-sm font-normal">{s}</span>
@@ -140,6 +178,8 @@ function Welcome({ onPick }: { onPick: (text: string) => void }) {
   );
 }
 
+/** 欢迎页离场时长：标志拆开飞出（globals.css `.logo-assemble-leaving`）、标题与建议淡出，结束后才显示对话 */
+const WELCOME_EXIT_MS = 620;
 /** 发送成功后等待 Core 回显用户消息的最长时间 */
 const PENDING_ECHO_TIMEOUT_MS = 3000;
 /** 距底部小于该值视为"停在底部" */
@@ -268,6 +308,55 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     const timer = setTimeout(refreshModels, 1000);
     return () => clearTimeout(timer);
   }, [connected, settingsModels, refreshModels]);
+  // “+”菜单里的技能与 MCP（全局 + 当前项目），选中的以“/名称”标签挂在输入框上方，发送时注明
+  // 项目能力按会话自己的工作区加载：历史会话锁定在它的工作区，与全局选择同一路径时沿用其信任状态，否则按未信任处理
+  const tabWorkspace = tab?.workspace ?? null;
+  // 会话工作区不是全局当前工作区时，从工作区列表查它实际的信任状态；查到之前按未信任处理（不列项目能力）
+  const [tabTrust, setTabTrust] = useState<{ path: string; trusted: boolean } | null>(null);
+  useEffect(() => {
+    // 每次重查都先丢掉旧结果：撤销信任后，旧的 trusted 不能在新结果回来前放行项目能力
+    setTabTrust(null);
+    if (!tabWorkspace || workspace?.path === tabWorkspace) return;
+    let alive = true;
+    getPlatform()
+      .then((p) => p.workspaceList())
+      .then((list) => {
+        const found = list.find((w) => w.path === tabWorkspace);
+        if (alive) setTabTrust({ path: tabWorkspace, trusted: !!found?.trusted });
+      })
+      .catch(() => {
+        if (alive) setTabTrust({ path: tabWorkspace, trusted: false });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [tabWorkspace, workspace?.path]);
+  const capsWorkspace: WorkspaceInfo | null = useMemo(() => {
+    if (tabWorkspace === null) return workspace;
+    if (!tabWorkspace) return null;
+    if (workspace?.path === tabWorkspace) return workspace;
+    const trusted = tabTrust?.path === tabWorkspace && tabTrust.trusted;
+    return { path: tabWorkspace, name: baseName(tabWorkspace), trusted, needsTrust: false };
+  }, [tabWorkspace, workspace, tabTrust]);
+  const capabilities = useComposerCapabilities(capsWorkspace);
+  const [pickedCaps, setPickedCaps] = useState<ComposerCapability[]>([]);
+  // 工作区或信任状态变化：清掉旧项目的能力选择，保留全局的
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 只在有效工作区变化时清理
+  useEffect(() => {
+    setPickedCaps((list) =>
+      list.some((c) => c.scope === "project") ? list.filter((c) => c.scope !== "project") : list,
+    );
+  }, [capsWorkspace?.path, capsWorkspace?.trusted]);
+  const pickedKeys = useMemo(() => new Set(pickedCaps.map(capabilityKey)), [pickedCaps]);
+  // 提交中锁定：这次发送的正文已按提交时的选择拼好，成功后会清空选择，期间的改动会丢失
+  const toggleCap = useCallback((c: ComposerCapability) => {
+    if (submittingRef.current) return;
+    setPickedCaps((list) =>
+      list.some((x) => capabilityKey(x) === capabilityKey(c))
+        ? list.filter((x) => capabilityKey(x) !== capabilityKey(c))
+        : [...list, c],
+    );
+  }, []);
   // 附件：图片排队读取（当前模型能看图时），其余按路径引用；提交中不能移除
   const attachments = useAttachments({
     imagesSupported: currentModelInfo?.image ?? false,
@@ -476,6 +565,8 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   // 欢迎页离场：开始对话后先淡出上移，动画结束再卸载
   const conversationStarted = started || pendingUser !== null;
   const [welcomeGone, setWelcomeGone] = useState(conversationStarted);
+  // 欢迎页离场动画播放中：先不显示对话内容，动画结束、欢迎页卸载后消息再淡入，衔接处不会叠影或闪烁
+  const welcomeLeaving = conversationStarted && !welcomeGone;
   useEffect(() => {
     if (!conversationStarted) {
       setWelcomeGone(false);
@@ -485,7 +576,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
       setWelcomeGone(true);
       return;
     }
-    const id = setTimeout(() => setWelcomeGone(true), 280);
+    const id = setTimeout(() => setWelcomeGone(true), WELCOME_EXIT_MS);
     return () => clearTimeout(id);
   }, [conversationStarted, reducedMotion]);
 
@@ -493,7 +584,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     e?.preventDefault();
     const text = draft.trim();
     if (
-      (!text && !attachments.hasContent) ||
+      (!text && !attachments.hasContent && pickedCaps.length === 0) ||
       attachments.pending ||
       voice.recording ||
       state.running ||
@@ -507,9 +598,9 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     stickToBottom.current = true;
     // 能看图的模型：读取好的图片随 prompt 发送；其余文件（及不看图时的图片）按路径引用
     const { images, paths } = attachments.build();
-    const message = withAttachments(text, paths);
+    const message = withAttachments(withCapabilities(text, pickedCaps), paths);
     setPendingUser({ text: message, index: state.messages.length, images });
-    // 发送成功后才清空输入，失败时保留草稿和附件以便重试
+    // 发送成功后才清空输入，失败时保留草稿、附件和所选技能以便重试
     void send(message, images)
       .then((sent) => {
         if (!sent) {
@@ -518,6 +609,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
         }
         setDraft("");
         attachments.clear();
+        setPickedCaps([]);
         setExpanded(false);
       })
       .finally(() => {
@@ -687,9 +779,13 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
             {!welcomeGone && (
               <div
                 inert={conversationStarted}
-                className={cn("flex flex-1", conversationStarted && "welcome-out absolute inset-0")}
+                className={cn(
+                  "flex flex-1",
+                  conversationStarted && "pointer-events-none absolute inset-0",
+                )}
               >
                 <Welcome
+                  leaving={conversationStarted}
                   onPick={(s) => {
                     setDraft(s);
                     inputRef.current?.focus();
@@ -697,43 +793,44 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                 />
               </div>
             )}
-            {turns.map((turn, ti) => {
-              const lastTurn = ti === turns.length - 1;
-              return (
-                <Fragment key={turn.start}>
-                  {turn.user && (
-                    <UserBubble
-                      key={`${turn.user.index}-user`}
-                      index={turn.user.index}
-                      text={textOf(turn.user.message.content)}
-                      images={imagesOf(turn.user.message.content)}
-                    />
-                  )}
-                  {turn.replies.length > 0 && (
-                    <AgentTurn
-                      key={`${turn.start}-turn`}
-                      messages={turn.replies}
-                      toolRuns={state.toolRuns}
-                      running={lastTurn && state.running}
-                      streaming={lastTurn && state.streamingMessage}
-                      startedAt={
-                        (turn.user?.message as { timestamp?: number } | undefined)?.timestamp
-                      }
-                      providerNames={modelConfig.providerNames}
-                      {...(lastTurn
-                        ? {
-                            retry: state.retry,
-                            retryResult: state.retryResult,
-                            onStopRetry: abortRetry,
-                            errorActions,
-                          }
-                        : { errorActions: settingsOnly })}
-                    />
-                  )}
-                </Fragment>
-              );
-            })}
-            {pendingUser && state.messages.length <= pendingUser.index && (
+            {!welcomeLeaving &&
+              turns.map((turn, ti) => {
+                const lastTurn = ti === turns.length - 1;
+                return (
+                  <Fragment key={turn.start}>
+                    {turn.user && (
+                      <UserBubble
+                        key={`${turn.user.index}-user`}
+                        index={turn.user.index}
+                        text={textOf(turn.user.message.content)}
+                        images={imagesOf(turn.user.message.content)}
+                      />
+                    )}
+                    {turn.replies.length > 0 && (
+                      <AgentTurn
+                        key={`${turn.start}-turn`}
+                        messages={turn.replies}
+                        toolRuns={state.toolRuns}
+                        running={lastTurn && state.running}
+                        streaming={lastTurn && state.streamingMessage}
+                        startedAt={
+                          (turn.user?.message as { timestamp?: number } | undefined)?.timestamp
+                        }
+                        providerNames={modelConfig.providerNames}
+                        {...(lastTurn
+                          ? {
+                              retry: state.retry,
+                              retryResult: state.retryResult,
+                              onStopRetry: abortRetry,
+                              errorActions,
+                            }
+                          : { errorActions: settingsOnly })}
+                      />
+                    )}
+                  </Fragment>
+                );
+              })}
+            {!welcomeLeaving && pendingUser && state.messages.length <= pendingUser.index && (
               // 与回显后那一轮同样的 key：回显时原地替换，不重播进场动画
               <Fragment key={pendingUser.index + 1}>
                 <UserBubble
@@ -745,7 +842,8 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
               </Fragment>
             )}
             {/* 已发出、回复还没开始：最后一条是用户消息（或还在等回显） */}
-            {(submitting || state.running || pendingUser !== null) &&
+            {!welcomeLeaving &&
+              (submitting || state.running || pendingUser !== null) &&
               !unresponsive &&
               (state.messages.length === 0 || state.messages.at(-1)?.role === "user") && (
                 <ThinkingIndicator />
@@ -872,6 +970,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     </p>
                   )
                 )}
+                <CapabilityChips items={pickedCaps} onRemove={toggleCap} locked={submitting} />
                 <AttachmentStrip
                   items={attachments.items}
                   onRemove={attachments.remove}
@@ -956,6 +1055,10 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     onPickFiles={() => void pickFiles()}
                     planOn={planOn}
                     onPlanChange={(on) => void setPlanMode(on)}
+                    capabilities={capabilities.items}
+                    selected={pickedKeys}
+                    onToggleCapability={toggleCap}
+                    onOpenChange={capabilities.setOpen}
                   >
                     <button
                       type="button"
@@ -1069,7 +1172,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                           modelConfig.unavailable ||
                           attachments.pending ||
                           voice.recording ||
-                          (!draft.trim() && !attachments.hasContent)
+                          (!draft.trim() && !attachments.hasContent && pickedCaps.length === 0)
                         }
                         className="grid aspect-square size-8 shrink-0 place-items-center rounded-full bg-fg text-surface transition-[opacity,transform] active:scale-95 disabled:opacity-20 disabled:active:scale-100"
                       >

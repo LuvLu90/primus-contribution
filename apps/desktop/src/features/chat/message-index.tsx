@@ -13,7 +13,8 @@ import {
 import { strings } from "@/lib/strings";
 
 // 对话索引：替代长对话右侧的滚动条，放在时间线右侧（提问不足 3 条时不显示）。每条用户提问一道刻度，
-// 当前所在的提问加长加深；点击平滑滚到那条提问。刻度长短按提问长短分三档。
+// 当前所在的提问加长加深；其余刻度一样短，只在当前刻度两侧约 3 道内逐渐变长作过渡（滚动时随当前提问平滑移动）。
+// 点击平滑滚到那条提问。
 //
 // 指针在刻度条上移动时像手指划过尺子：以指针为中心、半径约 3.5 道刻度的余弦衰减，
 // 越近的刻度越长、越粗、越深（macOS 程序坞放大的同一思路：距离 → 目标值 → 弹簧追随）。
@@ -84,8 +85,16 @@ export function nearestTick(y: number, count: number, pitch = TICK_PITCH, pad = 
   return Math.min(count - 1, Math.max(0, Math.floor((y - pad) / pitch)));
 }
 
-/** 静止时的刻度长度（px），按提问长短分三档；当前提问 22 */
-const tickLength = (text: string) => (text.length > 120 ? 18 : text.length > 30 ? 14 : 10);
+/** 静止时的刻度长度（px）：当前提问最长；其余统一为短刻度，靠近当前的几道按余弦衰减逐渐加长 */
+export const TICK_ACTIVE = 22;
+export const TICK_REST = 8;
+const TICK_NEAR_PEAK = 16;
+const ACTIVE_FALLOFF_TICKS = 4;
+export function baseLength(i: number, activeAt: number): number {
+  if (activeAt < 0) return TICK_REST;
+  if (i === activeAt) return TICK_ACTIVE;
+  return TICK_REST + (TICK_NEAR_PEAK - TICK_REST) * falloff(i - activeAt, ACTIVE_FALLOFF_TICKS);
+}
 
 export function MessageIndex({
   items,
@@ -201,6 +210,7 @@ export function MessageIndex({
   if (items.length < MIN_TICKS || !overflowing) return null;
   const ticks = sample(items, active);
   tickRefs.current.length = ticks.length;
+  const activeAt = ticks.findIndex((x) => x.index === active);
 
   const jump = (item: IndexItem) => {
     const el = scrollRef.current;
@@ -315,7 +325,7 @@ export function MessageIndex({
                   tickRefs.current[i] = node;
                 }}
                 className="index-tick"
-                style={{ "--index-base": isActive ? 22 : tickLength(item.text) } as CSSProperties}
+                style={{ "--index-base": baseLength(i, activeAt).toFixed(2) } as CSSProperties}
               />
             </button>
           );

@@ -587,6 +587,106 @@ html.window-effects.solid-window body {
 }
 
 /*
+ * 欢迎页动态标志（LogoAssemble）：三块拼件带透视从各自方向嵌入，拼好后整体轻微浮动、微微倾斜。
+ * 只动 transform / opacity，交给合成器；减少动态效果时直接显示拼好的标志。
+ */
+.logo-assemble {
+  position: relative;
+  display: inline-block;
+  width: var(--logo-size);
+  height: var(--logo-size);
+  perspective: calc(var(--logo-size) * 6);
+}
+
+.logo-assemble-float {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  animation: logo-float 4s ease-in-out 1.56s infinite;
+}
+
+.logo-assemble-piece {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  fill: currentColor;
+  animation: logo-piece-in 1.2s cubic-bezier(0.2, 0.8, 0.25, 1.08) both;
+}
+
+@keyframes logo-piece-in {
+  from {
+    opacity: 0;
+    transform: translate3d(
+        calc(var(--logo-size) * var(--piece-dx) * 1.1),
+        calc(var(--logo-size) * var(--piece-dy) * 1.1),
+        calc(var(--logo-size) * var(--piece-z))
+      )
+      var(--piece-rotate);
+  }
+  25% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 离场：浮动停在当前位置，三块沿来路飞出并淡去 */
+.logo-assemble-leaving .logo-assemble-float {
+  animation-play-state: paused;
+}
+
+.logo-assemble-leaving .logo-assemble-piece {
+  animation: logo-piece-out 0.46s cubic-bezier(0.5, 0, 0.8, 0.3) both;
+}
+
+@keyframes logo-piece-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  70% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(
+        calc(var(--logo-size) * var(--piece-dx) * 1.1),
+        calc(var(--logo-size) * var(--piece-dy) * 1.1),
+        calc(var(--logo-size) * var(--piece-z))
+      )
+      var(--piece-rotate);
+  }
+}
+
+@keyframes logo-float {
+  0%,
+  100% {
+    transform: translateY(0) rotateX(0) rotateY(0);
+  }
+  25% {
+    transform: translateY(calc(var(--logo-size) * -0.04)) rotateX(6deg) rotateY(-8deg);
+  }
+  50% {
+    transform: translateY(calc(var(--logo-size) * -0.06)) rotateX(0) rotateY(0);
+  }
+  75% {
+    transform: translateY(calc(var(--logo-size) * -0.02)) rotateX(-6deg) rotateY(8deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .logo-assemble-float,
+  .logo-assemble-piece,
+  .logo-assemble-leaving .logo-assemble-piece {
+    animation: none;
+  }
+}
+
+/*
  * 进行中的文字：透明度呼吸。只动 opacity 并提升为独立图层，交给合成器，不触发重绘；
  * 之前用 background-clip:text 的渐变平移做流光，每帧重绘文字，叠在磨砂玻璃上让 WebView2 的 GPU 持续高占用。
  */
@@ -913,7 +1013,7 @@ html.window-effects.solid-window body {
 @property --index-base {
   syntax: "<number>";
   inherits: false;
-  initial-value: 10;
+  initial-value: 8;
 }
 
 .index-rail {

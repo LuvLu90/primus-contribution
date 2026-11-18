@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { createRef } from "react";
 import { describe, expect, it } from "vitest";
 import {
+  baseLength,
   falloff,
   type IndexItem,
   MessageIndex,
@@ -9,7 +10,9 @@ import {
   nearestTick,
   RAIL_PAD,
   sample,
+  TICK_ACTIVE,
   TICK_PITCH,
+  TICK_REST,
 } from "./message-index";
 
 const items: IndexItem[] = Array.from({ length: 30 }, (_, i) => ({
@@ -152,5 +155,22 @@ describe("对话索引交互", () => {
     await waitFor(() => expect(screen.getByRole("tooltip").textContent).toContain("第 1 个问题"));
     fireEvent.keyDown(buttons[1] as HTMLElement, { key: "End" });
     expect(document.activeElement).toBe(buttons[5]);
+  });
+});
+
+describe("刻度静止长度", () => {
+  it("只有当前刻度最长，其余统一短，靠近当前的几道逐渐过渡；没有当前时全部一样短", () => {
+    const lens = Array.from({ length: 11 }, (_, i) => baseLength(i, 5));
+    expect(lens[5]).toBe(TICK_ACTIVE);
+    expect(lens[0]).toBe(TICK_REST);
+    expect(lens[10]).toBe(TICK_REST);
+    for (let d = 1; d < 4; d++) {
+      expect(lens[5 - d]).toBeGreaterThan(lens[5 - d - 1] as number);
+      expect(lens[5 - d]).toBeLessThan(TICK_ACTIVE);
+      expect(lens[5 - d]).toBeCloseTo(lens[5 + d] as number);
+    }
+    expect(Array.from({ length: 5 }, (_, i) => baseLength(i, -1))).toEqual(
+      Array(5).fill(TICK_REST),
+    );
   });
 });
