@@ -227,6 +227,32 @@ describe("设置·能力中心·MCP", () => {
     );
   });
 
+  it("~/.agents/mcp.json 只读展示：启停写成用户级 mcp.json 的覆盖项，不能编辑或删除", async () => {
+    const platform = setup();
+    const write = vi.spyOn(platform, "mcpConfigWrite");
+    openMcp();
+    const shared = await row(tm.shared.title, "shared-docs");
+    expect(screen.getByText(tm.shared.hint)).toBeTruthy();
+    expect(within(shared).queryByRole("button", { name: "编辑 shared-docs" })).toBeNull();
+    expect(within(shared).queryByRole("button", { name: "删除 shared-docs" })).toBeNull();
+    const before = (await platform.mcpConfigRead()).agents?.text;
+    fireEvent.click(within(shared).getByRole("switch", { name: "启用 shared-docs" }));
+    await waitFor(() => expect(write).toHaveBeenCalled());
+    const file = await platform.mcpConfigRead();
+    expect(JSON.parse(file.text ?? "").mcpServers["shared-docs"]).toEqual({ enabled: false });
+    expect(file.agents?.text).toBe(before);
+    // 覆盖项不在用户级列表里单独出现
+    const own = await screen.findByRole("list", { name: tm.title });
+    expect(within(own).queryByText("shared-docs")).toBeNull();
+    await waitFor(async () =>
+      expect(
+        within(await row(tm.shared.title, "shared-docs"))
+          .getByRole("switch", { name: "启用 shared-docs" })
+          .getAttribute("aria-checked"),
+      ).toBe("false"),
+    );
+  });
+
   it("测试连接显示状态；需要登录的服务器登录后连上", async () => {
     const platform = setup();
     const login = vi.spyOn(platform, "mcpLogin");

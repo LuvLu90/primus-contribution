@@ -20,6 +20,7 @@
 
 ### 2.3 Agent Core 少改
 - `agent-core/` 只允许三类改动：**品牌**（名称、目录、环境变量、系统提示）、**两协议裁剪**、**构建入口**。
+- 例外：用户明确决定、且无法用第一方扩展实现的功能补丁（如 Core 内置 MCP 扩展的配置读取，ADR 0022），登记在 `agent-core/PATCHES.md` 第四节，升级上游时重放。
 - 每一处改动都必须登记在 `agent-core/PATCHES.md`（改了什么、为什么、涉及文件）。
 - 其他需求一律用 `packages/extensions/` 中的第一方扩展实现。桌面端只使用 Core 公开的 RPC 协议与扩展 API，不依赖其内部实现。
 - 不要把 Core 编译成单文件 exe；安装包里是 JS 产物 + 官方 `node.exe`。

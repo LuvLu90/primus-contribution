@@ -35,6 +35,8 @@ const CORE_DIR = "C:\\Users\\mock\\AppData\\Roaming\\Primus\\core";
 const USER_SKILLS = `${CORE_DIR}\\skills`;
 const AGENTS_SKILLS = "C:\\Users\\mock\\.agents\\skills";
 export const MOCK_MCP_PATH = `${CORE_DIR}\\mcp.json`;
+/** `~/.agents/mcp.json`：与其他工具共用，只读（ADR 0022） */
+export const MOCK_AGENTS_MCP_PATH = "C:\\Users\\mock\\.agents\\mcp.json";
 
 const skillMd = (name: string, description: string) =>
   `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n`;
@@ -77,6 +79,16 @@ const SEED_MCP = `{
 }
 `;
 
+const SEED_AGENTS_MCP = `{
+  "mcpServers": {
+    "shared-docs": {
+      "url": "https://docs.example.com/mcp",
+      "description": "与其他 Agent 工具共用的文档检索"
+    }
+  }
+}
+`;
+
 /** 内容的“版本”：与薄壳一样文件不存在时为空串（这里用长度加简单哈希代替 SHA-256） */
 function versionOf(text: string | null): string {
   if (text === null) return "";
@@ -109,8 +121,10 @@ const cli = (stdout: string, code = 0, stderr = ""): CliOutput => ({
 });
 
 export interface MockCapabilitiesOptions {
-  /** 不预置技能与 mcp.json */
+  /** 不预置技能、mcp.json 与 ~/.agents/mcp.json */
   empty?: boolean;
+  /** `~/.agents/mcp.json` 的原文（null 为不存在）；默认按 `empty` 预置 */
+  agentsMcp?: string | null;
 }
 
 export function createMockCapabilities(options: MockCapabilitiesOptions = {}): CapabilityMethods {
@@ -118,6 +132,8 @@ export function createMockCapabilities(options: MockCapabilitiesOptions = {}): C
   const stages = new Map<string, SkillCandidate[]>();
   let stageSeq = 0;
   let mcpText: string | null = options.empty ? null : SEED_MCP;
+  const agentsMcpText: string | null =
+    options.agentsMcp !== undefined ? options.agentsMcp : options.empty ? null : SEED_AGENTS_MCP;
   const loggedIn = new Set<string>();
 
   const findSkill = (file: string) => {
@@ -246,6 +262,7 @@ export function createMockCapabilities(options: MockCapabilitiesOptions = {}): C
       path: MOCK_MCP_PATH,
       text: mcpText,
       version: versionOf(mcpText),
+      agents: { path: MOCK_AGENTS_MCP_PATH, text: agentsMcpText, error: null },
     }),
 
     mcpConfigWrite: async (text, version) => {
@@ -280,24 +297,58 @@ export function createMockCapabilities(options: MockCapabilitiesOptions = {}): C
       } catch (e) {
         errors.push(`${MOCK_MCP_PATH}: ${e instanceof Error ? e.message : e}`);
       }
+      let shared: Record<string, unknown> = {};
+      try {
+        shared = agentsMcpText ? (JSON.parse(agentsMcpText).mcpServers ?? {}) : {};
+      } catch (e) {
+        errors.push(`${MOCK_AGENTS_MCP_PATH}: ${e instanceof Error ? e.message : e}`);
+      }
+      const isObj = (v: unknown): v is Record<string, unknown> =>
+        typeof v === "object" && v !== null && !Array.isArray(v);
+      const isOverride = (v: Record<string, unknown>) =>
+        v.command === undefined && v.url === undefined && v.type === undefined;
+      const badArgs = (v: Record<string, unknown>) =>
+        v.args !== undefined &&
+        !(Array.isArray(v.args) && v.args.every((a) => typeof a === "string"));
       // 与 Core 一样：不合格的条目记进 errors，不列出、不连接
-      const valid: [string, Record<string, unknown>][] = [];
+      const valid: [string, Record<string, unknown>, string][] = [];
       for (const [name, entry] of Object.entries(servers)) {
+        // 覆盖 ~/.agents/mcp.json 服务器的条目在下面套用
+        if (isObj(entry) && isOverride(entry) && isObj(shared[name])) continue;
         if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
           errors.push(`${MOCK_MCP_PATH}: server "${name}" must be an object`);
           continue;
         }
         const rec = entry as Record<string, unknown>;
-        if (
-          rec.args !== undefined &&
-          !(Array.isArray(rec.args) && rec.args.every((a) => typeof a === "string"))
-        ) {
+        if (badArgs(rec)) {
           errors.push(`${MOCK_MCP_PATH}: server "${name}": args must be an array of strings`);
           continue;
         }
-        valid.push([name, rec]);
+        valid.push([name, rec, MOCK_MCP_PATH]);
       }
-      const reports = valid.map(([name, entry]) => {
+      // ~/.agents/mcp.json：用户级文件已定义同名服务器时冲突、用用户级那条；覆盖项改 enabled / exposure
+      for (const [name, entry] of Object.entries(shared)) {
+        if (!isObj(entry)) {
+          errors.push(`${MOCK_AGENTS_MCP_PATH}: server "${name}" must be an object`);
+          continue;
+        }
+        const own = servers[name];
+        if (own !== undefined && !(isObj(own) && isOverride(own))) {
+          errors.push(
+            `${MOCK_AGENTS_MCP_PATH}: server "${name}" is also defined in ${MOCK_MCP_PATH}, which is used`,
+          );
+          continue;
+        }
+        const merged = { ...entry, ...(isObj(own) ? own : {}) };
+        if (badArgs(merged)) {
+          errors.push(
+            `${MOCK_AGENTS_MCP_PATH}: server "${name}": args must be an array of strings`,
+          );
+          continue;
+        }
+        valid.push([name, merged, MOCK_AGENTS_MCP_PATH]);
+      }
+      const reports = valid.map(([name, entry, source]) => {
         const enabled = entry.enabled !== false;
         const http = typeof entry.url === "string";
         const transport = http
@@ -313,7 +364,7 @@ export function createMockCapabilities(options: MockCapabilitiesOptions = {}): C
         return {
           name,
           scope: "global",
-          source: MOCK_MCP_PATH,
+          source,
           enabled,
           exposure: typeof entry.exposure === "string" ? entry.exposure : "codemode",
           transport,

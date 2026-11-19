@@ -81,6 +81,7 @@ describe("项目里的技能与 MCP", () => {
       extensions: [],
       skills: ["tools/review"],
       mcpServers: ["mcp.json"],
+      agentsMcpServers: [],
       agentsSkills: [".agents/skills/lint"],
     });
     const files: Record<string, string> = {
@@ -101,6 +102,74 @@ describe("项目里的技能与 MCP", () => {
     });
     const project = list.filter((c) => c.scope === "project").map(capabilityKey);
     expect(project).toEqual(["skill:audit", "skill:lint"]);
+    setPlatformForTesting(undefined);
+  });
+});
+
+describe("MCP：.agents/mcp.json 与同级文件（ADR 0022）", () => {
+  it("项目：两处都列出，同名取 .primus，.primus 的覆盖项能停用 .agents 的服务器，.agents 里的 auth 不列", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    vi.spyOn(platform, "workspaceInspect").mockResolvedValue({
+      path: "/p",
+      agentsMd: null,
+      agentsMdTruncated: false,
+      extensions: [],
+      skills: [],
+      mcpServers: ["github", "off"],
+      agentsMcpServers: ["github", "docs", "off", "keyed"],
+      agentsSkills: [],
+    });
+    const files: Record<string, string> = {
+      "/p/.primus/mcp.json": JSON.stringify({
+        mcpServers: { github: { command: "gh-mcp" }, off: { enabled: false } },
+      }),
+      "/p/.agents/mcp.json": JSON.stringify({
+        mcpServers: {
+          github: { command: "other" },
+          docs: { url: "https://docs.example.com/mcp", description: "文档" },
+          off: { command: "off" },
+          keyed: { url: "https://k.example.com/mcp", auth: { provider: "demo" } },
+        },
+      }),
+    };
+    vi.spyOn(platform, "previewFile").mockImplementation(async (path) =>
+      path in files
+        ? { kind: "text", text: files[path] as string, truncated: false, size: 1 }
+        : Promise.reject(new Error("missing")),
+    );
+    const list = await loadCapabilities({
+      path: "/p",
+      name: "p",
+      trusted: true,
+      needsTrust: false,
+    });
+    const project = list.filter((c) => c.scope === "project");
+    expect(project.map(capabilityKey)).toEqual(["mcp:docs", "mcp:github"]);
+    expect(project.find((c) => c.name === "docs")?.description).toBe("文档");
+    setPlatformForTesting(undefined);
+  });
+
+  it("全局：~/.agents/mcp.json 的服务器也列出；用户级覆盖项停用的不列", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    vi.spyOn(platform, "mcpConfigRead").mockResolvedValue({
+      path: "/core/mcp.json",
+      text: JSON.stringify({ mcpServers: { a: { command: "a" }, hidden: { enabled: false } } }),
+      version: "v",
+      agents: {
+        path: "/home/.agents/mcp.json",
+        text: JSON.stringify({
+          mcpServers: { a: { command: "x" }, shared: { command: "s" }, hidden: { command: "h" } },
+        }),
+        error: null,
+      },
+    });
+    const list = await loadCapabilities(null);
+    expect(list.filter((c) => c.kind === "mcp").map(capabilityKey)).toEqual([
+      "mcp:a",
+      "mcp:shared",
+    ]);
     setPlatformForTesting(undefined);
   });
 });

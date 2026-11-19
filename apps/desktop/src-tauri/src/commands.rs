@@ -1321,12 +1321,15 @@ pub(crate) fn skill_set_enabled(
     Ok(())
 }
 
-/// 读取用户级 `mcp.json`（原文与版本）。
+/// 读取用户级 `mcp.json`（原文与版本），并附带只读的 `~/.agents/mcp.json`（ADR 0022）。
 #[tauri::command(async)]
 pub(crate) fn mcp_config_read(
     paths: State<'_, DataPaths>,
 ) -> Result<crate::mcp_config::McpConfigFile, CapabilityError> {
-    Ok(crate::mcp_config::read(&paths.core_dir())?)
+    Ok(crate::mcp_config::read(
+        &paths.core_dir(),
+        crate::skills::home_dir().as_deref(),
+    )?)
 }
 
 /// 写入用户级 `mcp.json`：`version` 须是读出时的版本，文件已被别处修改时以 code `conflict` 拒绝；返回新版本。

@@ -1,8 +1,15 @@
-// “+”菜单里的技能与 MCP：列出全局（Core 用户目录 `skills/`、`~/.agents/skills`、用户级 mcp.json）
-// 与当前项目（已信任工作区的 `.primus/skills`、`.agents/skills`、`.primus/mcp.json`）里会被 Core 加载的技能与 MCP 服务器。
+// “+”菜单里的技能与 MCP：列出全局（Core 用户目录 `skills/`、`~/.agents/skills`、用户级 mcp.json、`~/.agents/mcp.json`）
+// 与当前项目（已信任工作区的 `.primus/skills`、`.agents/skills`、`.primus/mcp.json`、`.agents/mcp.json`）里会被 Core
+// 加载的技能与 MCP 服务器。同级两个 mcp.json 冲突时与 Core 一样取 `.primus` / 用户级那一条（ADR 0022）。
 // 选中的项以“/名称”标签挂在输入框上方，发送时在消息开头注明要使用哪些技能与 MCP。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { listServers, parseMcpDocument } from "@/features/capabilities/mcp-config";
+import {
+  listServers,
+  listSharedServers,
+  type McpDocument,
+  type McpServerView,
+  parseMcpDocument,
+} from "@/features/capabilities/mcp-config";
 import { checkSkill } from "@/features/capabilities/skill-frontmatter";
 import { fill } from "@/features/capabilities/ui";
 import { getPlatform } from "@/lib/platform";
@@ -50,11 +57,42 @@ async function globalSkills(): Promise<ComposerCapability[]> {
   });
 }
 
+/** 解析 mcp.json 原文；不存在、无效时为 null（Core 不加载其中的服务器） */
+function tryParse(text: string | null | undefined): McpDocument | null {
+  if (text === null || text === undefined) return null;
+  try {
+    return parseMcpDocument(text);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 同级两个文件里 Core 会加载的服务器：主文件（用户级 mcp.json 或 `.primus/mcp.json`）的服务器，加上 `.agents/mcp.json`
+ * 里没被主文件同名定义、套用主文件覆盖项后仍启用的服务器
+ */
+function levelServers(
+  primary: McpDocument | null,
+  shared: McpDocument | null,
+  scope: CapabilityScope,
+): ComposerCapability[] {
+  const views: McpServerView[] = [
+    ...(primary ? listServers(primary, shared) : []),
+    ...(shared
+      ? listSharedServers(shared, primary, {
+          global: scope === "global",
+          primaryFile: scope === "global" ? "mcp.json" : ".primus/mcp.json",
+        })
+      : []),
+  ];
+  return views
+    .filter((s) => s.enabled && !s.error)
+    .map((s) => ({ kind: "mcp", name: s.name, scope, description: s.description }));
+}
+
 async function globalMcp(): Promise<ComposerCapability[]> {
   const file = await (await getPlatform()).mcpConfigRead();
-  return listServers(parseMcpDocument(file.text))
-    .filter((s) => s.enabled && !s.error)
-    .map((s) => ({ kind: "mcp", name: s.name, scope: "global", description: s.description }));
+  return levelServers(tryParse(file.text ?? "{}"), tryParse(file.agents?.text), "global");
 }
 
 /** 在工作区路径下拼出子路径（按工作区路径的分隔符） */
@@ -89,7 +127,8 @@ function skillFile(root: string, entry: string): { file: string; dirName: string
 /**
  * 项目里的技能与 MCP：只有已信任的工作区 Core 才会加载。
  * 技能读出 SKILL.md 的 frontmatter，用 Core 实际加载的名称（可能与目录名不同）；
- * MCP 读 `.primus/mcp.json` 自己解析，文件无效或过大时不列出（workspaceInspect 此时只给诊断占位值）
+ * MCP 读 `.primus/mcp.json` 与工作区本级的 `.agents/mcp.json` 自己解析，文件无效或过大时不列出其中的服务器
+ * （workspaceInspect 此时只给诊断占位值）
  */
 async function projectCapabilities(workspace: WorkspaceInfo | null): Promise<ComposerCapability[]> {
   if (!workspace?.trusted) return [];
@@ -103,23 +142,19 @@ async function projectCapabilities(workspace: WorkspaceInfo | null): Promise<Com
   const skills = await Promise.all(
     files.map(({ file, dirName }) => readSkill(file, dirName).catch(() => null)),
   );
-  const mcp =
-    d.mcpServers.length === 0 ? [] : await projectMcp(joinPath(root, ".primus", "mcp.json"));
+  const [primary, shared] = await Promise.all([
+    d.mcpServers.length === 0 ? null : readMcp(joinPath(root, ".primus", "mcp.json")),
+    d.agentsMcpServers.length === 0 ? null : readMcp(joinPath(root, ".agents", "mcp.json")),
+  ]);
+  const mcp = levelServers(primary, shared, "project");
   return [...skills.filter((c): c is ComposerCapability => c !== null), ...mcp];
 }
 
-async function projectMcp(file: string): Promise<ComposerCapability[]> {
+/** 读出并解析项目里的 mcp.json；读不到、过大或无效时为 null */
+async function readMcp(file: string): Promise<McpDocument | null> {
   const r = await (await getPlatform()).previewFile(file).catch(() => null);
-  if (r?.kind !== "text" || r.truncated) return [];
-  let doc: ReturnType<typeof parseMcpDocument>;
-  try {
-    doc = parseMcpDocument(r.text);
-  } catch {
-    return [];
-  }
-  return listServers(doc)
-    .filter((s) => s.enabled && !s.error)
-    .map((s) => ({ kind: "mcp", name: s.name, scope: "project", description: s.description }));
+  if (r?.kind !== "text" || r.truncated) return null;
+  return tryParse(r.text);
 }
 
 /** 读取失败的来源不影响其余来源，只是不列出 */

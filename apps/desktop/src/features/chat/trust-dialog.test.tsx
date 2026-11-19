@@ -29,6 +29,8 @@ describe("项目信任确认", () => {
     expect(screen.getByText(/github/)).toBeTruthy();
     expect(screen.getByText(t.trustAgentsSkills)).toBeTruthy();
     expect(screen.getByText(/\.agents\/skills\/lint/)).toBeTruthy();
+    expect(screen.getByText(t.trustAgentsMcp)).toBeTruthy();
+    expect(screen.getByText("：docs")).toBeTruthy();
     expect(screen.getByText(t.trustAgentsMd)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: t.trustAccept }));

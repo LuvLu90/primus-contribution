@@ -385,6 +385,7 @@ export const strings = {
     trustSkills: "技能",
     trustMcp: "MCP 服务器",
     trustAgentsSkills: ".agents 技能",
+    trustAgentsMcp: ".agents MCP 服务器",
     trustNothing: "项目内没有扩展、技能、MCP 配置或 AGENTS.md。",
     trustAccept: "信任",
     trustReject: "不信任",
@@ -828,6 +829,15 @@ export const strings = {
         logoutDone: "已退出“{name}”的登录",
         logoutFailed: "退出登录失败",
         invalid: "Core 不会加载这个服务器",
+        // `~/.agents/mcp.json`：与其他工具共用，乾元只读（ADR 0022）
+        shared: {
+          title: "与其他工具共用的 MCP 服务器",
+          file: "配置文件：{path}（只读）",
+          hint: "乾元不修改这个文件；在这里启用或停用会写成用户级 mcp.json 里的覆盖项。",
+          loadFailed: "读取失败：{message}",
+          parseFailed: "无法解析：{message}",
+          empty: "这个文件里没有服务器。",
+        },
         dialog: {
           addTitle: "添加 MCP 服务器",
           editTitle: "编辑 MCP 服务器",
@@ -930,6 +940,11 @@ export const strings = {
       exists: "已有名为“{name}”的服务器",
       clashExisting: "与已有的服务器“{other}”冲突（名字只差 - 与 _）",
       missing: "mcp.json 中没有服务器“{name}”",
+      // `.agents/mcp.json`（与其他工具共用，ADR 0022）
+      shadowed: "{file} 中已定义“{other}”，Core 使用那一条",
+      sharedDefined: "mcp.json 中已完整定义“{name}”，不能只改它的启停",
+      sharedOverrideInvalid:
+        "mcp.json 中“{name}”的覆盖项只能包含 enabled、exposure、toolExposure，请先修正",
       dropped: "“{name}”去掉了 Core 不支持的字段：{keys}",
       // biome-ignore lint/suspicious/noTemplateCurlyInString: 展示给用户的配置变量写法
       vscodeInput: "“{name}”用到了 VS Code 的 ${input:…} 变量，请改成实际的值或 ${环境变量}",

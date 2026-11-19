@@ -1113,6 +1113,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       extensions: ["guard.ts"],
       skills: ["review"],
       mcpServers: ["github"],
+      agentsMcpServers: ["docs"],
       agentsSkills: [".agents/skills/lint"],
     }),
 
