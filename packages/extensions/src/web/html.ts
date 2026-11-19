@@ -1,5 +1,5 @@
 // 网页 HTML → 便于模型阅读的 Markdown 文本（primus-web 的 web_fetch 用，ADR 0020）。
-// 不引入依赖：按正则逐段处理，目标是“读得懂”而不是忠实还原排版——
+// 不引入依赖：逐段扫描处理，目标是“读得懂”而不是忠实还原排版——
 // 去掉脚本、样式、导航、页脚等噪音；优先取 <main> / <article>；标题、列表、链接、代码块、表格转成 Markdown；
 // 代码块里的空白原样保留，其余空白合并。
 
@@ -73,16 +73,122 @@ export function decodeEntities(text: string): string {
   });
 }
 
-/** 去掉所有标签（不解码实体） */
-const stripTags = (html: string) => html.replace(/<[^>]*>/g, "");
+// 网页内容不可信：所有扫描都保证线性耗时（正则同步执行、无法中断，畸形页面不能拖住 Core）。
+// 开始标签到其后第一个 `>` 为止（与浏览器的宽松解析一致，属性里的 `>` 不处理）；
+// 找不到 `>` 或结束标签时立即停止（后面的同类标签也不会有）。
+
+/** 查找 `pos` 之后第一个 `>`，记住上次的结果，连续查找总耗时线性 */
+function gtFinder(s: string): (pos: number) => number {
+  let cached = -1;
+  let none = Number.POSITIVE_INFINITY;
+  return (pos) => {
+    if (pos >= none) return -1;
+    if (cached >= pos) return cached;
+    cached = s.indexOf(">", pos);
+    if (cached < 0) none = pos;
+    return cached;
+  };
+}
+
+/** 去掉所有标签（不解码实体）。线性扫描：`<` 之后没有 `>` 时其余原样保留 */
+export function stripTags(html: string): string {
+  let out = "";
+  let at = 0;
+  for (;;) {
+    const lt = html.indexOf("<", at);
+    if (lt < 0) break;
+    const gt = html.indexOf(">", lt + 1);
+    if (gt < 0) break;
+    out += html.slice(at, lt);
+    at = gt + 1;
+  }
+  return out + html.slice(at);
+}
+
+/** 按起止标记线性删除成对内容（如注释）；找不到结束标记时停止 */
+function removeDelimited(s: string, open: string, close: string): string {
+  let out = "";
+  let at = 0;
+  for (;;) {
+    const a = s.indexOf(open, at);
+    if (a < 0) break;
+    const b = s.indexOf(close, a + open.length);
+    if (b < 0) break;
+    out += s.slice(at, a);
+    at = b + close.length;
+  }
+  return out + s.slice(at);
+}
+
+/** 逐个替换单个标签（`head` 匹配标签开头，如 `/<img\b/gi`）；`by` 收到整个标签文本 */
+function replaceTags(s: string, head: RegExp, by: (tag: string) => string): string {
+  const nextGt = gtFinder(s);
+  let out = "";
+  let at = 0;
+  for (;;) {
+    head.lastIndex = at;
+    const o = head.exec(s);
+    if (!o) break;
+    const gt = nextGt(o.index + o[0].length);
+    if (gt < 0) break;
+    out += s.slice(at, o.index) + by(s.slice(o.index, gt + 1));
+    at = gt + 1;
+  }
+  return out + s.slice(at);
+}
+
+/**
+ * 逐个替换 `<tag …>…</tag>`（不区分大小写，取最近的结束标签）。`fn` 收到内部内容、开始标签的属性与整段原文。
+ * 返回 undefined 时提前结束（其余原样保留）。
+ */
+export function replaceElements(
+  s: string,
+  tag: string,
+  fn: (inner: string, attrs: string, all: string) => string | undefined,
+): string {
+  const head = new RegExp(`<${tag}\\b`, "gi");
+  const close = new RegExp(`<\\/${tag}\\s{0,64}>`, "gi");
+  const nextGt = gtFinder(s);
+  let out = "";
+  let at = 0;
+  for (;;) {
+    head.lastIndex = at;
+    const o = head.exec(s);
+    if (!o) break;
+    const attrsStart = o.index + o[0].length;
+    const gt = nextGt(attrsStart);
+    if (gt < 0) break;
+    close.lastIndex = gt + 1;
+    const c = close.exec(s);
+    if (!c) break;
+    const end = c.index + c[0].length;
+    const by = fn(s.slice(gt + 1, c.index), s.slice(attrsStart, gt), s.slice(o.index, end));
+    if (by === undefined) break;
+    out += s.slice(at, o.index) + by;
+    at = end;
+  }
+  return out + s.slice(at);
+}
+
+/** 第一个 `<tag …>…</tag>` 的内部内容 */
+function firstElement(s: string, tag: string): string | undefined {
+  let found: string | undefined;
+  replaceElements(s, tag, (inner) => {
+    found = inner;
+    return undefined;
+  });
+  return found;
+}
 
 /** 网页标题：<title>，没有时取 og:title */
 export function htmlTitle(html: string): string | undefined {
-  const raw =
-    /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] ??
-    /<meta\b[^>]*property\s*=\s*["']og:title["'][^>]*content\s*=\s*["']([^"']*)["']/i.exec(
-      html,
-    )?.[1];
+  let raw = firstElement(html, "title");
+  if (raw === undefined)
+    replaceTags(html, /<meta\b/gi, (tag) => {
+      if (raw === undefined && attr(tag, "property")?.toLowerCase() === "og:title")
+        raw = attr(tag, "content");
+      return "";
+    });
   if (raw === undefined) return undefined;
   const title = decodeEntities(stripTags(raw)).replace(/\s+/g, " ").trim();
   return title || undefined;
@@ -111,7 +217,7 @@ const DROP = [
 
 /** 块级元素：前后换段 */
 const BLOCK =
-  /<\/?(p|div|section|article|main|header|blockquote|ul|ol|dl|dd|figure|figcaption|table|thead|tbody|tfoot|details|summary|address|hr)\b[^>]*>/gi;
+  /<\/?(p|div|section|article|main|header|blockquote|ul|ol|dl|dd|figure|figcaption|table|thead|tbody|tfoot|details|summary|address|hr)\b/gi;
 
 /** 取属性值（双引号、单引号或不加引号） */
 function attr(tag: string, name: string): string | undefined {
@@ -134,68 +240,80 @@ function absoluteHref(href: string | undefined, base: string | undefined): strin
 
 /** 取正文区域：有 <main> 用 <main>，否则用最长的 <article>，都没有用 <body>（或整页） */
 function contentRegion(html: string): string {
-  const main = /<main\b[^>]*>([\s\S]*?)<\/main>/i.exec(html)?.[1];
+  const main = firstElement(html, "main");
   if (main && stripTags(main).trim().length > 200) return main;
   let best = "";
-  for (const m of html.matchAll(/<article\b[^>]*>([\s\S]*?)<\/article>/gi))
-    if ((m[1]?.length ?? 0) > best.length) best = m[1] ?? "";
+  replaceElements(html, "article", (inner) => {
+    if (inner.length > best.length) best = inner;
+    return "";
+  });
   if (stripTags(best).trim().length > 200) return best;
-  return /<body\b[^>]*>([\s\S]*)<\/body>/i.exec(html)?.[1] ?? html;
+  // <body> 到最后一个 </body>（没有结束标签时到末尾）
+  const open = /<body\b/i.exec(html);
+  if (!open) return html;
+  const gt = html.indexOf(">", open.index);
+  if (gt < 0) return html;
+  const start = gt + 1;
+  const close = /<\/body\s{0,64}>/gi;
+  close.lastIndex = start;
+  let end = html.length;
+  for (let c = close.exec(html); c; c = close.exec(html)) end = c.index;
+  return html.slice(start, end);
 }
 
 /** HTML → Markdown 文本。`baseUrl` 用来补全相对链接 */
 export function htmlToMarkdown(html: string, baseUrl?: string): string {
-  let s = html.replace(/<!--[\s\S]*?-->/g, "").replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, "");
-  for (const tag of DROP)
-    s = s.replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}\\s*>`, "gi"), " ");
+  let s = removeDelimited(html, "<!--", "-->");
+  s = removeDelimited(s, "<![CDATA[", "]]>");
+  for (const tag of DROP) s = replaceElements(s, tag, () => " ");
   // 页头常是站点导航；只在它不像正文标题区时去掉（含 h1 的保留）
-  s = s.replace(/<header\b[^>]*>([\s\S]*?)<\/header\s*>/gi, (all, inner: string) =>
-    /<h1\b/i.test(inner) ? all : " ",
-  );
+  s = replaceElements(s, "header", (inner, _attrs, all) => (/<h1\b/i.test(inner) ? all : " "));
   s = contentRegion(s);
 
   // 代码块：先换成占位符，最后还原，保证里面的空白与换行不被合并
   const blocks: string[] = [];
-  s = s.replace(/<pre\b[^>]*>([\s\S]*?)<\/pre\s*>/gi, (_all, inner: string) => {
-    const code = decodeEntities(stripTags(inner.replace(/<br\s*\/?>/gi, "\n"))).replace(
-      /^\n+|\s+$/g,
-      "",
-    );
-    const lang = /class\s*=\s*["'][^"']*\blang(?:uage)?-([\w+-]+)/i.exec(inner)?.[1] ?? "";
+  s = replaceElements(s, "pre", (inner) => {
+    const code = decodeEntities(stripTags(inner.replace(/<br\s{0,64}\/?>/gi, "\n")))
+      .replace(/^\n+/, "")
+      .trimEnd();
+    const lang =
+      /class\s{0,64}=\s{0,64}["'][^"']{0,512}?\blang(?:uage)?-([\w+-]{1,64})/i.exec(
+        inner.slice(0, 1024),
+      )?.[1] ?? "";
     blocks.push(`\n\n\`\`\`${lang}\n${code}\n\`\`\`\n\n`);
     return `\uE000${blocks.length - 1}\uE000`;
   });
 
+  for (let level = 1; level <= 6; level++)
+    s = replaceElements(s, `h${level}`, (inner) => {
+      const text = stripTags(inner).replace(/\s+/g, " ").trim();
+      return text ? `\n\n${"#".repeat(level)} ${text}\n\n` : "\n\n";
+    });
+  s = replaceElements(s, "a", (inner, attrs) => {
+    const text = stripTags(inner).replace(/\s+/g, " ").trim();
+    const href = absoluteHref(attr(attrs, "href"), baseUrl);
+    if (!text) return "";
+    return href ? `[${text}](${href})` : text;
+  });
+  s = replaceTags(s, /<img\b/gi, (tag) => {
+    const alt = attr(tag, "alt")?.trim();
+    return alt ? `[图片：${alt}]` : "";
+  });
+  s = replaceElements(s, "code", (inner) => {
+    const text = stripTags(inner);
+    return text.trim() ? `\`${text}\`` : "";
+  });
+  for (const tag of ["strong", "b"])
+    s = replaceElements(s, tag, (inner) => (inner.trim() ? `**${inner.trim()}**` : ""));
   s = s
-    .replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1\s*>/gi, (_all, level: string, inner: string) => {
-      const text = stripTags(inner).replace(/\s+/g, " ").trim();
-      return text ? `\n\n${"#".repeat(Number(level))} ${text}\n\n` : "\n\n";
-    })
-    .replace(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi, (_all, attrs: string, inner: string) => {
-      const text = stripTags(inner).replace(/\s+/g, " ").trim();
-      const href = absoluteHref(attr(attrs, "href"), baseUrl);
-      if (!text) return "";
-      return href ? `[${text}](${href})` : text;
-    })
-    .replace(/<img\b[^>]*>/gi, (tag) => {
-      const alt = attr(tag, "alt")?.trim();
-      return alt ? `[图片：${alt}]` : "";
-    })
-    .replace(/<code\b[^>]*>([\s\S]*?)<\/code\s*>/gi, (_all, inner: string) => {
-      const text = stripTags(inner);
-      return text.trim() ? `\`${text}\`` : "";
-    })
-    .replace(/<(strong|b)\b[^>]*>([\s\S]*?)<\/\1\s*>/gi, (_all, _t, inner: string) =>
-      inner.trim() ? `**${inner.trim()}**` : "",
-    )
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<li\b[^>]*>/gi, "\n- ")
-    .replace(/<\/li\s*>/gi, "\n")
-    .replace(/<dt\b[^>]*>/gi, "\n\n")
-    .replace(/<tr\b[^>]*>/gi, "\n|")
-    .replace(/<\/t[dh]\s*>/gi, " |")
-    .replace(/<t[dh]\b[^>]*>/gi, " ")
-    .replace(BLOCK, "\n\n");
+    .replace(/<br\s{0,64}\/?>/gi, "\n")
+    .replace(/<\/li\s{0,64}>/gi, "\n")
+    .replace(/<\/t[dh]\s{0,64}>/gi, " |");
+  s = replaceTags(s, /<li\b/gi, () => "\n- ");
+  s = replaceTags(s, /<dt\b/gi, () => "\n\n");
+  s = replaceTags(s, /<tr\b/gi, () => "\n|");
+  s = replaceTags(s, /<t[dh]\b/gi, () => " ");
+  s = replaceTags(s, BLOCK, () => "\n\n");
 
   s = decodeEntities(stripTags(s));
 
@@ -206,7 +324,7 @@ export function htmlToMarkdown(html: string, baseUrl?: string): string {
     .join("\n")
     .replace(/\n{3,}/g, "\n\n");
   // 只剩一个竖线或横杠的残行（空表格单元、空列表项）去掉
-  s = s.replace(/^(\||-)\s*$/gm, "").replace(/\n{3,}/g, "\n\n");
+  s = s.replace(/^(\||-)[ \t]*$/gm, "").replace(/\n{3,}/g, "\n\n");
   // 还原代码块
   s = s.replace(/\uE000(\d+)\uE000/g, (_all, i: string) => blocks[Number(i)] ?? "");
   return s.replace(/\n{3,}/g, "\n\n").trim();

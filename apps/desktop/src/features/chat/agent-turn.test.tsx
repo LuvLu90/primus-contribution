@@ -271,4 +271,26 @@ describe("联网步骤（ADR 0020）", () => {
     fireEvent.click(row);
     expect(await screen.findByText("无法连接搜索服务")).toBeTruthy();
   });
+
+  it("失败但没有 details 时，展开后显示工具结果文字", async () => {
+    renderTurn(
+      [
+        assistant([
+          { type: "toolCall", id: "f2", name: "web_fetch", arguments: { url: "https://a.com" } },
+        ]),
+        {
+          role: "toolResult",
+          toolCallId: "f2",
+          toolName: "web_fetch",
+          content: [{ type: "text", text: "[failed] 工具未注册" }],
+          isError: true,
+          timestamp: 3,
+        } as unknown as AgentMessage,
+      ],
+      true,
+      false,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /已阅读/ }));
+    expect(await screen.findByText("工具未注册")).toBeTruthy();
+  });
 });

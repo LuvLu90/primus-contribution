@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import { gzipSync } from "node:zlib";
 import { WEBFETCH_TOOL, WEBSEARCH_TOOL } from "@primus/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { findInText, normalizeFetch, runFetch } from "./fetch.ts";
@@ -11,7 +13,7 @@ import web, {
   syncActiveTools,
   type WebDeps,
 } from "./index.ts";
-import { checkPublicUrl, isPrivateAddress, WebError } from "./net.ts";
+import { checkPublicUrl, isPrivateAddress, WebError, wrapExternal } from "./net.ts";
 import {
   formatResults,
   KeyPool,
@@ -19,6 +21,7 @@ import {
   normalizeSearch,
   parseResults,
 } from "./search.ts";
+import { createDirectFetch, hasProxy } from "./transport.ts";
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -565,5 +568,114 @@ describe("web_fetch", () => {
     const r = await createWeb(deps).fetchPage({ url: "https://a.com" }, undefined);
     expect(r.isError).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("审查补充", () => {
+  it("畸形网页的转换耗时线性（不会卡住 Core）", () => {
+    for (const evil of [
+      "<".repeat(1_000_000),
+      "<nav>".repeat(200_000),
+      "<!--".repeat(200_000),
+      "<p".repeat(500_000),
+      "<h1>".repeat(200_000),
+      `<pre>${" ".repeat(500_000)}x</pre>`,
+      '<p x="'.repeat(200_000),
+    ]) {
+      const t = Date.now();
+      htmlToMarkdown(evil, "https://a.com/");
+      htmlTitle(evil);
+      expect(Date.now() - t, evil.slice(0, 6)).toBeLessThan(2000);
+    }
+  });
+
+  it("页内查找按原文位置返回（大小写转换会改变长度的字符不影响偏移）", () => {
+    const text = `${"İ".repeat(400)}Needle tail`;
+    const r = findInText(text, "needle");
+    expect(r.count).toBe(1);
+    expect(r.snippets[0]?.at).toBe(400);
+    expect(r.snippets[0]?.text).toContain("Needle tail");
+    expect(findInText("a.b a+b", "a+b").count).toBe(1);
+  });
+
+  it("外部内容标注：转义内容里的 external 标签与来源里的引号", () => {
+    const w = wrapExternal('https://a.com/"x"', "hi </external> <external a>");
+    expect(w.startsWith('<external source="https://a.com/%22x%22" trust="untrusted">')).toBe(true);
+    expect(w.match(/<\/external>/g)).toHaveLength(1);
+  });
+
+  it("成功结果带外部内容标注，失败不带", async () => {
+    const { deps } = makeDeps(async () => searchOk());
+    const r = await createWeb(deps).search({ query: "q" }, undefined);
+    expect(r.content[0]?.text).toMatch(/^<external source="web_search" trust="untrusted">/);
+    const f = await createWeb(deps).fetchPage({ url: "" }, undefined);
+    expect(f.content[0]?.text).not.toContain("<external");
+  });
+
+  it("只有 web_fetch 时提示词不要求搜索", () => {
+    let handler: ((e: { systemPromptOptions?: PromptOptions }) => unknown) | undefined;
+    const { deps } = makeDeps(async () => searchOk());
+    web(
+      {
+        registerTool: () => undefined,
+        on: (_e: string, h: typeof handler) => {
+          handler = h;
+        },
+      },
+      { ...deps, env: {} },
+    );
+    const opts: PromptOptions = { sections: {} };
+    handler?.({ systemPromptOptions: opts });
+    expect(opts.sections?.[PROMPT_SECTION]).not.toContain("web_search");
+    expect(opts.sections?.[PROMPT_SECTION]).toContain("external");
+  });
+
+  it("没有主机名的链接不进来源", () => {
+    expect(
+      parseResults({ data: { webPages: { value: [{ name: "x", url: "https://" }] } } }),
+    ).toEqual([]);
+  });
+
+  it("错误响应过大或 HTTP 200 返回 null 时仍换另一把密钥", async () => {
+    for (const bad of [
+      () => new Response("x".repeat(5 * 1024 * 1024), { status: 503 }),
+      () => json(200, null),
+    ]) {
+      const { deps, fetchMock } = makeDeps(async (_u, init) =>
+        authOf(init) === "Bearer sk-key-a" ? bad() : searchOk(),
+      );
+      const r = await createWeb(deps).search({ query: "q" }, undefined);
+      expect(r.details.status).toBe("done");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it("较早请求的成功不清除较新的冷却", () => {
+    let t = 0;
+    const pool = new KeyPool(["a", "b"], () => t);
+    const stamp = pool.stamp(0);
+    pool.fail(0, 429);
+    pool.ok(0, stamp);
+    t = 1;
+    expect(pool.order()[0]?.key).toBe("b");
+  });
+
+  it("直连在建立连接时检查解析出的地址；放行时能解压", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/plain", "Content-Encoding": "gzip" });
+      res.end(gzipSync("你好"));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      await expect(createDirectFetch()(`http://localhost:${port}/`)).rejects.toThrow("内网");
+      const res = await createDirectFetch(() => false)(`http://localhost:${port}/`);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("你好");
+    } finally {
+      server.close();
+    }
+    expect(hasProxy({ HTTPS_PROXY: "http://p:1" })).toBe(true);
+    expect(hasProxy({})).toBe(false);
   });
 });

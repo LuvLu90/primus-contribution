@@ -113,6 +113,15 @@ function errorMessage(body: string): string {
 
 const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 
+function validHttpUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return (u.protocol === "http:" || u.protocol === "https:") && u.hostname !== "";
+  } catch {
+    return false;
+  }
+}
+
 /** 解析响应：只保留 http(s) 链接的结果，按网址去重 */
 export function parseResults(body: unknown): SearchHit[] {
   const pages = (body as { data?: { webPages?: { value?: unknown } } })?.data?.webPages?.value;
@@ -122,8 +131,8 @@ export function parseResults(body: unknown): SearchHit[] {
   for (const p of pages as ApiPage[]) {
     const url = str(p?.url);
     const title = str(p?.name) || url;
-    // 只要 http(s) 链接，同一网址只留一条（前端按网址区分来源）
-    if (!/^https?:\/\//i.test(url) || seen.has(url)) continue;
+    // 只要有主机名的 http(s) 链接，同一网址只留一条（前端按网址区分来源）
+    if (!validHttpUrl(url) || seen.has(url)) continue;
     seen.add(url);
     const date = str(p?.datePublished);
     hits.push({
@@ -169,8 +178,6 @@ export async function requestSearch(
       }),
       signal: link.signal,
     }).catch(failed);
-    const { bytes } = await readLimited(res, MAX_RESPONSE_BYTES, "error").catch(failed);
-    const text = new TextDecoder().decode(bytes);
     const classify = (status: number, message: string): never => {
       const retry = status === 401 || status === 403 || status === 429 || status >= 500;
       throw new WebError(
@@ -179,10 +186,20 @@ export async function requestSearch(
         status,
       );
     };
-    if (!res.ok) classify(res.status, errorMessage(text) || `HTTP ${res.status}`);
+    if (!res.ok) {
+      // 先按状态分类；错误说明只读前一部分（过大的错误响应不影响换密钥）
+      const { bytes } = await readLimited(res, 64 * 1024, "truncate").catch(() => ({
+        bytes: new Uint8Array(),
+      }));
+      classify(res.status, errorMessage(new TextDecoder().decode(bytes)) || `HTTP ${res.status}`);
+    }
+    const { bytes } = await readLimited(res, MAX_RESPONSE_BYTES, "error").catch(failed);
+    const text = new TextDecoder().decode(bytes);
     let body: { code?: unknown };
     try {
-      body = JSON.parse(text) as { code?: unknown };
+      const parsed: unknown = JSON.parse(text);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw 0;
+      body = parsed as { code?: unknown };
     } catch {
       throw new WebError("搜索服务返回的内容无法解析", true);
     }
@@ -238,6 +255,8 @@ export function formatResults(query: string, hits: SearchHit[]): string {
 export class KeyPool {
   private next = 0;
   private readonly cooldown = new Map<number, number>();
+  /** 每把密钥的冷却版本：成功只清除本次尝试开始前就存在的冷却，不清除期间新写入的 */
+  private readonly version = new Map<number, number>();
 
   constructor(
     private readonly keys: readonly string[],
@@ -266,13 +285,24 @@ export class KeyPool {
 
   /** 记录一次失败：限流冷却 60 秒，鉴权失败冷却 10 分钟 */
   fail(index: number, status?: number): void {
-    if (status === 429) this.cooldown.set(index, this.now() + COOLDOWN_RATE_LIMIT_MS);
-    else if (status === 401 || status === 403)
-      this.cooldown.set(index, this.now() + COOLDOWN_AUTH_MS);
+    const ms =
+      status === 429
+        ? COOLDOWN_RATE_LIMIT_MS
+        : status === 401 || status === 403
+          ? COOLDOWN_AUTH_MS
+          : undefined;
+    if (ms === undefined) return;
+    this.cooldown.set(index, this.now() + ms);
+    this.version.set(index, this.stamp(index) + 1);
   }
 
-  ok(index: number): void {
-    this.cooldown.delete(index);
+  /** 开始一次尝试时记下的版本，成功后交给 `ok` */
+  stamp(index: number): number {
+    return this.version.get(index) ?? 0;
+  }
+
+  ok(index: number, stamp = this.stamp(index)): void {
+    if (this.stamp(index) === stamp) this.cooldown.delete(index);
   }
 }
 
@@ -288,9 +318,10 @@ export async function runSearch(
   let lastError = "搜索服务暂不可用";
   for (const { index, key } of pool.order()) {
     if (signal?.aborted) break;
+    const stamp = pool.stamp(index);
     try {
       const hits = await requestSearch(fetchImpl, { baseUrl, apiKey: key, search, signal });
-      pool.ok(index);
+      pool.ok(index, stamp);
       details.status = "done";
       details.results = hits.map(({ summary: _s, ...r }) => r);
       return { details, text: formatResults(search.query, hits) };

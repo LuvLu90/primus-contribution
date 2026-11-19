@@ -3,6 +3,10 @@
 import { isIP } from "node:net";
 
 /** 联网工具的失败：retry 表示换一把密钥 / 再试可能成功（搜索用），message 直接给模型与用户看 */
+/** 拒绝本机 / 内网地址时的说明 */
+export const PRIVATE_ADDRESS_MESSAGE =
+  "不能读取本机或内网地址；本机文件请用 read，本机服务请用命令行";
+
 export class WebError extends Error {
   constructor(
     message: string,
@@ -146,7 +150,7 @@ export async function checkPublicUrl(
   if (url.username || url.password) throw new WebError("网址里不能带用户名或密码");
   const host = url.hostname.replace(/^\[|\]$/g, "");
   if (!host || LOCAL_HOST.test(host) || isPrivateAddress(host))
-    throw new WebError("不能读取本机或内网地址；本机文件请用 read，本机服务请用命令行");
+    throw new WebError(PRIVATE_ADDRESS_MESSAGE);
   if (isIP(host) === 0) {
     let addrs: string[] = [];
     try {
@@ -155,8 +159,7 @@ export async function checkPublicUrl(
       if (signal?.aborted) throw e;
     }
     if (addrs.length === 0) throw new WebError(`无法解析这个域名：${host}`);
-    if (addrs.some(isPrivateAddress))
-      throw new WebError("不能读取本机或内网地址；本机文件请用 read，本机服务请用命令行");
+    if (addrs.some(isPrivateAddress)) throw new WebError(PRIVATE_ADDRESS_MESSAGE);
   }
   url.hash = "";
   return url;
@@ -189,4 +192,14 @@ export function untilAborted<T>(p: Promise<T>, signal: AbortSignal | undefined):
       },
     );
   });
+}
+
+/**
+ * 外部内容标注（技术方案第 17.3 节）：网页与搜索结果包一层 `<external source="…" trust="untrusted">`，
+ * 内容里出现的 external 标签转义，防止提前闭合。
+ */
+export function wrapExternal(source: string, text: string): string {
+  const src = source.replace(/["<>&\s]/g, (c) => encodeURIComponent(c));
+  const body = text.replace(/<(\/?)external\b/gi, "&lt;$1external");
+  return `<external source="${src}" trust="untrusted">\n${body}\n</external>`;
 }

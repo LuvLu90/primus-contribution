@@ -79,20 +79,21 @@ export function findInText(
   text: string,
   needle: string,
 ): { count: number; snippets: { at: number; text: string }[] } {
-  const hay = text.toLowerCase();
-  const n = needle.toLowerCase();
+  // 用不区分大小写的正则直接在原文上匹配：位置就是原文偏移（先转小写再找，长度可能变化）
+  const re = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu");
   const snippets: { at: number; text: string }[] = [];
   let count = 0;
-  let from = 0;
   let lastEnd = -1;
   for (;;) {
-    const at = hay.indexOf(n, from);
-    if (at < 0) break;
+    const m = re.exec(text);
+    if (!m) break;
+    const at = m.index;
+    const len = m[0].length;
+    if (len === 0) re.lastIndex++;
     count++;
-    from = at + Math.max(1, n.length);
     if (snippets.length >= MAX_FIND_MATCHES || at < lastEnd) continue;
     const start = Math.max(0, at - FIND_CONTEXT_CHARS);
-    const end = Math.min(text.length, at + n.length + FIND_CONTEXT_CHARS);
+    const end = Math.min(text.length, at + len + FIND_CONTEXT_CHARS);
     lastEnd = end;
     snippets.push({
       at,
@@ -211,11 +212,12 @@ export async function runFetch(
       `地址：${page.finalUrl}`,
       `类型：${page.contentType}`,
     ];
+    const cut = page.truncated ? "（网页过大，只读取了前 5 MB）" : "";
     if (total === 0) {
       details.range = [0, 0];
       return {
         details,
-        text: [...head, "", "（页面没有可读的文本内容，可能需要脚本渲染或登录）"].join("\n"),
+        text: [...head, "", `（页面没有可读的文本内容，可能需要脚本渲染或登录）${cut}`].join("\n"),
       };
     }
     if (p.find) {
@@ -223,11 +225,16 @@ export async function runFetch(
       details.matches = count;
       const lines = [
         ...head,
-        `查找“${p.find}”：共 ${count} 处${count > snippets.length ? `，列出前 ${snippets.length} 处` : ""}`,
+        `查找“${p.find}”：共 ${count} 处${count > snippets.length ? `，列出前 ${snippets.length} 处` : ""}${cut}`,
       ];
       for (const s of snippets) lines.push("", `--- 位置 ${s.at} ---`, s.text);
       if (count === 0)
-        lines.push("", "页面里没有找到这个词。可以换个关键词，或不带 find 直接阅读。");
+        lines.push(
+          "",
+          page.truncated
+            ? "已读取的前 5 MB 里没有找到这个词（后面的内容没有读取）。可以换个关键词，或不带 find 直接阅读。"
+            : "页面里没有找到这个词。可以换个关键词，或不带 find 直接阅读。",
+        );
       else lines.push("", "需要更多上下文时，用 offset 设为上面的位置附近再读取。");
       return { details, text: lines.join("\n") };
     }
@@ -236,7 +243,7 @@ export async function runFetch(
     details.range = [start, end];
     const lines = [
       ...head,
-      `内容：第 ${start}–${end} 字，共 ${total} 字${page.truncated ? "（网页过大，只读取了前 5 MB）" : ""}`,
+      `内容：第 ${start}–${end} 字，共 ${total} 字${cut}`,
       "",
       page.text.slice(start, end),
     ];

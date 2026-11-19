@@ -30,6 +30,21 @@ export interface WebCall {
   arguments: Record<string, unknown>;
 }
 
+/** 工具结果里的文字（没有结构化 details 时的错误原因），去掉 `[failed]` 前缀，最多 300 字 */
+function contentText(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return typeof content === "string" ? content : undefined;
+  const text = content
+    .map((b) =>
+      b && typeof b === "object" && (b as { type?: unknown }).type === "text"
+        ? String((b as { text?: unknown }).text ?? "")
+        : "",
+    )
+    .join("\n")
+    .replace(/^\[(failed|cancelled)\]\s*/, "")
+    .trim();
+  return text ? text.slice(0, 300) : undefined;
+}
+
 /** `www.example.com` → `example.com` */
 const bareSite = (site: string) => site.replace(/^www\d?\./i, "");
 
@@ -80,11 +95,14 @@ function SearchRow({
   call,
   status,
   details,
+  errorText,
   onOpen,
 }: {
   call: WebCall;
   status: Status;
   details?: WebSearchDetails;
+  /** 没有结构化错误时的错误原因（工具结果文字） */
+  errorText?: string;
   onOpen: (url: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -128,7 +146,7 @@ function SearchRow({
         <div className="mt-1 mb-1.5 overflow-hidden rounded-xl bg-hover/70 ring-1 ring-border/60">
           {failed || cancelled ? (
             <p className={cn("px-3 py-2 text-xs", failed ? "text-danger" : "text-muted")}>
-              {details?.error ?? (cancelled ? tw.cancelled : tw.failed)}
+              {details?.error ?? (cancelled ? tw.cancelled : (errorText ?? tw.failed))}
             </p>
           ) : results.length === 0 ? (
             <p className="px-3 py-2 text-xs text-muted">{running ? "…" : tw.noResults}</p>
@@ -165,11 +183,14 @@ function FetchRow({
   call,
   status,
   details,
+  errorText,
   onOpen,
 }: {
   call: WebCall;
   status: Status;
   details?: WebFetchDetails;
+  /** 没有结构化错误时的错误原因（工具结果文字） */
+  errorText?: string;
   onOpen: (url: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -227,7 +248,7 @@ function FetchRow({
           {info && <span className="text-muted tabular-nums">{info}</span>}
           {(failed || cancelled) && (
             <span className={failed ? "text-danger" : "text-muted"}>
-              {details?.error ?? (cancelled ? tw.cancelled : tw.failed)}
+              {details?.error ?? (cancelled ? tw.cancelled : (errorText ?? tw.failed))}
             </span>
           )}
         </div>
@@ -242,13 +263,14 @@ export function WebTrail<C extends WebCall>({
   infoOf,
 }: {
   calls: C[];
-  infoOf: (call: C) => { status: Status; details?: unknown };
+  infoOf: (call: C) => { status: Status; details?: unknown; content?: unknown };
 }) {
   const link = useExternalLinkConfirm(tw.linkDescription);
   return (
     <div className="flex flex-col gap-0.5">
       {calls.map((call) => {
         const info = infoOf(call);
+        const errorText = info.status === "error" ? contentText(info.content) : undefined;
         return (
           <div key={call.id} className="step-in">
             {call.name === WEBFETCH_TOOL ? (
@@ -256,6 +278,7 @@ export function WebTrail<C extends WebCall>({
                 call={call}
                 status={info.status}
                 details={info.details as WebFetchDetails | undefined}
+                errorText={errorText}
                 onOpen={link.confirm}
               />
             ) : (
@@ -263,6 +286,7 @@ export function WebTrail<C extends WebCall>({
                 call={call}
                 status={info.status}
                 details={info.details as WebSearchDetails | undefined}
+                errorText={errorText}
                 onOpen={link.confirm}
               />
             )}
