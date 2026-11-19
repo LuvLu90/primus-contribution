@@ -191,14 +191,35 @@ export function LipProgress({
       list.scrollTo?.({ top: Math.max(0, top - PITCH) });
   }, [activeIndex, hidden, phase]);
 
+  // Escape 收起弹出列表（不必移开焦点或指针，WCAG 1.4.13）；指针与焦点都离开整块后恢复，下次悬停 / 聚焦再展开
+  const [dismissed, setDismissed] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const restore = () => {
+    const root = rootRef.current;
+    if (root && (root.matches(":hover") || root.contains(document.activeElement))) return;
+    setDismissed(false);
+  };
+
   if (hidden || items.length === 0 || phase === "gone") return null;
 
   const ratio = items.length ? doneCount / items.length : 0;
 
   return (
     // 悬停 / 聚焦在整块（触发行 + 弹出列表）上都保持展开：鼠标从触发行移到列表上不会收起。纯 CSS（group-hover / focus-within）
+    // biome-ignore lint/a11y/noStaticElementInteractions: 只接住内部按钮冒泡的 Escape，不是独立的交互元素
     <div
+      ref={rootRef}
       data-testid="lip-progress"
+      data-dismissed={dismissed || undefined}
+      onKeyDown={(e) => {
+        if (e.key !== "Escape" || dismissed) return;
+        e.stopPropagation();
+        setDismissed(true);
+      }}
+      onMouseLeave={() => setTimeout(restore)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setTimeout(restore);
+      }}
       className={cn(
         "group/lp lip-item-in relative flex min-w-0 items-center transition-[opacity,filter] duration-300",
         phase === "leaving" && "opacity-0 blur-[2px]",
@@ -230,8 +251,10 @@ export function LipProgress({
         data-lip-popover
         className={cn(
           "pointer-events-none absolute bottom-full left-1/2 z-30 -translate-x-1/2 translate-y-1 pb-2 opacity-0 blur-[2px] transition-[opacity,translate,filter] duration-[160ms] motion-reduce:transition-none ease-[cubic-bezier(0.22,1,0.36,1)]",
-          "group-hover/lp:pointer-events-auto group-hover/lp:translate-y-0 group-hover/lp:opacity-100 group-hover/lp:blur-0 group-hover/lp:duration-[220ms]",
-          "group-focus-within/lp:pointer-events-auto group-focus-within/lp:translate-y-0 group-focus-within/lp:opacity-100 group-focus-within/lp:blur-0",
+          !dismissed &&
+            "group-hover/lp:pointer-events-auto group-hover/lp:translate-y-0 group-hover/lp:opacity-100 group-hover/lp:blur-0 group-hover/lp:duration-[220ms]",
+          !dismissed &&
+            "group-focus-within/lp:pointer-events-auto group-focus-within/lp:translate-y-0 group-focus-within/lp:opacity-100 group-focus-within/lp:blur-0",
         )}
       >
         <div className="w-[320px] max-w-[calc(100vw-3rem)] rounded-2xl border border-track-strong bg-surface px-2.5 pt-3 pb-2.5 shadow-[0_12px_32px_-12px_rgb(0_0_0/0.3)]">

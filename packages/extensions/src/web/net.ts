@@ -121,6 +121,7 @@ export function isPrivateAddress(ip: string): boolean {
   return (
     (first & 0xfe00) === 0xfc00 || // fc00::/7 唯一本地
     (first & 0xffc0) === 0xfe80 || // fe80::/10 链路本地
+    (first & 0xffc0) === 0xfec0 || // fec0::/10 站点本地（已废弃，仍可能在内网使用）
     (first & 0xff00) === 0xff00 // ff00::/8 组播
   );
 }
@@ -177,7 +178,11 @@ export function siteOf(url: string): string {
 /** 等待 `p`，`signal` 中止时立即以中止原因拒绝（迟到的结果被忽略） */
 export function untilAborted<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return p;
-  if (signal.aborted) return Promise.reject(signal.reason ?? new Error("aborted"));
+  if (signal.aborted) {
+    // 不再等待 p，但要接住它迟到的拒绝，免得变成未处理的拒绝
+    p.catch(() => undefined);
+    return Promise.reject(signal.reason ?? new Error("aborted"));
+  }
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(signal.reason ?? new Error("aborted"));
     signal.addEventListener("abort", onAbort, { once: true });

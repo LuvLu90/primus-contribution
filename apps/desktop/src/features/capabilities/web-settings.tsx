@@ -28,7 +28,8 @@ export function WebSettings() {
         (s) => alive && setEnabled(s.enabled),
         (e) => {
           if (!alive) return;
-          setEnabled(true);
+          // 读不到设置时 Core 也按关闭处理；显示关闭，改动开关会重新写入
+          setEnabled(false);
           setError(errorText(e, t.loadFailed));
         },
       );

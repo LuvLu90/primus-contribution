@@ -53,6 +53,14 @@ export function normalizeFetch(p: Partial<FetchParams> | undefined): NormalizedF
   };
 }
 
+/** 标题最多保留的字符数（标题进 details 与每次返回的开头，不受 max_chars 限制） */
+export const MAX_TITLE_CHARS = 300;
+
+function clipTitle(title: string | undefined): string | undefined {
+  if (title === undefined || title.length <= MAX_TITLE_CHARS) return title;
+  return `${title.slice(0, MAX_TITLE_CHARS)}…`;
+}
+
 /** 能当文本读的内容类型 */
 const TEXT_TYPES =
   /^(text\/|application\/(json|ld\+json|xml|rss\+xml|atom\+xml|javascript|x-javascript|ecmascript|x-yaml|yaml|toml|x-sh|markdown)$|application\/[\w.+-]+\+(json|xml)$)/;
@@ -179,7 +187,7 @@ export async function fetchPage(
     return {
       finalUrl: url.href,
       contentType: mime || (isHtml ? "text/html" : "text/plain"),
-      ...(isHtml ? { title: htmlTitle(body) } : {}),
+      ...(isHtml ? { title: clipTitle(htmlTitle(body)) } : {}),
       text: isHtml ? htmlToMarkdown(body, url.href) : body.replace(/\r\n?/g, "\n").trim(),
       truncated,
     };

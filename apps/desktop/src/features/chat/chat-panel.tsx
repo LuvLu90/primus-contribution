@@ -726,8 +726,11 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   // “继续”：被停止或出错中断后，让 Agent 从当前上下文接着做（/primus-continue），不重发上一句用户消息。
   // 出错 / 被中止的半截回复不进入模型上下文（ai/src/api/transform-messages.ts），继续提示里已说明
   // prompt 确认可能早于 agent_start：确认成功后保持锁定直到本轮开始（或兜底超时），免得重复点“继续”
+  // 新一轮也可能先于确认开始（甚至已经结束）：发请求前就记下“等待本轮开始”，看到开始即解锁，确认回来时不再重新上锁
   const continueHold = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const continueWaiting = useRef(false);
   const releaseContinue = () => {
+    continueWaiting.current = false;
     if (continueHold.current) clearTimeout(continueHold.current);
     continueHold.current = null;
     submittingRef.current = false;
@@ -738,16 +741,19 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     submittingRef.current = true;
     setSubmitting(true);
     stickToBottom.current = true;
+    continueWaiting.current = true;
     void continueTurn().then((ok) => {
       if (!ok) {
-        releaseContinue();
+        if (continueWaiting.current) releaseContinue();
         return;
       }
-      continueHold.current = setTimeout(releaseContinue, CONTINUE_START_TIMEOUT_MS);
+      // 本轮已经开始过（已解锁）时不再计时
+      if (continueWaiting.current)
+        continueHold.current = setTimeout(releaseContinue, CONTINUE_START_TIMEOUT_MS);
     });
   };
   useEffect(() => {
-    if (state.running && continueHold.current) releaseContinue();
+    if (state.running && continueWaiting.current) releaseContinue();
   });
   useEffect(
     () => () => {
@@ -822,6 +828,11 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     setStopping(false);
     sendResume();
   }, [state.running]);
+  // 取回插话时输入正被另一条发送占用（提交锁）：锁释放后、仍空闲时再发出取回的插话
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 只在提交锁释放时执行
+  useEffect(() => {
+    if (!submitting && !runningRef.current) sendResume();
+  }, [submitting]);
 
   // 一轮结束（运行中 → 空闲）：把 Agent 这一轮最后写出的文件在右栏打开预览。
   // 在后台标签结束的轮次先记下，切回该标签时再预览；新一轮开始时作废。

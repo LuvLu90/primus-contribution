@@ -1,5 +1,5 @@
 import type { TodoItem } from "@primus/protocol";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { strings } from "@/lib/strings";
 import { COMPLETION_DELAY_MS, LipProgress } from "./agent-progress";
@@ -38,6 +38,21 @@ describe("唇条里的计划进度", () => {
     expect((container.querySelector("[data-active-border]") as HTMLElement).style.translate).toBe(
       "0 76px",
     );
+  });
+
+  it("Escape 收起弹出列表，指针与焦点离开后恢复", () => {
+    vi.useFakeTimers();
+    const { container } = render(<LipProgress items={items} />);
+    const popover = () => container.querySelector("[data-lip-popover]") as HTMLElement;
+    const button = trigger() as HTMLElement;
+    button.focus();
+    fireEvent.keyDown(button, { key: "Escape" });
+    expect(popover().className).not.toContain("group-focus-within/lp:opacity-100");
+    expect(popover().className).not.toContain("group-hover/lp:opacity-100");
+    button.blur();
+    fireEvent.mouseLeave(screen.getByTestId("lip-progress"));
+    act(() => vi.runAllTimers());
+    expect(popover().className).toContain("group-hover/lp:opacity-100");
   });
 
   it("全部完成后显示“全部步骤已完成”，停留后淡出；又有未完成的步骤时重新出现", () => {

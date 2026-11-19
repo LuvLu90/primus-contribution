@@ -34,12 +34,14 @@ pub(crate) fn settings_file(paths: &DataPaths) -> PathBuf {
 }
 
 impl WebSettings {
-    /// 读取设置；文件不存在或内容无效时用默认值（开启）。
-    pub(crate) fn load(path: &Path) -> Self {
-        fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+    /// 读取设置；文件不存在或内容无效时用默认值（开启）。其他读取错误（权限、共享冲突）原样返回：
+    /// 此时 Core 的 primus-web 也读不到，会按关闭处理，设置界面不能报告成“开启”。
+    pub(crate) fn load(path: &Path) -> io::Result<Self> {
+        match fs::read(path) {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes).unwrap_or_default()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e),
+        }
     }
 
     /// 保存（先写临时文件再替换）。
@@ -60,16 +62,26 @@ mod tests {
         let paths = data_paths(&tmp.0);
         let file = settings_file(&paths);
         assert_eq!(file, paths.app_dir().join("web.json"));
-        assert_eq!(WebSettings::load(&file), WebSettings { enabled: true });
+        assert_eq!(WebSettings::load(&file).unwrap(), WebSettings { enabled: true });
 
         WebSettings { enabled: false }.save(&file).unwrap();
-        assert_eq!(WebSettings::load(&file), WebSettings { enabled: false });
+        assert_eq!(WebSettings::load(&file).unwrap(), WebSettings { enabled: false });
         // 扩展按这个格式读取
         let text = fs::read_to_string(&file).unwrap();
         let json: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(json, serde_json::json!({ "enabled": false }));
 
         fs::write(&file, b"{not json").unwrap();
-        assert_eq!(WebSettings::load(&file), WebSettings::default());
+        assert_eq!(WebSettings::load(&file).unwrap(), WebSettings::default());
+    }
+
+    #[test]
+    fn read_errors_are_not_reported_as_enabled() {
+        let tmp = TempDir::new();
+        let paths = data_paths(&tmp.0);
+        let file = settings_file(&paths);
+        // 路径是目录：不是“不存在”，读取失败要报错
+        fs::create_dir_all(&file).unwrap();
+        assert!(WebSettings::load(&file).is_err());
     }
 }

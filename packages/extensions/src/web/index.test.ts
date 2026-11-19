@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { connect as netConnect } from "node:net";
 import { gzipSync } from "node:zlib";
 import { WEBFETCH_TOOL, WEBSEARCH_TOOL } from "@primus/protocol";
 import { describe, expect, it, vi } from "vitest";
@@ -21,7 +22,7 @@ import {
   normalizeSearch,
   parseResults,
 } from "./search.ts";
-import { createDirectFetch, hasProxy } from "./transport.ts";
+import { createDirectFetch, proxyFor } from "./transport.ts";
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -665,17 +666,79 @@ describe("审查补充", () => {
       res.writeHead(200, { "Content-Type": "text/plain", "Content-Encoding": "gzip" });
       res.end(gzipSync("你好"));
     });
-    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    await new Promise<void>((r) => server.listen(0, r));
     const port = (server.address() as { port: number }).port;
     try {
-      await expect(createDirectFetch()(`http://localhost:${port}/`)).rejects.toThrow("内网");
-      const res = await createDirectFetch(() => false)(`http://localhost:${port}/`);
+      await expect(createDirectFetch(undefined, {})(`http://localhost:${port}/`)).rejects.toThrow(
+        "内网",
+      );
+      const res = await createDirectFetch(() => false, {})(`http://localhost:${port}/`);
       expect(res.status).toBe(200);
       expect(await res.text()).toBe("你好");
     } finally {
       server.close();
     }
-    expect(hasProxy({ HTTPS_PROXY: "http://p:1" })).toBe(true);
-    expect(hasProxy({})).toBe(false);
+  });
+
+  it("代理：按 HTTP(S)_PROXY / NO_PROXY 选择，只支持 http:// 代理", () => {
+    const env = { HTTP_PROXY: "http://p:8080", NO_PROXY: "localhost,.corp.example,10.0.0.1:443" };
+    expect(proxyFor(new URL("https://a.com/"), env)?.host).toBe("p:8080");
+    expect(proxyFor(new URL("http://a.com/"), { HTTPS_PROXY: "http://p:1" })).toBeUndefined();
+    expect(proxyFor(new URL("https://x.corp.example/"), env)).toBeUndefined();
+    expect(proxyFor(new URL("https://10.0.0.1/"), env)).toBeUndefined();
+    expect(proxyFor(new URL("http://10.0.0.1/"), env)).toBeDefined();
+    expect(() => proxyFor(new URL("https://a.com/"), { HTTPS_PROXY: "socks5://p:1" })).toThrow(
+      "http://",
+    );
+  });
+
+  it("走代理时用 CONNECT 连到本地检查过的 IP，代理不再解析域名", async () => {
+    const target = createServer((_req, res) => res.end("ok"));
+    await new Promise<void>((r) => target.listen(0, r));
+    const tport = (target.address() as { port: number }).port;
+    const seen: string[] = [];
+    const proxy = createServer();
+    proxy.on("connect", (req, client) => {
+      seen.push(String(req.url));
+      const url = String(req.url);
+      const cut = url.lastIndexOf(":");
+      const host = url.slice(0, cut).replace(/^\[|\]$/g, "");
+      const up = netConnect(Number(url.slice(cut + 1)), host, () => {
+        client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        up.pipe(client);
+        client.pipe(up);
+      });
+    });
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+    const pport = (proxy.address() as { port: number }).port;
+    try {
+      const env = { HTTP_PROXY: `http://127.0.0.1:${pport}` };
+      const res = await createDirectFetch(() => false, env)(`http://localhost:${tport}/`);
+      expect(await res.text()).toBe("ok");
+      expect(seen[0]).toMatch(/^(127\.0\.0\.1|\[::1\]):\d+$/);
+      await expect(createDirectFetch(undefined, env)(`http://localhost:${tport}/`)).rejects.toThrow(
+        "内网",
+      );
+    } finally {
+      proxy.close();
+      target.close();
+    }
+  });
+
+  it("站点本地 IPv6、data-href、占位符伪造、代码块空行", () => {
+    expect(isPrivateAddress("fec0::1")).toBe(true);
+    expect(isPrivateAddress("feff::1")).toBe(true);
+    expect(isPrivateAddress("ff00::1")).toBe(true);
+    expect(isPrivateAddress("2001:db8::1")).toBe(false);
+    expect(htmlToMarkdown('<a data-href="/t" href="/docs">文档</a>', "https://a.com/")).toBe(
+      "[文档](https://a.com/docs)",
+    );
+    const forged = `<pre>${"x".repeat(1000)}</pre><p>${"\uE0000\uE000".repeat(50)}&#xE000;0&#xE000;</p>`;
+    const out = htmlToMarkdown(forged);
+    expect(out.length).toBeLessThan(1200);
+    expect(out.match(/x{1000}/g)).toHaveLength(1);
+    expect(htmlToMarkdown("<p>前</p><pre>a\n\n\n\nb</pre><p>后</p>")).toBe(
+      "前\n\n```\na\n\n\n\nb\n```\n\n后",
+    );
   });
 });

@@ -393,7 +393,12 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
         draft.compacting = r.data.isCompacting;
         // 会话已空闲：缺号时可能错过了 auto_retry_end，清掉过期的重试提示（否则会一直显示并盖住最终错误卡片）
         if (!draft.running) draft.retry = undefined;
+        // Core 队列已空（缺号时可能错过了清空队列的 queue_update，或 Core 重启后队列已清空）：校正待插入列表。
+        // 队列不空时保留现有列表，等下一个 queue_update 整体替换
+        if (r.data.pendingMessageCount === 0) draft.steering = [];
       }
+      // 清空队列成功：取回的插话不再待插入
+      if (r.command === "clear_queue") draft.steering = [];
       if (r.command === "set_model" && r.data) {
         draft.model = { provider: r.data.provider, id: r.data.id };
         setCaps(draft, r.data);

@@ -51,6 +51,10 @@ const NAMED: Record<string, string> = {
   check: "✓",
 };
 
+/** 代码块占位符的标记字符（私用区）。页面里自带的同一字符（含实体编码）在转换前去掉，占位符无法伪造 */
+const MARK = "\uE000";
+const MARK_CODE = 0xe000;
+
 /** 解码 HTML 实体（命名实体只认常见的；数字实体全部支持，非法码点替换为 U+FFFD） */
 export function decodeEntities(text: string): string {
   return text.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z][a-z0-9]*);/gi, (all, body: string) => {
@@ -63,7 +67,8 @@ export function decodeEntities(text: string): string {
         !Number.isFinite(code) ||
         code <= 0 ||
         code > 0x10ffff ||
-        (code >= 0xd800 && code <= 0xdfff)
+        (code >= 0xd800 && code <= 0xdfff) ||
+        code === MARK_CODE
       )
         return "\uFFFD";
       return String.fromCodePoint(code);
@@ -221,7 +226,10 @@ const BLOCK =
 
 /** 取属性值（双引号、单引号或不加引号） */
 function attr(tag: string, name: string): string | undefined {
-  const m = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag);
+  // 属性名前必须是开头或空白（`data-href` 不算 `href`）
+  const m = new RegExp(`(?:^|[\\s/])${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(
+    tag.slice(0, 8192),
+  );
   return m ? (m[1] ?? m[2] ?? m[3]) : undefined;
 }
 
@@ -263,7 +271,7 @@ function contentRegion(html: string): string {
 
 /** HTML → Markdown 文本。`baseUrl` 用来补全相对链接 */
 export function htmlToMarkdown(html: string, baseUrl?: string): string {
-  let s = removeDelimited(html, "<!--", "-->");
+  let s = removeDelimited(html.replaceAll(MARK, ""), "<!--", "-->");
   s = removeDelimited(s, "<![CDATA[", "]]>");
   for (const tag of DROP) s = replaceElements(s, tag, () => " ");
   // 页头常是站点导航；只在它不像正文标题区时去掉（含 h1 的保留）
@@ -280,8 +288,8 @@ export function htmlToMarkdown(html: string, baseUrl?: string): string {
       /class\s{0,64}=\s{0,64}["'][^"']{0,512}?\blang(?:uage)?-([\w+-]{1,64})/i.exec(
         inner.slice(0, 1024),
       )?.[1] ?? "";
-    blocks.push(`\n\n\`\`\`${lang}\n${code}\n\`\`\`\n\n`);
-    return `\uE000${blocks.length - 1}\uE000`;
+    blocks.push(`\`\`\`${lang}\n${code}\n\`\`\``);
+    return `${MARK}${blocks.length - 1}${MARK}`;
   });
 
   for (let level = 1; level <= 6; level++)
@@ -325,7 +333,22 @@ export function htmlToMarkdown(html: string, baseUrl?: string): string {
     .replace(/\n{3,}/g, "\n\n");
   // 只剩一个竖线或横杠的残行（空表格单元、空列表项）去掉
   s = s.replace(/^(\||-)[ \t]*$/gm, "").replace(/\n{3,}/g, "\n\n");
-  // 还原代码块
-  s = s.replace(/\uE000(\d+)\uE000/g, (_all, i: string) => blocks[Number(i)] ?? "");
-  return s.replace(/\n{3,}/g, "\n\n").trim();
+  // 还原代码块：普通文本整理完再拼接，代码块里的空行原样保留；每个占位符只还原一次
+  const parts = s.split(new RegExp(`${MARK}(\\d+)${MARK}`));
+  const used = new Set<number>();
+  const out: string[] = [];
+  parts.forEach((part, i) => {
+    if (i % 2 === 0) {
+      const text = part.replace(/^\n+|\n+$/g, "");
+      if (text.trim()) out.push(text);
+      return;
+    }
+    const n = Number(part);
+    const block = blocks[n];
+    if (block !== undefined && !used.has(n)) {
+      used.add(n);
+      out.push(block);
+    }
+  });
+  return out.join("\n\n").trim();
 }

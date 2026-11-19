@@ -1,28 +1,55 @@
-// web_fetch 的直连传输（ADR 0020）：用 node:http / node:https 发请求，在建立连接时检查域名解析出的地址，
-// 解析到本机或内网地址的连接直接拒绝。`checkPublicUrl` 的预检查与实际连接用的是两次独立的 DNS 解析，
-// 只做预检查挡不住 DNS 重绑定；这里让“检查的地址”就是“连接的地址”。
-// 配了代理（HTTP(S)_PROXY / ALL_PROXY）时由代理解析与连接，改用 Core 的全局 fetch（随 Core 的代理设置）。
+// web_fetch 的传输（ADR 0020）：用 node:http / node:https 发请求，连接的地址就是检查过的地址（防 DNS 重绑定）。
+// `checkPublicUrl` 的预检查与实际连接是两次独立的 DNS 解析，只做预检查挡不住 DNS 重绑定。
+// - 直连：在建立连接时用 `guardedLookup` 解析并检查，解析到本机或内网地址就拒绝这次连接。
+// - 走代理（与 Core 一样认 HTTP(S)_PROXY / NO_PROXY）：本地解析并检查后，用 CONNECT 让代理连到这个 IP，
+//   再在隧道里按原域名做 TLS（SNI 与证书校验用域名），代理不再自己解析域名。只支持 http:// 代理。
 
 import { lookup as dnsLookup, type LookupAddress } from "node:dns";
 import * as http from "node:http";
 import * as https from "node:https";
-import type { LookupFunction } from "node:net";
-import { Readable } from "node:stream";
+import { isIP, type LookupFunction, type Socket } from "node:net";
+import { pipeline, Readable } from "node:stream";
+import * as tls from "node:tls";
 import * as zlib from "node:zlib";
 import { isPrivateAddress, PRIVATE_ADDRESS_MESSAGE, WebError } from "./net.ts";
 
-const PROXY_VARS = [
-  "HTTPS_PROXY",
-  "https_proxy",
-  "HTTP_PROXY",
-  "http_proxy",
-  "ALL_PROXY",
-  "all_proxy",
-];
+type Env = Record<string, string | undefined>;
 
-/** 环境里是否配了代理 */
-export function hasProxy(env: Record<string, string | undefined>): boolean {
-  return PROXY_VARS.some((k) => (env[k] ?? "").trim() !== "");
+const envOf = (env: Env, name: string): string =>
+  (env[name] ?? env[name.toLowerCase()] ?? "").trim();
+
+/** 主机是否命中 NO_PROXY（逗号或空白分隔；`*` 全部；`example.com` / `.example.com` 含子域名；可带端口） */
+export function bypassProxy(host: string, port: string, env: Env): boolean {
+  const h = host.replace(/^\[|\]$/g, "").toLowerCase();
+  for (const raw of envOf(env, "NO_PROXY").split(/[\s,]+/)) {
+    const entry = raw.trim().toLowerCase();
+    if (!entry) continue;
+    if (entry === "*") return true;
+    const m = /^(?:\[([^\]]+)\]|([^:]+))(?::(\d+))?$/.exec(entry.replace(/^\*?\./, ""));
+    const name = m?.[1] ?? m?.[2];
+    if (!name || (m?.[3] && m[3] !== port)) continue;
+    if (h === name || h.endsWith(`.${name}`)) return true;
+  }
+  return false;
+}
+
+/** 这个网址要用的代理（与 undici EnvHttpProxyAgent 一致：https 先认 HTTPS_PROXY，再退回 HTTP_PROXY）；不用代理时返回 undefined */
+export function proxyFor(url: URL, env: Env): URL | undefined {
+  const raw =
+    url.protocol === "https:"
+      ? envOf(env, "HTTPS_PROXY") || envOf(env, "HTTP_PROXY")
+      : envOf(env, "HTTP_PROXY");
+  if (!raw) return undefined;
+  const port = url.port || (url.protocol === "https:" ? "443" : "80");
+  if (bypassProxy(url.hostname, port, env)) return undefined;
+  let proxy: URL;
+  try {
+    proxy = new URL(raw.includes("://") ? raw : `http://${raw}`);
+  } catch {
+    throw new WebError("代理设置无效，无法读取网页");
+  }
+  if (proxy.protocol !== "http:") throw new WebError("只支持 http:// 代理，无法读取网页");
+  return proxy;
 }
 
 /** 连接时用的 DNS 解析：任何一个地址落在 `blocked` 里就拒绝这次连接 */
@@ -40,7 +67,72 @@ export function guardedLookup(blocked: (ip: string) => boolean = isPrivateAddres
   }) as LookupFunction;
 }
 
-/** 按 Content-Encoding 解压；不认识的编码原样返回 */
+/** 解析并检查一个主机，返回要连接的 IP（IP 字面量直接检查） */
+function resolveChecked(host: string, blocked: (ip: string) => boolean): Promise<string> {
+  const h = host.replace(/^\[|\]$/g, "");
+  if (isIP(h)) {
+    return blocked(h) ? Promise.reject(new WebError(PRIVATE_ADDRESS_MESSAGE)) : Promise.resolve(h);
+  }
+  return new Promise((resolve, reject) => {
+    guardedLookup(blocked)(h, { all: false }, (err, address) => {
+      if (err) reject(err);
+      else resolve(address as string);
+    });
+  });
+}
+
+/** 经 http 代理建隧道到已检查的 IP；https 在隧道里按原域名做 TLS */
+function tunnel(
+  target: URL,
+  proxy: URL,
+  blocked: (ip: string) => boolean,
+  signal: AbortSignal | undefined,
+): (opts: unknown, done: (err: Error | null, socket?: Socket) => void) => undefined {
+  return (_opts, done) => {
+    const secure = target.protocol === "https:";
+    const port = target.port || (secure ? "443" : "80");
+    resolveChecked(target.hostname, blocked).then((ip) => {
+      const authority = `${isIP(ip) === 6 ? `[${ip}]` : ip}:${port}`;
+      const headers: Record<string, string> = { Host: authority };
+      if (proxy.username || proxy.password) {
+        const cred = `${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`;
+        headers["Proxy-Authorization"] = `Basic ${Buffer.from(cred).toString("base64")}`;
+      }
+      const req = http.request({
+        host: proxy.hostname.replace(/^\[|\]$/g, ""),
+        port: proxy.port || "80",
+        method: "CONNECT",
+        path: authority,
+        headers,
+        signal,
+      });
+      req.once("connect", (res, socket) => {
+        if (res.statusCode !== 200) {
+          socket.destroy();
+          done(new WebError(`代理拒绝了连接（HTTP ${res.statusCode}）`));
+          return;
+        }
+        if (!secure) {
+          done(null, socket);
+          return;
+        }
+        const host = target.hostname.replace(/^\[|\]$/g, "");
+        const secured = tls.connect({
+          socket,
+          ...(isIP(host) ? {} : { servername: host }),
+          host,
+          ALPNProtocols: ["http/1.1"],
+        });
+        done(null, secured);
+      });
+      req.once("error", (e) => done(e));
+      req.end();
+    }, done);
+    return undefined;
+  };
+}
+
+/** 按 Content-Encoding 解压；不认识的编码原样返回。任何一段关闭或出错，整条流（含未读完的响应）一起销毁 */
 function decoded(res: http.IncomingMessage): Readable {
   const enc = String(res.headers["content-encoding"] ?? "")
     .trim()
@@ -54,16 +146,17 @@ function decoded(res: http.IncomingMessage): Readable {
           ? zlib.createBrotliDecompress()
           : undefined;
   if (!z) return res;
-  res.on("error", (e) => z.destroy(e));
-  return res.pipe(z);
+  pipeline(res, z, () => undefined);
+  return z;
 }
 
 /**
- * 与 `fetch` 同形的直连请求（只用到 web_fetch 需要的部分：method、headers、signal，不跟随跳转）。
- * `blocked` 供测试替换。
+ * 与 `fetch` 同形的请求（只用到 web_fetch 需要的部分：method、headers、signal，不跟随跳转）。
+ * `blocked` 与 `env` 供测试替换。
  */
 export function createDirectFetch(
   blocked: (ip: string) => boolean = isPrivateAddress,
+  env: Env = process.env,
 ): typeof fetch {
   const lookup = guardedLookup(blocked);
   return ((input: string | URL | Request, init: RequestInit = {}) => {
@@ -80,7 +173,22 @@ export function createDirectFetch(
         reject(signal.reason);
         return;
       }
-      const req = mod.request(url, { method, headers, lookup, signal }, (res) => {
+      let proxy: URL | undefined;
+      try {
+        proxy = proxyFor(url, env);
+      } catch (e) {
+        reject(e);
+        return;
+      }
+      const options: https.RequestOptions = proxy
+        ? {
+            method,
+            headers,
+            signal,
+            createConnection: tunnel(url, proxy, blocked, signal) as never,
+          }
+        : { method, headers, signal, lookup };
+      const req = mod.request(url, options, (res) => {
         const status = res.statusCode ?? 0;
         const h = new Headers();
         for (const [k, v] of Object.entries(res.headers)) {
@@ -112,9 +220,7 @@ export function createDirectFetch(
   }) as typeof fetch;
 }
 
-/** web_fetch 默认用的请求：配了代理时走 Core 的全局 fetch，否则直连并在连接时检查地址 */
-export function pageFetch(env: Record<string, string | undefined> = process.env): typeof fetch {
-  const direct = createDirectFetch();
-  return ((input: string | URL | Request, init?: RequestInit) =>
-    hasProxy(env) ? fetch(input, init) : direct(input, init)) as typeof fetch;
+/** web_fetch 默认用的请求 */
+export function pageFetch(): typeof fetch {
+  return createDirectFetch();
 }
