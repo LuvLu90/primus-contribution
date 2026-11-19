@@ -148,7 +148,18 @@ function removeDelimited(s: string, open: string, close: string): string {
   return out + s.slice(at);
 }
 
-/** 逐个替换单个标签（`head` 匹配标签开头，如 `/<img\b/gi`）；`by` 收到整个标签文本 */
+/**
+ * 标签名之后的结束判断：标签名后只能是空白、`/` 或 `>`（`\b` 会在 `nav-panel` 的连字符前误判为 `nav`）。
+ * 所有按标签名匹配的正则都用它结尾。
+ */
+const NAME_END = "(?=[\\t\\n\\f\\r />])";
+
+/** 匹配开始标签 `<tag`（标签名完整匹配，不区分大小写，全局） */
+function openTag(names: string): RegExp {
+  return new RegExp(`<(?:${names})${NAME_END}`, "gi");
+}
+
+/** 逐个替换单个标签（`head` 匹配标签开头，如 `openTag("img")`）；`by` 收到整个标签文本 */
 function replaceTags(s: string, head: RegExp, by: (tag: string) => string): string {
   const nextGt = gtFinder(s);
   let out = "";
@@ -174,7 +185,7 @@ export function replaceElements(
   tag: string,
   fn: (inner: string, attrs: string, all: string) => string | undefined,
 ): string {
-  const head = new RegExp(`<${tag}\\b`, "gi");
+  const head = openTag(tag);
   const close = new RegExp(`<\\/${tag}\\s{0,64}>`, "gi");
   const nextGt = gtFinder(s);
   let out = "";
@@ -208,11 +219,29 @@ function firstElement(s: string, tag: string): string | undefined {
   return found;
 }
 
+/**
+ * HTML 开头里的 `<meta>` 编码声明（编码预扫描）：`charset` 属性，或 `http-equiv="content-type"` 时
+ * 从 `content` 属性里取 `charset=`。只看完整属性（`name="description" content="… charset=gbk …"` 不算），
+ * 注释里的不算；没有时返回 undefined。
+ */
+export function metaCharset(head: string): string | undefined {
+  let found: string | undefined;
+  replaceTags(removeDelimited(head, "<!--", "-->"), openTag("meta"), (tag) => {
+    if (found !== undefined) return "";
+    const charset = attr(tag, "charset")?.trim();
+    if (charset) found = charset;
+    else if (attr(tag, "http-equiv")?.trim().toLowerCase() === "content-type")
+      found = /charset\s*=\s*["']?([\w-]+)/i.exec(attr(tag, "content") ?? "")?.[1];
+    return "";
+  });
+  return found;
+}
+
 /** 网页标题：<title>，没有时取 og:title */
 export function htmlTitle(html: string): string | undefined {
   let raw = firstElement(html, "title");
   if (raw === undefined)
-    replaceTags(html, /<meta\b/gi, (tag) => {
+    replaceTags(html, openTag("meta"), (tag) => {
       if (raw === undefined && attr(tag, "property")?.toLowerCase() === "og:title")
         raw = attr(tag, "content");
       return "";
@@ -244,26 +273,71 @@ const DROP = [
 ];
 
 /** 块级元素：前后换段 */
-const BLOCK =
-  /<\/?(p|div|section|article|main|header|blockquote|ul|ol|dl|dd|figure|figcaption|table|thead|tbody|tfoot|details|summary|address|hr)\b/gi;
+const BLOCK = new RegExp(
+  `<\\/?(?:p|div|section|article|main|header|blockquote|ul|ol|dl|dd|figure|figcaption|table|thead|tbody|tfoot|details|summary|address|hr)${NAME_END}`,
+  "gi",
+);
 
-/** 取属性值（双引号、单引号或不加引号） */
-function attr(tag: string, name: string): string | undefined {
-  // 属性名前必须是开头或空白（`data-href` 不算 `href`）
-  const m = new RegExp(`(?:^|[\\s/])${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(
-    tag.slice(0, 8192),
-  );
-  return m ? (m[1] ?? m[2] ?? m[3]) : undefined;
+const isSpace = (c: string | undefined) =>
+  c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f";
+
+/**
+ * 取属性值（双引号、单引号或不加引号）。`tag` 是整个标签（`<a …>`）或标签名之后的属性部分。
+ * 逐个读出属性名与值，只在属性名完整匹配（不区分大小写）时返回，其他属性值里的同名文字不算
+ * （`title="href=/old"`、`data-href` 都不是 `href`）。只看前 8192 个字符，线性。
+ */
+export function attr(tag: string, name: string): string | undefined {
+  const s = tag.slice(0, 8192);
+  const want = name.toLowerCase();
+  let i = 0;
+  // 整个标签时跳过 `<标签名`
+  if (s[0] === "<") while (i < s.length && !isSpace(s[i]) && s[i] !== "/" && s[i] !== ">") i++;
+  while (i < s.length) {
+    while (i < s.length && (isSpace(s[i]) || s[i] === "/")) i++;
+    if (i >= s.length || s[i] === ">") return undefined;
+    // 属性名：到空白、`/`、`>`、`=` 为止（首字符是 `=` 时算作名字的一部分，同 HTML 解析）
+    const nameStart = i++;
+    while (i < s.length && !isSpace(s[i]) && s[i] !== "/" && s[i] !== ">" && s[i] !== "=") i++;
+    const key = s.slice(nameStart, i).toLowerCase();
+    while (i < s.length && isSpace(s[i])) i++;
+    if (s[i] !== "=") continue; // 没有值的属性
+    i++;
+    while (i < s.length && isSpace(s[i])) i++;
+    let value: string;
+    const q = s[i];
+    if (q === '"' || q === "'") {
+      const end = s.indexOf(q, i + 1);
+      value = s.slice(i + 1, end < 0 ? s.length : end);
+      i = end < 0 ? s.length : end + 1;
+    } else {
+      const start = i;
+      while (i < s.length && !isSpace(s[i]) && s[i] !== ">") i++;
+      value = s.slice(start, i);
+    }
+    if (key === want) return value;
+  }
+  return undefined;
 }
+
+/**
+ * 链接地址的长度预算：相对链接按页面地址补全后会变长（每个都复制一遍页面地址），
+ * 不设上限时链接密集的页面转换结果可远超响应体本身。单个地址超过 MAX_HREF_CHARS、
+ * 或所有链接地址累计超过 MAX_LINK_CHARS 后，链接只保留文字（不带地址）。
+ */
+export const MAX_HREF_CHARS = 2048;
+export const MAX_LINK_CHARS = 1_000_000;
 
 /** 相对地址按页面地址补全；只保留 http / https 链接，其他（javascript:、mailto:、页内锚点）返回 undefined */
 function absoluteHref(href: string | undefined, base: string | undefined): string | undefined {
-  if (!href) return undefined;
+  // 原文可能含实体（`&amp;`），先放宽到 4 倍粗筛，补全后再按准确长度判断
+  if (!href || href.length > MAX_HREF_CHARS * 4) return undefined;
   const h = decodeEntities(href.trim());
   if (!h || h.startsWith("#")) return undefined;
   try {
     const u = base ? new URL(h, base) : new URL(h);
-    return u.protocol === "http:" || u.protocol === "https:" ? u.href : undefined;
+    if (u.protocol !== "http:" && u.protocol !== "https:") return undefined;
+    // 补全（含百分号编码）后仍可能变长：超过单个上限的不要
+    return u.href.length <= MAX_HREF_CHARS ? u.href : undefined;
   } catch {
     return undefined;
   }
@@ -280,7 +354,7 @@ function contentRegion(html: string): string {
   });
   if (stripTags(best).trim().length > 200) return best;
   // <body> 到最后一个 </body>（没有结束标签时到末尾）
-  const open = /<body\b/i.exec(html);
+  const open = openTag("body").exec(html);
   if (!open) return html;
   const gt = tagEnd(html, open.index + open[0].length);
   if (gt < 0) return html;
@@ -298,7 +372,7 @@ export function htmlToMarkdown(html: string, baseUrl?: string): string {
   s = removeDelimited(s, "<![CDATA[", "]]>");
   for (const tag of DROP) s = replaceElements(s, tag, () => " ");
   // 页头常是站点导航；只在它不像正文标题区时去掉（含 h1 的保留）
-  s = replaceElements(s, "header", (inner, _attrs, all) => (/<h1\b/i.test(inner) ? all : " "));
+  s = replaceElements(s, "header", (inner, _attrs, all) => (openTag("h1").test(inner) ? all : " "));
   s = contentRegion(s);
 
   // 代码块：先换成占位符，最后还原，保证里面的空白与换行不被合并
@@ -327,15 +401,24 @@ export function htmlToMarkdown(html: string, baseUrl?: string): string {
       const text = stripTags(inner).replace(/\s+/g, " ").trim();
       return text ? `\n\n${"#".repeat(level)} ${text}\n\n` : "\n\n";
     });
+  let linkBudget = MAX_LINK_CHARS;
   s = replaceElements(s, "a", (inner, attrs) => {
     const text = stripTags(inner).replace(/\s+/g, " ").trim();
-    const href = absoluteHref(attr(attrs, "href"), baseUrl);
     if (!text) return "";
+    // 预算用完后不再解析地址，链接只留文字
+    const href = linkBudget > 0 ? absoluteHref(attr(attrs, "href"), baseUrl) : undefined;
+    if (!href) return text;
     // href 已在 absoluteHref 里解码过一次；文本最后还要整体解码，这里把 `&` 写回 `&amp;`，
     // 让那次解码只还原出原样的 `&`（`&amp;copy;` 解码一次得到字面 `&copy;`，不能再变成 ©）
-    return href ? `[${text}](${href.replaceAll("&", "&amp;")})` : text;
+    const dest = href.replaceAll("&", "&amp;");
+    if (dest.length > linkBudget) {
+      linkBudget = 0;
+      return text;
+    }
+    linkBudget -= dest.length;
+    return `[${text}](${dest})`;
   });
-  s = replaceTags(s, /<img\b/gi, (tag) => {
+  s = replaceTags(s, openTag("img"), (tag) => {
     const alt = attr(tag, "alt")?.trim();
     return alt ? `[图片：${alt}]` : "";
   });
@@ -349,10 +432,10 @@ export function htmlToMarkdown(html: string, baseUrl?: string): string {
     .replace(/<br\s{0,64}\/?>/gi, "\n")
     .replace(/<\/li\s{0,64}>/gi, "\n")
     .replace(/<\/t[dh]\s{0,64}>/gi, " |");
-  s = replaceTags(s, /<li\b/gi, () => "\n- ");
-  s = replaceTags(s, /<dt\b/gi, () => "\n\n");
-  s = replaceTags(s, /<tr\b/gi, () => "\n|");
-  s = replaceTags(s, /<t[dh]\b/gi, () => " ");
+  s = replaceTags(s, openTag("li"), () => "\n- ");
+  s = replaceTags(s, openTag("dt"), () => "\n\n");
+  s = replaceTags(s, openTag("tr"), () => "\n|");
+  s = replaceTags(s, openTag("td|th"), () => " ");
   s = replaceTags(s, BLOCK, () => "\n\n");
 
   s = decodeEntities(stripTags(s));

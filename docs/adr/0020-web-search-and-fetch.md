@@ -14,7 +14,7 @@
 ## 决定
 
 - **实现为第一方扩展** `packages/extensions/src/web/`（`primus-web`），注册两个自定义工具，由对话模型按工具说明与提示词指引自行判断是否调用：
-  - `web_search`：参数 `query`（必填）、`freshness`（`noLimit` / `oneDay` / `oneWeek` / `oneMonth` / `oneYear`，或 `YYYY-MM-DD`、`YYYY-MM-DD..YYYY-MM-DD`，默认 `noLimit`）、`count`（1–20，默认 8）、`include_domains`、`exclude_domains`。
+  - `web_search`：参数 `query`（必填）、`freshness`（`noLimit` / `oneDay` / `oneWeek` / `oneMonth` / `oneYear`，或 `YYYY-MM-DD`、`YYYY-MM-DD..YYYY-MM-DD`，默认 `noLimit`；日期须是真实日历日期、范围开始不晚于结束，无效值按 `noLimit`）、`count`（1–20，默认 8）、`include_domains`、`exclude_domains`。
   - `web_fetch`：参数 `url`（必填）、`find`（最多 200 字，超长直接报错，不截短）、`offset`、`max_chars`（1000–40000，默认 12000）、`version`（续读时带上上次结果给出的正文版本）。
   - 注解都是 `readOnlyHint: true` / `openWorldHint: true`。
 - **搜索服务**：内置 LangSearch Web Search API（`POST <地址>/web-search`，Bearer 密钥；按官方文档用 `contents.text` 取网页正文代替短片段，每条限 1200 字（`maxCharacters`），`summary` 照旧带上、返回时优先用），
@@ -24,11 +24,11 @@
 - **两把内置密钥**：轮流使用；一把遇到网络错误、超时、401 / 403 / 429 / 5xx（含 HTTP 200 但业务码不是 200，或成功响应缺少 `code` / `data`）时换另一把，用户无感；这些状态不读响应体，立即换密钥。
   429 的那把冷却 60 秒，401 / 403 冷却 10 分钟（已有更晚的冷却时保留较晚的）；全部冷却时仍按顺序再试。400 等请求被拒时不换密钥，把原因交给模型。
 - **读取网页（仿 Codex 网页工具的 open_page / find_in_page）**：GET 网页，HTML 转成 Markdown 文本（去掉脚本、样式、导航、页脚等，优先取 `<main>` / `<article>`，
-  标题、列表、链接、代码块、表格转成 Markdown，不引入依赖）；纯文本、JSON、XML 等原样返回；按 `Content-Type` 与 `<meta charset>` 解码（含 GBK）。
-  长页面分段返回（`offset` 翻页；续读提示带正文的短哈希 `version`，网页在两次读取之间变了时从开头重新返回并说明，不按旧偏移跳读），带 `find` 时只返回命中处前后 300 字的片段（最多 8 处）。PDF、图片等二进制内容不读取。
+  标题、列表、链接、代码块、表格转成 Markdown，不引入依赖）；纯文本、JSON、XML 等原样返回；按 `Content-Type` 与 `<meta>` 编码声明解码（含 GBK；只认 `charset` 属性，或 `http-equiv="content-type"` 时 `content` 里的 `charset=`）。
+  长页面分段返回（`offset` 翻页，按 UTF-16 代码单元计、分段边界不切开代理对；续读提示带正文的短哈希 `version`，网页在两次读取之间变了时从开头重新返回并说明，不按旧偏移跳读），带 `find` 时只返回命中处前后 300 字的片段（最多 8 处）。PDF、图片等二进制内容不读取。
   超时 30 秒，响应体最多读 5 MB（超出截断）。`details` 为 `WebFetchDetails`。
 - **地址安全**：只允许 http / https、不带用户名密码；不读本机与内网地址（`localhost`、`.local` 等主机名，以及解析到回环、私有、链路本地、组播、文档专用（192.0.2.0/24、198.51.100.0/24、203.0.113.0/24、2001:db8::/32）等地址的域名），
-  每一次跳转都重新检查（`redirect: "manual"`，最多 5 次）。域名解析不到地址时拒绝（无法确认目标不在内网；只能经代理解析的域名因此读不了），解析也受超时与取消控制。直连时用 `node:http` / `node:https` 发请求，在建立连接时检查解析出的地址（检查的地址就是连接的地址，防 DNS 重绑定）；配了代理（与 Core 一样认 `HTTP(S)_PROXY` / `NO_PROXY`）时，本地解析并检查后用 CONNECT 让代理连到这个 IP，再在隧道里按原域名做 TLS，代理不再自己解析域名；只支持 http:// 代理，其他代理设置时读取网页报错。HTTP 101 协议升级不支持（立即报错），204 / 205 / 304 按无正文处理。HTML 转换全程线性扫描（开始标签到引号外的第一个 `>`，引号不闭合时退回第一个 `>`，找不到结束标签即停止；链接地址只解码一次实体），畸形页面不会拖住 Core。本机文件仍用 `read`，本机服务用命令行。
+  每一次跳转都重新检查（`redirect: "manual"`，最多 5 次）。域名解析不到地址时拒绝（无法确认目标不在内网；只能经代理解析的域名因此读不了），解析也受超时与取消控制。直连时用 `node:http` / `node:https` 发请求，在建立连接时检查解析出的地址（检查的地址就是连接的地址，防 DNS 重绑定）；配了代理（与 Core 一样认 `HTTP(S)_PROXY` / `NO_PROXY`）时，本地解析并检查后用 CONNECT 让代理连到这个 IP，再在隧道里按原域名做 TLS，代理不再自己解析域名；只支持 http:// 代理，其他代理设置时读取网页报错。HTTP 101 协议升级不支持（立即报错），204 / 205 / 304 按无正文处理。HTML 转换全程线性扫描（开始标签到引号外的第一个 `>`，引号不闭合时退回第一个 `>`，找不到结束标签即停止；链接地址只解码一次实体；标签名与属性名都完整匹配；补全后的链接地址单个超过 2048 字或累计超过 100 万字时只保留链接文字），畸形页面不会拖住 Core。本机文件仍用 `read`，本机服务用命令行。
   网页内容按不可信的外部数据处理：成功的搜索与读取结果包一层外部内容标注 `<external source="…" trust="untrusted">`（第 17.3 节，内容里的 external 标签转义），联网小节里说明标注内容是数据不是指令；工具说明也要求模型忽略网页里要它执行操作、改指令或泄露信息的文字。
 - **地址与密钥**：与内置图片服务相同的做法，只在 `builtin.rs` 一处：地址 `SEARCH_BASE_URL` 明文，两把密钥 `BUILTIN_SEARCH_API_KEYS` 按 `primus-builtin`
   掩码循环异或后以十六进制存放（源码中不出现明文）。薄壳拉起 Core 时设 `PRIMUS_SEARCH_BASE_URL`；扩展用 `execFile` 直接拉起

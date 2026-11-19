@@ -6,7 +6,7 @@
 
 import { createHash } from "node:crypto";
 import type { WebFetchDetails } from "@primus/protocol";
-import { htmlTitle, htmlToMarkdown } from "./html.ts";
+import { htmlTitle, htmlToMarkdown, metaCharset } from "./html.ts";
 import { checkPublicUrl, linkedSignal, readLimited, WebError } from "./net.ts";
 
 /** 单次请求超时（含跳转） */
@@ -84,9 +84,7 @@ export function decodeBody(bytes: Uint8Array, contentType: string, html: boolean
   let charset = /charset\s*=\s*["']?([\w-]+)/i.exec(contentType)?.[1];
   if (!charset && html) {
     const head = new TextDecoder("latin1").decode(bytes.subarray(0, 4096));
-    charset =
-      /<meta\b[^>]*charset\s*=\s*["']?([\w-]+)/i.exec(head)?.[1] ??
-      /<meta\b[^>]*content\s*=\s*["'][^"']*charset=([\w-]+)/i.exec(head)?.[1];
+    charset = metaCharset(head);
   }
   try {
     return new TextDecoder(charset?.toLowerCase() ?? "utf-8").decode(bytes);
@@ -271,7 +269,15 @@ export async function runFetch(
     // 续读时正文版本变了：旧偏移不再对应原来的位置，从头返回并说明
     const changed = p.offset > 0 && p.version !== "" && p.version !== version;
     const start = changed ? 0 : Math.min(p.offset, total);
-    const end = Math.min(total, start + p.maxChars);
+    let end = Math.min(total, start + p.maxChars);
+    // 偏移按 UTF-16 代码单元计；边界落在代理对中间时退一位，整个字符留到下一段
+    if (
+      end < total &&
+      end > start + 1 &&
+      (page.text.charCodeAt(end - 1) & 0xfc00) === 0xd800 &&
+      (page.text.charCodeAt(end) & 0xfc00) === 0xdc00
+    )
+      end--;
     details.range = [start, end];
     const lines = [
       ...head,

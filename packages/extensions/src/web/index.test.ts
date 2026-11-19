@@ -5,7 +5,13 @@ import { gzipSync } from "node:zlib";
 import { WEBFETCH_TOOL, WEBSEARCH_TOOL } from "@primus/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { findInText, MAX_FIND_CHARS, normalizeFetch, runFetch, textVersion } from "./fetch.ts";
-import { decodeEntities, htmlTitle, htmlToMarkdown } from "./html.ts";
+import {
+  decodeEntities,
+  htmlTitle,
+  htmlToMarkdown,
+  MAX_HREF_CHARS,
+  MAX_LINK_CHARS,
+} from "./html.ts";
 import web, {
   createWeb,
   localDate,
@@ -1063,5 +1069,99 @@ describe("审查补充", () => {
       undefined,
     );
     expect(ok.details.matches).toBe(1);
+  });
+});
+
+describe("审查补充（680f187）", () => {
+  const textDeps = (body: BodyInit, type: string) => ({
+    fetch: vi.fn(
+      async () => new Response(body, { status: 200, headers: { "Content-Type": type } }),
+    ) as unknown as typeof fetch,
+    lookup: async () => ["93.184.216.34"],
+  });
+
+  it("链接展开有总长度预算：预算内保留完整地址，超出后只留文字", () => {
+    const base = `https://a.com/${"x".repeat(1900)}/`;
+    const n = 1000;
+    const html = Array.from({ length: n }, (_, i) => `<p><a href="p${i}">L${i}</a></p>`).join("");
+    const md = htmlToMarkdown(html, base);
+    expect(md).toContain(`[L0](${base}p0)`);
+    expect(md).toContain(`\nL${n - 1}`);
+    expect(md).not.toContain(`[L${n - 1}]`);
+    expect(md.length).toBeLessThan(MAX_LINK_CHARS + html.length);
+    // 单个地址过长：只留文字
+    const long = `https://a.com/${"y".repeat(MAX_HREF_CHARS)}`;
+    expect(htmlToMarkdown(`<a href="${long}">长</a>`)).toBe("长");
+  });
+
+  it("分页不切开 UTF-16 代理对", async () => {
+    const text = `${"a".repeat(999)}😀${"b".repeat(1000)}`;
+    const deps = textDeps(text, "text/plain");
+    const first = await runFetch(
+      deps,
+      normalizeFetch({ url: "https://a.com/", max_chars: 1000 }),
+      undefined,
+    );
+    expect(first.details.range).toEqual([0, 999]);
+    expect(first.text).toContain("offset=999");
+    const next = await runFetch(
+      deps,
+      normalizeFetch({ url: "https://a.com/", offset: 999, max_chars: 1000 }),
+      undefined,
+    );
+    expect(next.details.range).toEqual([999, 1999]);
+    expect(next.text).toContain("😀b");
+  });
+
+  it("标签名完整匹配：nav-panel 不是 nav，a-link 不是 a", () => {
+    expect(htmlToMarkdown("<nav-panel><p>正文</p></nav-panel><nav>菜单</nav>")).toBe("正文");
+    expect(htmlToMarkdown('<p><a-link>甲</a-link> <a href="/g">乙</a></p>', "https://a.com/")).toBe(
+      "甲 [乙](https://a.com/g)",
+    );
+    expect(htmlToMarkdown("<ul><link-item>x</link-item><li>y</li></ul>")).toBe("x\n- y");
+  });
+
+  it("属性名匹配跳过其他属性的值", () => {
+    expect(
+      htmlToMarkdown('<p><a title="旧 href=/old" href="/guide">指南</a></p>', "https://a.com/"),
+    ).toBe("[指南](https://a.com/guide)");
+    expect(htmlToMarkdown("<p><a data-x='a href=/old' HREF=/u>读</a></p>", "https://a.com/")).toBe(
+      "[读](https://a.com/u)",
+    );
+    expect(htmlToMarkdown('<p><img title="x alt=假" alt="真"></p>')).toBe("[图片：真]");
+  });
+
+  it("只从有效的 meta 编码声明读取字符集", async () => {
+    const utf8 = new TextEncoder().encode(
+      '<html><head><meta name="description" content="说明 charset=gbk"><meta data-charset="gbk"></head><body><p>中文正文</p></body></html>',
+    );
+    const r1 = await runFetch(
+      textDeps(utf8, "text/html"),
+      normalizeFetch({ url: "https://a.com/u" }),
+      undefined,
+    );
+    expect(r1.text).toContain("中文正文");
+    const gbk = new Uint8Array([0xd6, 0xd0, 0xce, 0xc4]); // “中文”
+    const head = new TextEncoder().encode(
+      '<html><head><!-- <meta charset="big5"> --><meta http-equiv="Content-Type" content="text/html; charset=gbk"></head><body><p>',
+    );
+    const tail = new TextEncoder().encode("</p></body></html>");
+    const r2 = await runFetch(
+      textDeps(new Uint8Array([...head, ...gbk, ...tail]), "text/html"),
+      normalizeFetch({ url: "https://a.com/g" }),
+      undefined,
+    );
+    expect(r2.text).toContain("中文");
+  });
+
+  it("freshness 校验真实日期与范围顺序，无效时回到 noLimit", () => {
+    const f = (freshness: string) => normalizeSearch({ query: "x", freshness }).freshness;
+    expect(f("2026-02-30")).toBe("noLimit");
+    expect(f("2026-13-01")).toBe("noLimit");
+    expect(f("2026-09-13..2026-09-01")).toBe("noLimit");
+    expect(f("2026-02-01..2026-02-30")).toBe("noLimit");
+    expect(f("2024-02-29")).toBe("2024-02-29");
+    expect(f("2026-09-01..2026-09-01")).toBe("2026-09-01..2026-09-01");
+    expect(f("oneWeek")).toBe("oneWeek");
   });
 });

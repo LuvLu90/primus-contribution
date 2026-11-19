@@ -65,12 +65,26 @@ function domains(list: unknown): string[] {
   return [...out];
 }
 
-/** 规范化参数：未知时间范围回到 noLimit，结果数夹到 1–20 */
+/** 真实存在的日历日期（`2026-02-30` 不算） */
+function validDate(s: string): boolean {
+  if (!DATE.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+
+/** 日期范围：两端都是真实日期，且开始不晚于结束（同格式的日期按字符串比较即按时间比较） */
+function validRange(s: string): boolean {
+  if (!DATE_RANGE.test(s)) return false;
+  const [from = "", to = ""] = s.split("..");
+  return validDate(from) && validDate(to) && from <= to;
+}
+
+/** 规范化参数：未知或无效的时间范围回到 noLimit，结果数夹到 1–20 */
 export function normalizeSearch(p: Partial<SearchParams> | undefined): NormalizedSearch {
   const query = typeof p?.query === "string" ? p.query.trim().replace(/\s+/g, " ") : "";
   const f = typeof p?.freshness === "string" ? p.freshness.trim() : "";
   const freshness =
-    (WEBSEARCH_FRESHNESS as readonly string[]).includes(f) || DATE.test(f) || DATE_RANGE.test(f)
+    (WEBSEARCH_FRESHNESS as readonly string[]).includes(f) || validDate(f) || validRange(f)
       ? f
       : "noLimit";
   const raw = Number(p?.count);
