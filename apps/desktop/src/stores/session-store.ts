@@ -136,6 +136,11 @@ export interface SessionState {
   };
   /** 最近一次自动重试的结果（auto_retry_end）；下一轮开始时清除。最终失败时错误卡片注明重试了几次 */
   retryResult?: { attempt: number; success: boolean; finalError?: string };
+  /**
+   * Core 里还没投递的插话（queue_update 的 steering，整体替换）：运行中发送的消息先排在这里，
+   * 当前工具调用结束、下一次模型请求前才写进对话（与 Codex 的 pending steer 一致）
+   */
+  steering: string[];
 }
 
 export const initialSessionState: SessionState = {
@@ -149,6 +154,7 @@ export const initialSessionState: SessionState = {
   uiRequests: [],
   todos: [],
   compacting: false,
+  steering: [],
 };
 
 /** 末尾（忽略空白）是不是 `}`：完整的 JSON 对象必然以它结尾 */
@@ -510,8 +516,11 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
       // Core 实际生效的强度（切换模型时夹取等），与 get_state 一致
       draft.thinkingLevel = record.level;
       return;
+    case "queue_update":
+      // 只用插话队列：前端不使用 follow_up（运行中发送一律插话）
+      draft.steering = [...record.steering];
+      return;
     default:
-      // 其余事件（queue_update 等）由后续功能处理
       return;
   }
 }

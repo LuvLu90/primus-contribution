@@ -465,6 +465,20 @@ function sameTurn(a: AgentTurnProps, b: AgentTurnProps): boolean {
   return a.toolRuns === b.toolRuns || !b.running;
 }
 
+/** 被停止 / 截断后的“继续”：不重发上一句，让 Agent 从当前上下文接着做 */
+function ContinueButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex items-center gap-0.5 rounded-full border border-border px-2 py-0.5 text-2xs text-fg outline-none transition-colors hover:bg-hover focus-visible:ring-2 focus-visible:ring-accent/40"
+    >
+      {strings.chat.continue}
+      <Icon name="chevron-right" size="xs" />
+    </button>
+  );
+}
+
 export const AgentTurn = memo(function AgentTurn({
   messages,
   toolRuns,
@@ -584,12 +598,22 @@ export const AgentTurn = memo(function AgentTurn({
         />
       ))}
       {last?.stopReason === "aborted" && (
-        <p className="self-start rounded-full bg-hover px-2 py-0.5 text-2xs text-muted">
-          {strings.chat.stopped}
-        </p>
+        <div className="flex items-center gap-2 self-start">
+          <p className="rounded-full bg-hover px-2 py-0.5 text-2xs text-muted">
+            {strings.chat.stopped}
+          </p>
+          {!running && errorActions?.onContinue && (
+            <ContinueButton onClick={errorActions.onContinue} />
+          )}
+        </div>
       )}
       {last?.stopReason === "length" && (
-        <p className="text-danger text-xs">{strings.chat.replyTruncated}</p>
+        <div className="flex items-center gap-2 self-start">
+          <p className="text-danger text-xs">{strings.chat.replyTruncated}</p>
+          {!running && errorActions?.onContinue && (
+            <ContinueButton onClick={errorActions.onContinue} />
+          )}
+        </div>
       )}
       {/* 自动重试中：显示进度与“停止重试”，不显示这次失败的错误卡片 */}
       {retry && <RetryNotice retry={retry} onStop={onStopRetry} />}

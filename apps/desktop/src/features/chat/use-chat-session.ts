@@ -3,11 +3,13 @@
 import {
   type AskAnswerArgs,
   CONTEXT_STATS_COMMAND,
+  CONTINUE_COMMAND,
   type CoreBatch,
   type ExtensionUiResponse,
   type ImageContent,
   PLAN_COMMAND,
   type PlanApproveArgs,
+  type PromptDisposition,
   type ThinkingLevel,
 } from "@primus/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -93,6 +95,19 @@ export interface ChatSession {
   abort: () => Promise<boolean>;
   /** 停止 Core 的自动重试（abort_retry）；成功返回 true，失败设置 error 并返回 false */
   abortRetry: () => Promise<boolean>;
+  /**
+   * 运行中插话（prompt + streamingBehavior: "steer"）：Core 仍在运行时排进插话队列，
+   * 当前工具调用结束、下一次模型请求前写进对话；Core 刚好已空闲时按普通消息开始新一轮。
+   * 返回 Core 的处置（queued / started / handled），失败设置 error 并返回 undefined
+   */
+  steer: (message: string, images?: ImageContent[]) => Promise<PromptDisposition | undefined>;
+  /** 取回并清空 Core 里还没投递的插话（clear_queue）；失败设置 error 并返回 undefined */
+  clearQueue: () => Promise<string[] | undefined>;
+  /**
+   * 继续被停止或出错中断的回复（扩展命令 /primus-continue）：不重发上一句，
+   * 而是让 Agent 从当前上下文接着做；成功返回 true
+   */
+  continueTurn: () => Promise<boolean>;
   /** 正在重启内核：期间重启入口不可用，避免连点重复重启 */
   restarting: boolean;
   /** 重启内核并重建会话状态；进行中再次调用会被忽略 */
@@ -590,6 +605,58 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     }
   }, [fail]);
 
+  const steer = useCallback(
+    async (message: string, images?: ImageContent[]): Promise<PromptDisposition | undefined> => {
+      const c = conn.current;
+      if (!c) {
+        fail(new Error(strings.chat.sessionNotOpen));
+        return undefined;
+      }
+      try {
+        // Core 恰好空闲时插话会直接开一轮：先同步权限模式，失败就不发
+        await syncMode(c.client);
+        const res = await c.client.request("prompt", {
+          message,
+          ...(images && images.length > 0 ? { images } : {}),
+          streamingBehavior: "steer",
+        });
+        return res.success ? res.data.disposition : undefined;
+      } catch (e) {
+        fail(e);
+        return undefined;
+      }
+    },
+    [fail, syncMode],
+  );
+
+  const clearQueue = useCallback(async (): Promise<string[] | undefined> => {
+    const c = conn.current;
+    if (!c) return undefined;
+    try {
+      const res = await c.client.request("clear_queue");
+      return res.success ? res.data.steering : undefined;
+    } catch (e) {
+      fail(e);
+      return undefined;
+    }
+  }, [fail]);
+
+  const continueTurn = useCallback(async (): Promise<boolean> => {
+    const c = conn.current;
+    if (!c) {
+      fail(new Error(strings.chat.sessionNotOpen));
+      return false;
+    }
+    try {
+      await syncMode(c.client);
+      const res = await c.client.request("prompt", { message: `/${CONTINUE_COMMAND}` });
+      return res.success;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  }, [fail, syncMode]);
+
   const abortRetry = useCallback(async (): Promise<boolean> => {
     const c = conn.current;
     if (!c) return false;
@@ -821,6 +888,9 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     send,
     abort,
     abortRetry,
+    steer,
+    clearQueue,
+    continueTurn,
     restarting,
     restart,
     respondUi,

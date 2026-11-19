@@ -2,7 +2,9 @@ import {
   type AgentMessage,
   type AskData,
   type AssistantMessage,
+  CONTINUE_COMMAND,
   type CoreRecord,
+  type ImageContent,
   PLAN_SUBMIT_TOOL,
   type PlanDoc,
   type PlanSubmitDetails,
@@ -260,6 +262,67 @@ export const MOCK_ERROR_KINDS = [
   "重试成功",
 ] as const;
 export type MockErrorKind = (typeof MOCK_ERROR_KINDS)[number];
+
+/**
+ * 继续（/primus-continue）：与普通回复相同，但开头是一条不显示的自定义消息而不是用户消息，
+ * 与真实扩展 sendMessage({ display: false }, { triggerTurn: true }) 的事件一致
+ */
+export function continueScenario(now: number): ScenarioResult {
+  const base = promptScenario("继续", now);
+  const custom: AgentMessage = {
+    role: "custom",
+    customType: CONTINUE_COMMAND,
+    content: "继续",
+    display: false,
+    timestamp: now,
+  };
+  const swap = (m: AgentMessage) => (m.role === "user" ? custom : m);
+  return {
+    ...base,
+    messages: base.messages.map(swap),
+    records: base.records.map((r) =>
+      r.type === "message_start" || r.type === "message_end"
+        ? { ...r, message: swap(r.message) }
+        : r,
+    ),
+  };
+}
+
+/**
+ * 插话写入对话（Core 在下一次模型请求前投递 steer）：清空插话队列 → 一条用户消息 → 一段简短回答。
+ * 插在当前一轮的 agent_end 之前，与真实 Core 在同一轮内继续一致
+ */
+export function steerRecords(
+  items: readonly { text: string; images?: ImageContent[] }[],
+  now: number,
+): CoreRecord[] {
+  const records: CoreRecord[] = [{ type: "queue_update", steering: [], followUp: [] }];
+  items.forEach(({ text, images }, i) => {
+    // 带图片的插话与 Core 一致：正文与图片一起写进用户消息
+    const content = images?.length ? [{ type: "text" as const, text }, ...images] : text;
+    const user: AgentMessage = { role: "user", content, timestamp: now + i * 2 };
+    const answer = `收到补充：「${text}」，接下来按这个要求继续。`;
+    const u = usage(260, 30);
+    const reply: AssistantMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: answer }],
+      stopReason: "stop",
+      usage: u,
+      timestamp: now + i * 2 + 1,
+      ...MODEL,
+    };
+    records.push({ type: "turn_start" });
+    records.push({ type: "message_start", message: user }, { type: "message_end", message: user });
+    records.push({
+      type: "message_start",
+      message: { ...reply, content: [], stopReason: "pending" },
+    });
+    streamText(records, "text", 0, answer, u);
+    records.push({ type: "message_end", message: reply });
+    records.push({ type: "turn_end", message: reply, toolResults: [] });
+  });
+  return records;
+}
 
 export function mockErrorKind(prompt: string): MockErrorKind | undefined {
   const m = /#错误[:：](\S+)/.exec(prompt);

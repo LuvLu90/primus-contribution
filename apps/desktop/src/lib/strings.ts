@@ -134,7 +134,13 @@ export const strings = {
     stop: "停止",
     stopping: "正在停止",
     stopped: "已停止",
-    replyTruncated: "输出达到模型长度上限，回复被截断。可以发“继续”接着写，或换输出更长的模型。",
+    /** 运行中发送按钮：插话进当前对话 */
+    steerSend: "发送（插入当前对话）",
+    /** 待插入的插话气泡下方 */
+    steerPending: "将在当前步骤完成后插入",
+    /** 被停止 / 出错 / 截断后接着做（不重发上一句） */
+    continue: "继续",
+    replyTruncated: "输出达到模型长度上限，回复被截断。可以点“继续”接着写，或换输出更长的模型。",
     replyFailed: "回复出错",
     replyError: {
       categories: {

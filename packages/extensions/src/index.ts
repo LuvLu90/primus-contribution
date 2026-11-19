@@ -5,6 +5,7 @@ import attach from "./attach/index.ts";
 import auth from "./auth/index.ts";
 import checkpoint from "./checkpoint/index.ts";
 import contextStats from "./context-stats/index.ts";
+import primusContinue from "./continue/index.ts";
 import guard from "./guard/index.ts";
 import imagegen from "./imagegen/index.ts";
 import narrate from "./narrate/index.ts";
@@ -20,7 +21,8 @@ export type PrimusExtension = (pi: unknown) => void;
  * 注册顺序：guard 最先，保证其他扩展的工具调用都经过审批；auth 只设置模型令牌，不挂工具；narrate 只追加系统提示词；
  * web 注册 `web_search` / `web_fetch`（联网，ADR 0020），排在 narrate 前：它按设置增减工具、加“联网”小节，
  * narrate 再在此基础上追加进度说明；contextStats 只注册一个只读的统计命令；attach 只在发送前把附件展开成 Core 原生的 `<file>` 引用；
- * preview 注册只读工具 `preview`（在右栏打开预览）；imagegen 注册 `generate_image`（对话内生成图片，ADR 0018）
+ * preview 注册只读工具 `preview`（在右栏打开预览）；imagegen 注册 `generate_image`（对话内生成图片，ADR 0018）；
+ * continue 只注册 `/primus-continue`（继续被中断的回复，ADR 0021）
  */
 export const modules: readonly PrimusExtension[] = [
   guard,
@@ -34,6 +36,7 @@ export const modules: readonly PrimusExtension[] = [
   attach,
   preview,
   imagegen,
+  primusContinue,
 ];
 
 export default function primus(pi: unknown): void {

@@ -5,6 +5,12 @@ export const CONTEXT_STATS_WIDGET = "primus:context-stats";
 export const CONTEXT_STATS_COMMAND = "primus-context-stats";
 
 /**
+ * 继续被停止或出错中断的回复（primus-continue）：前端发 `/primus-continue`，扩展写入一条不显示的
+ * 自定义消息（customType 同名）并触发新一轮，Agent 从当前上下文接着做，不重发上一句用户消息
+ */
+export const CONTINUE_COMMAND = "primus-continue";
+
+/**
  * 上下文里已加载的内容分组。只列名称，不给 token 数：Core 不提供分项 token 统计，
  * 上下文的 token 数只以 Core 的 contextUsage 为准（不估算）
  */
