@@ -49,6 +49,26 @@ export interface GroupOptions {
   names?: Readonly<Record<string, string>>;
   /** 已移除的项目 → 移除时间；之后没有新活动的不显示 */
   removed?: Readonly<Record<string, number>>;
+  /**
+   * 上一次的项目顺序（含置顶的项目，置顶的仍排在最前）。给出时已显示的项目保持原位，只有新出现的项目按最新活动插到最前，
+   * 避免会话运行时最后活动时间不断变化、几个项目轮流跳到顶上。
+   */
+  order?: readonly string[];
+}
+
+/**
+ * 稳定的项目顺序：`previous` 里仍存在的项目保持原相对顺序，新出现的项目按 `byRecency` 的顺序排在最前。
+ * 没有 `previous` 时就是 `byRecency`。
+ */
+export function stableProjectOrder(
+  previous: readonly string[] | undefined,
+  byRecency: readonly string[],
+): string[] {
+  if (!previous) return [...byRecency];
+  const present = new Set(byRecency);
+  const kept = previous.filter((k) => present.has(k));
+  const keptSet = new Set(kept);
+  return [...byRecency.filter((k) => !keptSet.has(k)), ...kept];
 }
 
 /**
@@ -56,6 +76,14 @@ export interface GroupOptions {
  * 项目默认折叠，排在第一的项目与当前标签所在项目默认展开；用户切换过的以用户为准。
  */
 export function buildRows(sessions: readonly SessionSummary[], options: GroupOptions): ListRow[] {
+  return groupSessions(sessions, options).rows;
+}
+
+/** 同 {@link buildRows}，另返回这次的稳定项目顺序（含置顶），供下次作为 `order` 传回以保持位置稳定。 */
+export function groupSessions(
+  sessions: readonly SessionSummary[],
+  options: GroupOptions,
+): { rows: ListRow[]; order: string[] } {
   const projects = new Map<string, { workspace: string; sessions: SessionSummary[] }>();
   const recent: SessionSummary[] = [];
   for (const s of sessions) {
@@ -75,7 +103,9 @@ export function buildRows(sessions: readonly SessionSummary[], options: GroupOpt
     if (at !== undefined && (group.sessions[0]?.updatedAt ?? 0) <= at) projects.delete(key);
   }
   const pinned = (options.pinned ?? []).filter((k) => projects.has(k));
-  const order = [...pinned, ...[...projects.keys()].filter((k) => !pinned.includes(k))];
+  // 稳定顺序包含置顶的项目，取消置顶后回到原来的位置
+  const stable = stableProjectOrder(options.order, [...projects.keys()]);
+  const order = [...pinned, ...stable.filter((k) => !pinned.includes(k))];
 
   const rows: ListRow[] = [];
   if (projects.size > 0) {
@@ -103,5 +133,5 @@ export function buildRows(sessions: readonly SessionSummary[], options: GroupOpt
     if (projects.size > 0) rows.push({ kind: "header", key: "h:recent", section: "recent" });
     for (const s of recent) rows.push({ kind: "session", key: s.path, session: s, nested: false });
   }
-  return rows;
+  return { rows, order: stable };
 }

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { SessionSummary } from "@/lib/platform/types";
-import { buildRows, isProjectWorkspace, workspaceKey, workspaceName } from "./session-groups";
+import {
+  buildRows,
+  groupSessions,
+  isProjectWorkspace,
+  stableProjectOrder,
+  workspaceKey,
+  workspaceName,
+} from "./session-groups";
 
 const s = (n: number, workspace: string): SessionSummary => ({
   path: `/s/${n}.jsonl`,
@@ -96,5 +103,27 @@ describe("会话分组", () => {
     expect(
       buildRows([s(2, "D:\\b")], { projectsOpen: true, toggled: {}, removed: { "d:/b": 98 } }),
     ).toEqual([]);
+  });
+
+  it("项目顺序稳定：已显示的项目保持原位，新项目插到最前", () => {
+    expect(stableProjectOrder(undefined, ["b", "a"])).toEqual(["b", "a"]);
+    expect(stableProjectOrder(["a", "b"], ["b", "a"])).toEqual(["a", "b"]);
+    expect(stableProjectOrder(["a", "b"], ["c", "b"])).toEqual(["c", "b"]);
+  });
+
+  it("运行中的会话更新时间后，项目不随最后活动时间上下跳动", () => {
+    const opts = { projectsOpen: true, toggled: {}, defaultKey: KEY };
+    const first = groupSessions([s(1, "D:\\a"), s(2, "D:\\b")], opts);
+    expect(first.order).toEqual(["d:/a", "d:/b"]);
+    // b 的会话刚有新活动，排到了 a 前面
+    const bumped = { ...s(2, "D:\\b"), updatedAt: 200 };
+    const next = groupSessions([bumped, s(1, "D:\\a")], { ...opts, order: first.order });
+    expect(next.order).toEqual(["d:/a", "d:/b"]);
+    expect(next.rows.filter((r) => r.kind === "project").map((r) => r.key)).toEqual([
+      "p:d:/a",
+      "p:d:/b",
+    ]);
+    // 不传上次顺序时仍按最后活动时间排
+    expect(groupSessions([bumped, s(1, "D:\\a")], opts).order).toEqual(["d:/b", "d:/a"]);
   });
 });

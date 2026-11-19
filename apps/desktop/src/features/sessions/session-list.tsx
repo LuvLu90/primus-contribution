@@ -24,7 +24,7 @@ import type { SessionSummary } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
-import { buildRows, type ListRow, workspaceKey, workspaceName } from "./session-groups";
+import { groupSessions, type ListRow, workspaceKey, workspaceName } from "./session-groups";
 import { PROJECT_NAME_MAX, useSessionListPrefs } from "./session-list-prefs";
 import { findTab, tabsForDeletion, useSessionsStore } from "./sessions-store";
 import { useSessionDefaultWorkspace } from "./use-default-workspace";
@@ -118,34 +118,36 @@ export function SessionList() {
 
   const searching = search.results !== null;
   const sessions = search.results ?? index.items;
-  const rows: ListRow[] = useMemo(
-    () =>
-      searching
-        ? sessions.map((s) => ({ kind: "session", key: s.path, session: s, nested: false }))
-        : grouping
-          ? buildRows(sessions, {
-              projectsOpen,
-              toggled,
-              activeKey: activeWorkspace ? workspaceKey(activeWorkspace) : null,
-              defaultKey,
-              pinned,
-              names,
-              removed,
-            })
-          : [],
-    [
-      searching,
-      grouping,
-      sessions,
+  // 上次显示的项目顺序：已显示的项目保持原位，运行中的会话更新时间时项目不会上下跳动
+  const projectOrder = useRef<string[] | undefined>(undefined);
+  const rows: ListRow[] = useMemo(() => {
+    if (searching)
+      return sessions.map((s) => ({ kind: "session", key: s.path, session: s, nested: false }));
+    if (!grouping) return [];
+    const grouped = groupSessions(sessions, {
       projectsOpen,
       toggled,
-      activeWorkspace,
+      activeKey: activeWorkspace ? workspaceKey(activeWorkspace) : null,
       defaultKey,
       pinned,
       names,
       removed,
-    ],
-  );
+      order: projectOrder.current,
+    });
+    projectOrder.current = grouped.order;
+    return grouped.rows;
+  }, [
+    searching,
+    grouping,
+    sessions,
+    projectsOpen,
+    toggled,
+    activeWorkspace,
+    defaultKey,
+    pinned,
+    names,
+    removed,
+  ]);
   const listError = searching ? search.error : index.error;
   // 相对时间每分钟刷新一次
   const [now, setNow] = useState(() => Date.now());
