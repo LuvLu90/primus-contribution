@@ -111,6 +111,40 @@ describe("会话分组", () => {
     expect(stableProjectOrder(["a", "b"], ["c", "b"])).toEqual(["c", "b"]);
   });
 
+  it("加载更旧的历史分页时，首次出现的旧项目接在已有项目之后", () => {
+    const opts = { projectsOpen: true, toggled: {}, defaultKey: KEY };
+    const first = groupSessions([s(1, "D:\\a"), s(2, "D:\\b")], opts);
+    expect(first.order).toEqual(["d:/a", "d:/b"]);
+    // loadMore 追加更旧的一页，其中首次出现项目 c
+    const page = [s(1, "D:\\a"), s(2, "D:\\b"), s(3, "D:\\c"), s(4, "D:\\a")];
+    const paged = groupSessions(page, { ...opts, order: first.order });
+    expect(paged.order).toEqual(["d:/a", "d:/b", "d:/c"]);
+    expect(paged.rows.filter((r) => r.kind === "project").map((r) => r.key)).toEqual([
+      "p:d:/a",
+      "p:d:/b",
+      "p:d:/c",
+    ]);
+    // 之后新建的项目 d 比已有项目都新，仍排在最前
+    const fresh = { ...s(5, "D:\\d"), updatedAt: 300 };
+    const next = groupSessions([fresh, ...page], { ...opts, order: paged.order });
+    expect(next.order).toEqual(["d:/d", "d:/a", "d:/b", "d:/c"]);
+  });
+
+  it("按最后活动时间区分新近项目与历史分页补入的旧项目", () => {
+    const latest = new Map([
+      ["a", 90],
+      ["b", 80],
+      ["new", 95],
+      ["old", 10],
+    ]);
+    expect(stableProjectOrder(["a", "b"], ["new", "a", "b", "old"], latest)).toEqual([
+      "new",
+      "a",
+      "b",
+      "old",
+    ]);
+  });
+
   it("运行中的会话更新时间后，项目不随最后活动时间上下跳动", () => {
     const opts = { projectsOpen: true, toggled: {}, defaultKey: KEY };
     const first = groupSessions([s(1, "D:\\a"), s(2, "D:\\b")], opts);

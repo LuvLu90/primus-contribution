@@ -251,7 +251,7 @@ function describeTarget(entry: unknown): string {
 const OVERRIDE_KEYS = ["enabled", "exposure", "toolExposure"];
 
 /** Core 会套用的覆盖项：没有 command / url / type，且只含 enabled / exposure / toolExposure */
-function isApplicableOverride(entry: unknown): entry is Obj {
+export function isApplicableOverride(entry: unknown): entry is Obj {
   return (
     isRecord(entry) &&
     isOverrideEntry(entry) &&
@@ -295,8 +295,10 @@ export function listServers(doc: McpDocument, shared?: McpDocument | null): McpS
 /**
  * 列出 `.agents/mcp.json`（与其他工具共用，乾元只读，ADR 0022）里的服务器，套用同级主文件 `primary`（用户级
  * `mcp.json` 或项目 `.primus/mcp.json`）里只含 enabled / exposure / toolExposure 的覆盖项。`primary` 已完整定义
- * 同名（或只差 - 与 _）的服务器时与 Core 一样记为冲突：Core 使用 `primary` 那一条。`global` 为 false 时（项目级）
- * 不允许 `auth`。
+ * 同名（或只差 - 与 _）的服务器时与 Core 一样记为冲突：Core 使用 `primary` 那一条。“完整定义”指不是覆盖项的条目
+ * （有 command / url / type，或根本不是对象），**不论能否通过校验**：Core 的 `readConfigLevel` 先登记命名空间再校验，
+ * 主文件里无效的同名定义同样让 `.agents` 那一条被跳过（两条都不加载，主文件那条的错误由 {@link listServers} 显示）。
+ * `global` 为 false 时（项目级）不允许 `auth`。
  */
 export function listSharedServers(
   shared: McpDocument,

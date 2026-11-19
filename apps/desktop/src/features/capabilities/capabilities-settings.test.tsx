@@ -253,6 +253,40 @@ describe("设置·能力中心·MCP", () => {
     );
   });
 
+  it("共享定义在页面打开后被改成停用：启停按冲突重新读取，再启用时写 enabled: true", async () => {
+    const platform = setup();
+    const read = platform.mcpConfigRead.bind(platform);
+    const write = vi.spyOn(platform, "mcpConfigWrite");
+    openMcp();
+    const before = await row(tm.shared.title, "shared-docs");
+    expect(
+      within(before).getByRole("switch", { name: "启用 shared-docs" }).getAttribute("aria-checked"),
+    ).toBe("true");
+    // 之后的读取：~/.agents/mcp.json 已在别处把 shared-docs 停用
+    vi.spyOn(platform, "mcpConfigRead").mockImplementation(async () => {
+      const f = await read();
+      return {
+        ...f,
+        agents: {
+          path: f.agents?.path ?? "",
+          error: null,
+          text: JSON.stringify({ mcpServers: { "shared-docs": { command: "d", enabled: false } } }),
+        },
+      };
+    });
+    fireEvent.click(within(before).getByRole("switch", { name: "启用 shared-docs" }));
+    expect(await screen.findByText(tm.conflict)).toBeTruthy();
+    expect(write).not.toHaveBeenCalled();
+    const after = await row(tm.shared.title, "shared-docs");
+    const sw = within(after).getByRole("switch", { name: "启用 shared-docs" });
+    expect(sw.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(sw);
+    await waitFor(() => expect(write).toHaveBeenCalled());
+    expect(
+      JSON.parse((await platform.mcpConfigRead()).text ?? "").mcpServers["shared-docs"],
+    ).toEqual({ enabled: true });
+  });
+
   it("测试连接显示状态；需要登录的服务器登录后连上", async () => {
     const platform = setup();
     const login = vi.spyOn(platform, "mcpLogin");

@@ -177,17 +177,36 @@ export function McpSettings() {
   const toggle = (s: McpServerView, enabled: boolean) =>
     run(s.name, tm.saveFailed, () => save((text) => setServerEnabled(text, s.name, enabled)));
 
+  // 覆盖项写不写 `enabled: true` 取决于共享定义本身是否停用：保存前重新读取，用户级文件或共享文件在界面读出后
+  // 被改过就按冲突处理（界面换成新读出的内容，请用户再操作一次），保证写入的覆盖项与界面都对应 Core 的生效状态
   const toggleShared = (s: McpServerView, enabled: boolean) =>
-    run(`shared:${s.name}`, tm.saveFailed, () =>
-      save((text) =>
-        setSharedServerEnabled(
-          text,
-          s.name,
-          enabled,
-          !(isRecord(s.entry) && s.entry.enabled === false),
-        ),
-      ),
-    );
+    run(`shared:${s.name}`, tm.saveFailed, async () => {
+      const shown = fileRef.current;
+      const fresh = await (await getPlatform()).mcpConfigRead();
+      if (
+        !shown ||
+        fresh.version !== shown.version ||
+        (fresh.agents?.text ?? null) !== (shown.agents?.text ?? null) ||
+        (fresh.agents?.error ?? null) !== (shown.agents?.error ?? null)
+      ) {
+        apply(fresh);
+        setReport(null);
+        throw new McpConflictError(tm.conflict);
+      }
+      const doc = parseMcpDocument(fresh.agents?.text ?? null);
+      const servers = isRecord(doc.root.mcpServers) ? doc.root.mcpServers : {};
+      const entry = Object.hasOwn(servers, s.name) ? servers[s.name] : undefined;
+      await save(
+        (text) =>
+          setSharedServerEnabled(
+            text,
+            s.name,
+            enabled,
+            !(isRecord(entry) && entry.enabled === false),
+          ),
+        fresh,
+      );
+    });
 
   const login = (s: McpServerView) =>
     run(s.name, tm.loginFailed, async () => {

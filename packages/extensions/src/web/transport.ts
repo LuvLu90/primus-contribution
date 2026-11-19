@@ -14,6 +14,8 @@ import * as zlib from "node:zlib";
 import { isPrivateAddress, PRIVATE_ADDRESS_MESSAGE, WebError } from "./net.ts";
 
 type Env = Record<string, string | undefined>;
+/** DNS 解析函数（与 `dns.lookup` 同形；测试可替换） */
+export type Lookup = typeof dnsLookup;
 
 const envOf = (env: Env, name: string): string =>
   (env[name] ?? env[name.toLowerCase()] ?? "").trim();
@@ -61,9 +63,12 @@ export function proxyFor(url: URL, env: Env): URL | undefined {
 }
 
 /** 连接时用的 DNS 解析：任何一个地址落在 `blocked` 里就拒绝这次连接 */
-export function guardedLookup(blocked: (ip: string) => boolean = isPrivateAddress): LookupFunction {
+export function guardedLookup(
+  blocked: (ip: string) => boolean = isPrivateAddress,
+  lookupImpl: Lookup = dnsLookup,
+): LookupFunction {
   return ((hostname, options, callback) => {
-    dnsLookup(hostname, options, (err, address, family) => {
+    lookupImpl(hostname, options, (err, address, family) => {
       if (err) return callback(err, address as string, family);
       const list = Array.isArray(address)
         ? (address as LookupAddress[]).map((a) => a.address)
@@ -76,38 +81,58 @@ export function guardedLookup(blocked: (ip: string) => boolean = isPrivateAddres
 }
 
 /** 解析并检查一个主机，返回要连接的 IP（IP 字面量直接检查） */
-function resolveChecked(host: string, blocked: (ip: string) => boolean): Promise<string> {
+function resolveChecked(
+  host: string,
+  blocked: (ip: string) => boolean,
+  lookupImpl: Lookup,
+): Promise<string> {
   const h = host.replace(/^\[|\]$/g, "");
   if (isIP(h)) {
     return blocked(h) ? Promise.reject(new WebError(PRIVATE_ADDRESS_MESSAGE)) : Promise.resolve(h);
   }
   return new Promise((resolve, reject) => {
-    guardedLookup(blocked)(h, { all: false }, (err, address) => {
+    guardedLookup(blocked, lookupImpl)(h, { all: false }, (err, address) => {
       if (err) reject(err);
       else resolve(address as string);
     });
   });
 }
 
-/** 经 http 代理建隧道到已检查的 IP；https 在隧道里按原域名做 TLS */
+/**
+ * 经 http 代理建隧道到已检查的 IP；https 在隧道里按原域名做 TLS。
+ * 解析阶段外层请求还没有 socket，Node 的中止只会记下错误，所以这里自己听 `signal`：
+ * 中止时立即以错误结束；解析迟到返回也不再发 CONNECT。
+ */
 function tunnel(
   target: URL,
   proxy: URL,
   blocked: (ip: string) => boolean,
   signal: AbortSignal | undefined,
+  lookupImpl: Lookup,
 ): (opts: unknown, done: (err: Error | null, socket?: Socket) => void) => undefined {
   return (_opts, done) => {
+    const asError = (e: unknown): Error => (e instanceof Error ? e : new Error(String(e)));
     let settled = false;
+    const onAbort = () => finish(asError(signal?.reason ?? new Error("aborted")));
     const finish = (err: Error | null, socket?: Socket) => {
-      if (settled) return;
+      if (settled) {
+        socket?.destroy();
+        return;
+      }
       settled = true;
+      signal?.removeEventListener("abort", onAbort);
       done(err, socket);
     };
-    const asError = (e: unknown): Error => (e instanceof Error ? e : new Error(String(e)));
+    if (signal?.aborted) {
+      onAbort();
+      return undefined;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
     const secure = target.protocol === "https:";
     const port = target.port || (secure ? "443" : "80");
-    resolveChecked(target.hostname, blocked)
+    resolveChecked(target.hostname, blocked, lookupImpl)
       .then((ip) => {
+        if (settled) return;
         const authority = `${isIP(ip) === 6 ? `[${ip}]` : ip}:${port}`;
         const headers: Record<string, string> = { Host: authority };
         if (proxy.username || proxy.password) {
@@ -179,14 +204,31 @@ function decoded(res: http.IncomingMessage): Readable {
 }
 
 /**
+ * 走代理时的请求选项。自定义 `createConnection` 不经过 Agent，Node 拿不到协议的默认端口，
+ * 会按 80 生成 Host（https 变成 `host:80`）；这里按协议给 `defaultPort`，显式的非默认端口照常保留。
+ */
+export function proxiedOptions(
+  url: URL,
+  base: https.RequestOptions,
+  createConnection: unknown,
+): https.RequestOptions {
+  return {
+    ...base,
+    defaultPort: url.protocol === "https:" ? 443 : 80,
+    createConnection: createConnection as https.RequestOptions["createConnection"],
+  };
+}
+
+/**
  * 与 `fetch` 同形的请求（只用到 web_fetch 需要的部分：method、headers、signal，不跟随跳转）。
- * `blocked` 与 `env` 供测试替换。
+ * `blocked`、`env` 与 `lookupImpl` 供测试替换。
  */
 export function createDirectFetch(
   blocked: (ip: string) => boolean = isPrivateAddress,
   env: Env = process.env,
+  lookupImpl: Lookup = dnsLookup,
 ): typeof fetch {
-  const lookup = guardedLookup(blocked);
+  const lookup = guardedLookup(blocked, lookupImpl);
   return ((input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const mod = url.protocol === "https:" ? https : http;
@@ -209,12 +251,11 @@ export function createDirectFetch(
         return;
       }
       const options: https.RequestOptions = proxy
-        ? {
-            method,
-            headers,
-            signal,
-            createConnection: tunnel(url, proxy, blocked, signal) as never,
-          }
+        ? proxiedOptions(
+            url,
+            { method, headers, signal },
+            tunnel(url, proxy, blocked, signal, lookupImpl),
+          )
         : { method, headers, signal, lookup };
       const req = mod.request(url, options, (res) => {
         const status = res.statusCode ?? 0;

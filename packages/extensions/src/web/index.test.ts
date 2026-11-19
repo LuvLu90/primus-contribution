@@ -1,4 +1,5 @@
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { connect as netConnect } from "node:net";
 import { gzipSync } from "node:zlib";
 import { WEBFETCH_TOOL, WEBSEARCH_TOOL } from "@primus/protocol";
@@ -19,10 +20,11 @@ import {
   formatResults,
   KeyPool,
   MAX_RESULT_CHARS,
+  MAX_SUMMARY_CHARS,
   normalizeSearch,
   parseResults,
 } from "./search.ts";
-import { createDirectFetch, proxyFor } from "./transport.ts";
+import { createDirectFetch, type Lookup, proxiedOptions, proxyFor } from "./transport.ts";
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -188,6 +190,7 @@ describe("web_search 执行", () => {
       count: 3,
       freshness: "oneWeek",
       summary: true,
+      contents: { text: { maxCharacters: MAX_SUMMARY_CHARS } },
     });
     expect(r.isError).toBeUndefined();
     expect(r.details.status).toBe("done");
@@ -717,7 +720,11 @@ describe("审查补充", () => {
   });
 
   it("走代理时用 CONNECT 连到本地检查过的 IP，代理不再解析域名", async () => {
-    const target = createServer((_req, res) => res.end("ok"));
+    const hosts: string[] = [];
+    const target = createServer((req, res) => {
+      hosts.push(String(req.headers.host));
+      res.end("ok");
+    });
     await new Promise<void>((r) => target.listen(0, r));
     const tport = (target.address() as { port: number }).port;
     const seen: string[] = [];
@@ -740,12 +747,71 @@ describe("审查补充", () => {
       const res = await createDirectFetch(() => false, env)(`http://localhost:${tport}/`);
       expect(await res.text()).toBe("ok");
       expect(seen[0]).toMatch(/^(127\.0\.0\.1|\[::1\]):\d+$/);
+      // 显式端口保留在 Host 里
+      expect(hosts[0]).toBe(`localhost:${tport}`);
       await expect(createDirectFetch(undefined, env)(`http://localhost:${tport}/`)).rejects.toThrow(
         "内网",
       );
     } finally {
       proxy.close();
       target.close();
+    }
+  });
+
+  it("走代理时 Host 按协议的默认端口省略，显式端口保留", () => {
+    const hostOf = (raw: string): unknown => {
+      const url = new URL(raw);
+      const mod = url.protocol === "https:" ? httpsRequest : httpRequest;
+      // 不真正连接：createConnection 不回调，只看 Node 生成的 Host
+      const req = mod(
+        url,
+        proxiedOptions(url, { method: "GET" }, () => undefined),
+      );
+      req.on("error", () => undefined);
+      const host = req.getHeader("host");
+      req.destroy();
+      return host;
+    };
+    expect(hostOf("https://example.com/")).toBe("example.com");
+    expect(hostOf("https://example.com:8443/")).toBe("example.com:8443");
+    expect(hostOf("http://example.com/")).toBe("example.com");
+    expect(hostOf("http://example.com:8080/")).toBe("example.com:8080");
+  });
+
+  it("走代理时解析卡住也能立即中止，迟到的解析不再发 CONNECT", async () => {
+    let pending: (() => void) | undefined;
+    const hung = ((_host: string, _opts: unknown, cb: (e: null, a: string, f: number) => void) => {
+      pending = () => cb(null, "93.184.216.34", 4);
+    }) as unknown as Lookup;
+    let connects = 0;
+    const proxy = createServer();
+    proxy.on("connect", (_req, client) => {
+      connects++;
+      client.destroy();
+    });
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+    const pport = (proxy.address() as { port: number }).port;
+    try {
+      const env = { HTTP_PROXY: `http://127.0.0.1:${pport}` };
+      const ac = new AbortController();
+      const started = Date.now();
+      const p = createDirectFetch(
+        () => false,
+        env,
+        hung,
+      )("https://example.com/", {
+        signal: ac.signal,
+      });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(pending).toBeDefined();
+      ac.abort();
+      await expect(p).rejects.toThrow();
+      expect(Date.now() - started).toBeLessThan(2000);
+      pending?.();
+      await new Promise((r) => setTimeout(r, 100));
+      expect(connects).toBe(0);
+    } finally {
+      proxy.close();
     }
   });
 

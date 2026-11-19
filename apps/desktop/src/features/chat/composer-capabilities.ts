@@ -4,11 +4,16 @@
 // 选中的项以“/名称”标签挂在输入框上方，发送时在消息开头注明要使用哪些技能与 MCP。
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  isApplicableOverride,
+  isOverrideEntry,
+  isRecord,
   listServers,
   listSharedServers,
   type McpDocument,
   type McpServerView,
   parseMcpDocument,
+  serverNamespace,
+  validateServer,
 } from "@/features/capabilities/mcp-config";
 import { checkSkill } from "@/features/capabilities/skill-frontmatter";
 import { fill } from "@/features/capabilities/ui";
@@ -67,15 +72,28 @@ function tryParse(text: string | null | undefined): McpDocument | null {
   }
 }
 
+/** 一级（全局或项目）的 MCP：Core 会加载的服务器（含停用的，用于遮蔽下一级同名服务器），与改下一级服务器的覆盖项 */
+export interface McpLevel {
+  scope: CapabilityScope;
+  /** 本级通过校验的服务器（已套用同级覆盖项） */
+  servers: McpServerView[];
+  /** 本级没定义、留给下一级同名服务器的覆盖项（只含 enabled / exposure / toolExposure，同命名空间只取第一个） */
+  overrides: Map<string, Record<string, unknown>>;
+}
+
+const serversIn = (doc: McpDocument | null): [string, unknown][] =>
+  doc && isRecord(doc.root.mcpServers) ? Object.entries(doc.root.mcpServers) : [];
+
 /**
  * 同级两个文件里 Core 会加载的服务器：主文件（用户级 mcp.json 或 `.primus/mcp.json`）的服务器，加上 `.agents/mcp.json`
- * 里没被主文件同名定义、套用主文件覆盖项后仍启用的服务器
+ * 里没被主文件同名定义的服务器（套用主文件的覆盖项）。停用的也保留：项目级的停用条目要遮蔽全局同名服务器，
+ * 跨级合并（{@link mergeMcpLevels}）之后才过滤
  */
-function levelServers(
+export function levelServers(
   primary: McpDocument | null,
   shared: McpDocument | null,
   scope: CapabilityScope,
-): ComposerCapability[] {
+): McpLevel {
   const views: McpServerView[] = [
     ...(primary ? listServers(primary, shared) : []),
     ...(shared
@@ -85,12 +103,55 @@ function levelServers(
         })
       : []),
   ];
-  return views
-    .filter((s) => s.enabled && !s.error)
-    .map((s) => ({ kind: "mcp", name: s.name, scope, description: s.description }));
+  // 与 Core 的 readConfigLevel 一致：本级完整定义（不论是否有效）登记命名空间；其余覆盖项改下一级的服务器，
+  // 先出现（主文件优先）的那个生效，含其他键的 Core 报错、不套用
+  const claimed = new Set<string>();
+  const files = [serversIn(primary), serversIn(shared)];
+  for (const entries of files)
+    for (const [name, entry] of entries)
+      if (!(isRecord(entry) && isOverrideEntry(entry))) claimed.add(serverNamespace(name));
+  const overrides = new Map<string, Record<string, unknown>>();
+  const taken = new Set<string>();
+  for (const entries of files)
+    for (const [name, entry] of entries) {
+      if (!(isRecord(entry) && isOverrideEntry(entry))) continue;
+      const ns = serverNamespace(name);
+      if (claimed.has(ns) || taken.has(ns)) continue;
+      taken.add(ns);
+      if (isApplicableOverride(entry)) overrides.set(name, entry);
+    }
+  return { scope, servers: views.filter((s) => !s.error), overrides };
 }
 
-async function globalMcp(): Promise<ComposerCapability[]> {
+/**
+ * 跨级合并后 Core 实际启用的服务器：项目级同名定义取代全局那条（项目里停用的也遮蔽全局的），项目覆盖项改全局
+ * 服务器的启停；最后才去掉停用的
+ */
+export function mergeMcpLevels(levels: McpLevel[]): ComposerCapability[] {
+  const effective = new Map<string, { view: McpServerView; scope: CapabilityScope }>();
+  for (const level of levels) {
+    // 本级覆盖项只改更低一级已有的服务器（Core 按名字取），校验不过时 Core 报错、保留原状态
+    for (const [name, override] of level.overrides) {
+      const base = effective.get(name);
+      if (!base) continue;
+      const merged = { ...(isRecord(base.view.entry) ? base.view.entry : {}), ...override };
+      if ("error" in validateServer(name, merged)) continue;
+      if (typeof override.enabled === "boolean")
+        effective.set(name, { ...base, view: { ...base.view, enabled: override.enabled } });
+    }
+    for (const view of level.servers) effective.set(view.name, { view, scope: level.scope });
+  }
+  return [...effective.values()]
+    .filter(({ view }) => view.enabled)
+    .map(({ view, scope }) => ({
+      kind: "mcp",
+      name: view.name,
+      scope,
+      description: view.description,
+    }));
+}
+
+async function globalMcp(): Promise<McpLevel> {
   const file = await (await getPlatform()).mcpConfigRead();
   return levelServers(tryParse(file.text ?? "{}"), tryParse(file.agents?.text), "global");
 }
@@ -130,8 +191,10 @@ function skillFile(root: string, entry: string): { file: string; dirName: string
  * MCP 读 `.primus/mcp.json` 与工作区本级的 `.agents/mcp.json` 自己解析，文件无效或过大时不列出其中的服务器
  * （workspaceInspect 此时只给诊断占位值）
  */
-async function projectCapabilities(workspace: WorkspaceInfo | null): Promise<ComposerCapability[]> {
-  if (!workspace?.trusted) return [];
+async function projectCapabilities(
+  workspace: WorkspaceInfo | null,
+): Promise<{ skills: ComposerCapability[]; mcp: McpLevel | null }> {
+  if (!workspace?.trusted) return { skills: [], mcp: null };
   const root = workspace.path;
   const d = await (await getPlatform()).workspaceInspect(root);
   const skillRoot = joinPath(root, ".primus", "skills");
@@ -146,8 +209,10 @@ async function projectCapabilities(workspace: WorkspaceInfo | null): Promise<Com
     d.mcpServers.length === 0 ? null : readMcp(joinPath(root, ".primus", "mcp.json")),
     d.agentsMcpServers.length === 0 ? null : readMcp(joinPath(root, ".agents", "mcp.json")),
   ]);
-  const mcp = levelServers(primary, shared, "project");
-  return [...skills.filter((c): c is ComposerCapability => c !== null), ...mcp];
+  return {
+    skills: skills.filter((c): c is ComposerCapability => c !== null),
+    mcp: levelServers(primary, shared, "project"),
+  };
 }
 
 /** 读出并解析项目里的 mcp.json；读不到、过大或无效时为 null */
@@ -158,17 +223,18 @@ async function readMcp(file: string): Promise<McpDocument | null> {
 }
 
 /** 读取失败的来源不影响其余来源，只是不列出 */
-const settle = (p: Promise<ComposerCapability[]>) => p.catch(() => [] as ComposerCapability[]);
+const settle = <T>(p: Promise<T>, fallback: T) => p.catch(() => fallback);
 
 export async function loadCapabilities(
   workspace: WorkspaceInfo | null,
 ): Promise<ComposerCapability[]> {
-  const parts = await Promise.all([
-    settle(projectCapabilities(workspace)),
-    settle(globalSkills()),
-    settle(globalMcp()),
+  const [project, skills, global] = await Promise.all([
+    settle(projectCapabilities(workspace), { skills: [], mcp: null }),
+    settle(globalSkills(), []),
+    settle(globalMcp(), null),
   ]);
-  return mergeCapabilities(parts.flat());
+  const levels = [global, project.mcp].filter((l): l is McpLevel => l !== null);
+  return mergeCapabilities([...project.skills, ...skills, ...mergeMcpLevels(levels)]);
 }
 
 /**

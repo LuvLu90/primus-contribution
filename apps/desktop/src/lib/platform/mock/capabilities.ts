@@ -113,6 +113,9 @@ const lastSegment = (path: string) =>
     .split(/[\\/]/)
     .pop() || "skill";
 
+/** 覆盖项能改的键（与 Core 的 OVERRIDE_KEYS 一致） */
+const OVERRIDE_KEYS = ["enabled", "exposure", "toolExposure"];
+
 const cli = (stdout: string, code = 0, stderr = ""): CliOutput => ({
   code,
   stdout,
@@ -339,7 +342,15 @@ export function createMockCapabilities(options: MockCapabilitiesOptions = {}): C
           );
           continue;
         }
-        const merged = { ...entry, ...(isObj(own) ? own : {}) };
+        // 与 Core 一样：覆盖项只能改 enabled / exposure / toolExposure，含其他键时报错、整条不套用（保留共享定义的启停）
+        let override = isObj(own) ? own : null;
+        if (override && Object.keys(override).some((k) => !OVERRIDE_KEYS.includes(k))) {
+          errors.push(
+            `${MOCK_MCP_PATH}: server "${name}": an override can only set ${OVERRIDE_KEYS.join(", ")}`,
+          );
+          override = null;
+        }
+        const merged = { ...entry, ...(override ?? {}) };
         if (badArgs(merged)) {
           errors.push(
             `${MOCK_AGENTS_MCP_PATH}: server "${name}": args must be an array of strings`,

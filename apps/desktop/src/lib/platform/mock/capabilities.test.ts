@@ -168,4 +168,27 @@ describe("mock 能力中心", () => {
     expect(out.servers.map((s: { name: string }) => s.name)).not.toContain("broken");
     expect(out.errors.join("\n")).toContain('server "broken": args must be an array of strings');
   });
+
+  it("覆盖项含 enabled / exposure / toolExposure 以外的键：报无效覆盖，保留共享定义的启停；合法的 enabled: false 仍生效", async () => {
+    const c = createMockCapabilities({
+      agentsMcp: JSON.stringify({
+        mcpServers: { docs: { command: "docs" }, notes: { command: "notes" } },
+      }),
+    });
+    const file = await c.mcpConfigRead();
+    await c.mcpConfigWrite(
+      JSON.stringify({
+        mcpServers: { docs: { enabled: false, timeout: 30 }, notes: { enabled: false } },
+      }),
+      file.version,
+    );
+    const out = JSON.parse((await c.mcpList()).stdout);
+    const byName = (n: string) => out.servers.find((s: { name: string }) => s.name === n);
+    expect(out.errors.join("\n")).toContain(
+      'server "docs": an override can only set enabled, exposure, toolExposure',
+    );
+    expect(byName("docs")).toMatchObject({ enabled: true, state: "connected" });
+    expect(byName("notes")).toMatchObject({ enabled: false, state: "disabled" });
+    expect(out.errors.join("\n")).not.toContain('"notes"');
+  });
 });

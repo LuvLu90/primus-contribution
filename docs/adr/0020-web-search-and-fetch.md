@@ -17,7 +17,7 @@
   - `web_search`：参数 `query`（必填）、`freshness`（`noLimit` / `oneDay` / `oneWeek` / `oneMonth` / `oneYear`，或 `YYYY-MM-DD`、`YYYY-MM-DD..YYYY-MM-DD`，默认 `noLimit`）、`count`（1–20，默认 8）、`include_domains`、`exclude_domains`。
   - `web_fetch`：参数 `url`（必填）、`find`、`offset`、`max_chars`（1000–40000，默认 12000）。
   - 注解都是 `readOnlyHint: true` / `openWorldHint: true`。
-- **搜索服务**：内置 LangSearch Web Search API（`POST <地址>/web-search`，Bearer 密钥，开启 `summary` 拿长摘要），
+- **搜索服务**：内置 LangSearch Web Search API（`POST <地址>/web-search`，Bearer 密钥；按官方文档用 `contents.text` 取网页正文代替短片段，每条限 1200 字（`maxCharacters`），`summary` 照旧带上、返回时优先用），
   不引入 SDK，用 Core 进程的全局 `fetch`（随 Core 的代理设置，ADR 0015）。单次超时 20 秒，响应体上限 4 MB。
   给模型的结果是编号、标题、链接、日期、摘要（单条 1200 字、全部 14000 字以内），并提示“摘要不完整时用 web_fetch 打开最相关的链接”；
   不要求模型在回答里标注来源（用户在工作过程里看得到来源）。`details` 为 `WebSearchDetails`（只有标题、网址、域名、日期，不含摘要）。

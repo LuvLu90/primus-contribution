@@ -402,8 +402,8 @@ pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
     let mcp_file = primus.join("mcp.json");
     let mcp_servers = mcp_server_names(&mcp_file).map_err(|e| WorkspaceError::Read(mcp_file, e))?;
     let agents_mcp_file = root.join(".agents").join("mcp.json");
-    let agents_mcp_servers = mcp_server_names(&agents_mcp_file)
-        .map_err(|e| WorkspaceError::Read(agents_mcp_file, e))?;
+    let agents_mcp_servers =
+        mcp_server_names(&agents_mcp_file).map_err(|e| WorkspaceError::Read(agents_mcp_file, e))?;
     let ext_dir = primus.join("extensions");
     let extensions = list_extensions(&ext_dir).map_err(|e| WorkspaceError::Read(ext_dir, e))?;
     let skill_dir = primus.join("skills");

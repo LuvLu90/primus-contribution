@@ -174,6 +174,90 @@ describe("MCP：.agents/mcp.json 与同级文件（ADR 0022）", () => {
   });
 });
 
+describe("MCP：项目级遮蔽全局服务器", () => {
+  const project = (files: Record<string, string>, inspect: { mcp: string[]; agents: string[] }) => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    vi.spyOn(platform, "mcpConfigRead").mockResolvedValue({
+      path: "/core/mcp.json",
+      text: JSON.stringify({ mcpServers: { lint: { command: "lint" } } }),
+      version: "v",
+      agents: {
+        path: "/home/.agents/mcp.json",
+        text: JSON.stringify({
+          mcpServers: { docs: { command: "docs" }, keep: { command: "keep" } },
+        }),
+        error: null,
+      },
+    });
+    vi.spyOn(platform, "workspaceInspect").mockResolvedValue({
+      path: "/p",
+      agentsMd: null,
+      agentsMdTruncated: false,
+      extensions: [],
+      skills: [],
+      mcpServers: inspect.mcp,
+      agentsMcpServers: inspect.agents,
+      agentsSkills: [],
+    });
+    vi.spyOn(platform, "previewFile").mockImplementation(async (path) =>
+      path in files
+        ? { kind: "text", text: files[path] as string, truncated: false, size: 1 }
+        : Promise.reject(new Error("missing")),
+    );
+    return loadCapabilities({ path: "/p", name: "p", trusted: true, needsTrust: false });
+  };
+  const mcp = (list: ComposerCapability[]) =>
+    list.filter((c) => c.kind === "mcp").map((c) => `${c.name}@${c.scope}`);
+
+  it("项目里停用的同名定义与 enabled: false 覆盖项遮蔽全局服务器；没被覆盖的全局服务器照常列出", async () => {
+    const list = await project(
+      {
+        "/p/.primus/mcp.json": JSON.stringify({ mcpServers: { lint: { enabled: false } } }),
+        "/p/.agents/mcp.json": JSON.stringify({
+          mcpServers: { docs: { command: "docs", enabled: false } },
+        }),
+      },
+      { mcp: ["lint"], agents: ["docs"] },
+    );
+    expect(mcp(list)).toEqual(["keep@global"]);
+    setPlatformForTesting(undefined);
+  });
+
+  it("项目覆盖项含其他键时 Core 不套用，全局服务器保持启用；项目里启用的同名定义取代全局那条", async () => {
+    const list = await project(
+      {
+        "/p/.primus/mcp.json": JSON.stringify({
+          mcpServers: { lint: { enabled: false, timeout: 5 } },
+        }),
+        "/p/.agents/mcp.json": JSON.stringify({ mcpServers: { docs: { command: "mine" } } }),
+      },
+      { mcp: ["lint"], agents: ["docs"] },
+    );
+    expect(mcp(list)).toEqual(["docs@project", "keep@global", "lint@global"]);
+    setPlatformForTesting(undefined);
+  });
+
+  it("主文件里无效的同名定义与 Core 一样遮蔽 .agents 的服务器（两条都不加载）", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    vi.spyOn(platform, "mcpConfigRead").mockResolvedValue({
+      path: "/core/mcp.json",
+      text: JSON.stringify({ mcpServers: { docs: { command: "docs", args: 1 } } }),
+      version: "v",
+      agents: {
+        path: "/home/.agents/mcp.json",
+        text: JSON.stringify({
+          mcpServers: { docs: { command: "docs" }, other: { command: "o" } },
+        }),
+        error: null,
+      },
+    });
+    expect(mcp(await loadCapabilities(null))).toEqual(["other@global"]);
+    setPlatformForTesting(undefined);
+  });
+});
+
 describe("提问索引", () => {
   it("去掉能力说明，只留正文；没有正文时用能力说明", () => {
     const sel = [cap("skill", "review")];

@@ -1,5 +1,6 @@
 // web_search：内置联网搜索（LangSearch Web Search API，ADR 0020）。
-// - 接口：POST <PRIMUS_SEARCH_BASE_URL>/web-search，Bearer 密钥；开启 summary，结果带长摘要。
+// - 接口：POST <PRIMUS_SEARCH_BASE_URL>/web-search，Bearer 密钥；用 `contents.text`（限 MAX_SUMMARY_CHARS 字）
+//   取网页正文代替短片段，`summary` 照旧带上（服务返回长摘要时优先用它）。
 // - 两把内置密钥轮流使用；一把遇到网络错误、超时、401 / 403 / 429 / 5xx 时换另一把，用户无感。
 //   429 的那把冷却 60 秒，401 / 403 冷却 10 分钟；全部都在冷却时仍按顺序再试一遍。
 // - 给模型的结果：编号、标题、链接、日期、摘要（单条与总量都截断，控制上下文）。
@@ -173,6 +174,8 @@ export async function requestSearch(
         count: s.count,
         freshness: s.freshness,
         summary: true,
+        // 文档：开启 contents.text 返回网页正文（text 代替 snippet）；每条只取给模型用得到的长度
+        contents: { text: { maxCharacters: MAX_SUMMARY_CHARS } },
         ...(s.includeDomains.length ? { includeDomains: s.includeDomains } : {}),
         ...(s.excludeDomains.length ? { excludeDomains: s.excludeDomains } : {}),
       }),

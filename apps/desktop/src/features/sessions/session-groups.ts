@@ -50,25 +50,33 @@ export interface GroupOptions {
   /** 已移除的项目 → 移除时间；之后没有新活动的不显示 */
   removed?: Readonly<Record<string, number>>;
   /**
-   * 上一次的项目顺序（含置顶的项目，置顶的仍排在最前）。给出时已显示的项目保持原位，只有新出现的项目按最新活动插到最前，
-   * 避免会话运行时最后活动时间不断变化、几个项目轮流跳到顶上。
+   * 上一次的项目顺序（含置顶的项目，置顶的仍排在最前）。给出时已显示的项目保持原位，避免会话运行时最后活动时间
+   * 不断变化、几个项目轮流跳到顶上；新出现的项目若比已显示的项目更新（新建的对话）插到最前，若是加载历史分页
+   * 才补进来的旧项目则接在已有项目之后。
    */
   order?: readonly string[];
 }
 
 /**
- * 稳定的项目顺序：`previous` 里仍存在的项目保持原相对顺序，新出现的项目按 `byRecency` 的顺序排在最前。
- * 没有 `previous` 时就是 `byRecency`。
+ * 稳定的项目顺序：`previous` 里仍存在的项目保持原相对顺序。新出现的项目按 `byRecency` 的顺序：
+ * 最后活动时间晚于已保留项目中最旧的一个的（真正的新近项目）排在最前；不晚于它的（加载更旧的历史分页才出现的
+ * 项目）接在已有项目之后。没有 `latestAt` 时新项目一律排在最前；没有 `previous` 时就是 `byRecency`。
  */
 export function stableProjectOrder(
   previous: readonly string[] | undefined,
   byRecency: readonly string[],
+  latestAt?: ReadonlyMap<string, number>,
 ): string[] {
   if (!previous) return [...byRecency];
   const present = new Set(byRecency);
   const kept = previous.filter((k) => present.has(k));
   const keptSet = new Set(kept);
-  return [...byRecency.filter((k) => !keptSet.has(k)), ...kept];
+  const added = byRecency.filter((k) => !keptSet.has(k));
+  if (!latestAt || kept.length === 0) return [...added, ...kept];
+  const oldestKept = Math.min(...kept.map((k) => latestAt.get(k) ?? 0));
+  const newer = added.filter((k) => (latestAt.get(k) ?? 0) > oldestKept);
+  const older = added.filter((k) => (latestAt.get(k) ?? 0) <= oldestKept);
+  return [...newer, ...kept, ...older];
 }
 
 /**
@@ -104,7 +112,8 @@ export function groupSessions(
   }
   const pinned = (options.pinned ?? []).filter((k) => projects.has(k));
   // 稳定顺序包含置顶的项目，取消置顶后回到原来的位置
-  const stable = stableProjectOrder(options.order, [...projects.keys()]);
+  const latestAt = new Map([...projects].map(([k, g]) => [k, g.sessions[0]?.updatedAt ?? 0]));
+  const stable = stableProjectOrder(options.order, [...projects.keys()], latestAt);
   const order = [...pinned, ...stable.filter((k) => !pinned.includes(k))];
 
   const rows: ListRow[] = [];
