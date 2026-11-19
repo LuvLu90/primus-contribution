@@ -49,6 +49,14 @@ export function proxyFor(url: URL, env: Env): URL | undefined {
     throw new WebError("代理设置无效，无法读取网页");
   }
   if (proxy.protocol !== "http:") throw new WebError("只支持 http:// 代理，无法读取网页");
+  if (proxy.username || proxy.password) {
+    try {
+      decodeURIComponent(proxy.username);
+      decodeURIComponent(proxy.password);
+    } catch {
+      throw new WebError("代理设置无效，无法读取网页");
+    }
+  }
   return proxy;
 }
 
@@ -89,45 +97,65 @@ function tunnel(
   signal: AbortSignal | undefined,
 ): (opts: unknown, done: (err: Error | null, socket?: Socket) => void) => undefined {
   return (_opts, done) => {
+    let settled = false;
+    const finish = (err: Error | null, socket?: Socket) => {
+      if (settled) return;
+      settled = true;
+      done(err, socket);
+    };
+    const asError = (e: unknown): Error => (e instanceof Error ? e : new Error(String(e)));
     const secure = target.protocol === "https:";
     const port = target.port || (secure ? "443" : "80");
-    resolveChecked(target.hostname, blocked).then((ip) => {
-      const authority = `${isIP(ip) === 6 ? `[${ip}]` : ip}:${port}`;
-      const headers: Record<string, string> = { Host: authority };
-      if (proxy.username || proxy.password) {
-        const cred = `${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`;
-        headers["Proxy-Authorization"] = `Basic ${Buffer.from(cred).toString("base64")}`;
-      }
-      const req = http.request({
-        host: proxy.hostname.replace(/^\[|\]$/g, ""),
-        port: proxy.port || "80",
-        method: "CONNECT",
-        path: authority,
-        headers,
-        signal,
-      });
-      req.once("connect", (res, socket) => {
-        if (res.statusCode !== 200) {
-          socket.destroy();
-          done(new WebError(`代理拒绝了连接（HTTP ${res.statusCode}）`));
-          return;
+    resolveChecked(target.hostname, blocked)
+      .then((ip) => {
+        const authority = `${isIP(ip) === 6 ? `[${ip}]` : ip}:${port}`;
+        const headers: Record<string, string> = { Host: authority };
+        if (proxy.username || proxy.password) {
+          let cred: string;
+          try {
+            cred = `${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`;
+          } catch {
+            finish(new WebError("代理设置无效，无法读取网页"));
+            return;
+          }
+          headers["Proxy-Authorization"] = `Basic ${Buffer.from(cred).toString("base64")}`;
         }
-        if (!secure) {
-          done(null, socket);
-          return;
-        }
-        const host = target.hostname.replace(/^\[|\]$/g, "");
-        const secured = tls.connect({
-          socket,
-          ...(isIP(host) ? {} : { servername: host }),
-          host,
-          ALPNProtocols: ["http/1.1"],
+        const req = http.request({
+          host: proxy.hostname.replace(/^\[|\]$/g, ""),
+          port: proxy.port || "80",
+          method: "CONNECT",
+          path: authority,
+          headers,
+          signal,
         });
-        done(null, secured);
-      });
-      req.once("error", (e) => done(e));
-      req.end();
-    }, done);
+        req.once("connect", (res, socket) => {
+          if (res.statusCode !== 200) {
+            socket.destroy();
+            finish(new WebError(`代理拒绝了连接（HTTP ${res.statusCode}）`));
+            return;
+          }
+          if (!secure) {
+            finish(null, socket);
+            return;
+          }
+          const host = target.hostname.replace(/^\[|\]$/g, "");
+          try {
+            const secured = tls.connect({
+              socket,
+              ...(isIP(host) ? {} : { servername: host }),
+              host,
+              ALPNProtocols: ["http/1.1"],
+            });
+            finish(null, secured);
+          } catch (e) {
+            socket.destroy();
+            finish(asError(e));
+          }
+        });
+        req.once("error", (e) => finish(e));
+        req.end();
+      })
+      .catch((e: unknown) => finish(asError(e)));
     return undefined;
   };
 }

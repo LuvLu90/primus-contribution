@@ -595,9 +595,16 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     }
     while (records.length < batchSize && s.queue.length > 0) {
       const head = s.queue[0];
-      // 本轮快结束时投递插话：插在 agent_end 前，与 Core 在同一轮内继续一致
+      // 本轮快结束时逐条投递插话（与 one-at-a-time 一致）：插在 agent_end 前，与 Core 在同一轮内继续一致
       if (typeof head !== "function" && head?.type === "agent_end" && s.steering.length > 0) {
-        s.queue.unshift(...steerRecords(s.steering.splice(0), now()));
+        const next = s.steering.splice(0, 1);
+        s.queue.unshift(
+          ...steerRecords(
+            next,
+            now(),
+            s.steering.map((x) => x.text),
+          ),
+        );
         continue;
       }
       const item = s.queue.shift() as Queued;

@@ -127,16 +127,32 @@ describe("web_search 参数与结果", () => {
     expect(text).toContain("链接：https://a.com");
     expect(text.length).toBeLessThan(1600);
     expect(formatResults("q", [])).toContain("没有找到结果");
-    // 首条结果也受总长度限制
-    const huge = formatResults("q", [
-      {
-        title: "t".repeat(30_000),
-        url: "https://a.com",
-        site: "a.com",
-        summary: "s".repeat(30_000),
-      },
+    // 超过 500 字符的有效链接完整保留，不被截断
+    const longUrl = `https://a.com/path?q=${"x".repeat(700)}`;
+    const withLongUrl = formatResults("q", [
+      { title: "长链接", url: longUrl, site: "a.com", summary: "ok" },
     ]);
-    expect(huge.length).toBeLessThanOrEqual(MAX_RESULT_CHARS);
+    expect(withLongUrl).toContain(`链接：${longUrl}`);
+    // 完整链接超出预算时跳过该条，不返回半截 URL，后续较短结果仍可列出
+    const hugeUrl = `https://a.com/${"u".repeat(MAX_RESULT_CHARS)}`;
+    const skippedUrl = formatResults("q", [
+      { title: "超长链接", url: hugeUrl, site: "a.com", summary: "s" },
+      { title: "正常结果", url: "https://b.com/ok", site: "b.com", summary: "短摘要" },
+    ]);
+    expect(skippedUrl.length).toBeLessThanOrEqual(MAX_RESULT_CHARS);
+    expect(skippedUrl).not.toContain("https://a.com/uuu");
+    expect(skippedUrl).toContain("链接：https://b.com/ok");
+    expect(skippedUrl).toContain("因长度限制未列出");
+    // 多条单字段合规、合计超过 MAX_RESULT_CHARS 的结果受总长度限制并给出省略提示
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      title: `结果 ${i + 1}`,
+      url: `https://site${i + 1}.example.com/article`,
+      site: `site${i + 1}.example.com`,
+      summary: "摘".repeat(1000),
+    }));
+    const bounded = formatResults("q", many);
+    expect(bounded.length).toBeLessThanOrEqual(MAX_RESULT_CHARS);
+    expect(bounded).toContain("因长度限制未列出");
   });
 });
 
@@ -680,7 +696,7 @@ describe("审查补充", () => {
     }
   });
 
-  it("代理：按 HTTP(S)_PROXY / NO_PROXY 选择，只支持 http:// 代理", () => {
+  it("代理：按 HTTP(S)_PROXY / NO_PROXY 选择，只支持 http:// 代理", async () => {
     const env = { HTTP_PROXY: "http://p:8080", NO_PROXY: "localhost,.corp.example,10.0.0.1:443" };
     expect(proxyFor(new URL("https://a.com/"), env)?.host).toBe("p:8080");
     expect(proxyFor(new URL("http://a.com/"), { HTTPS_PROXY: "http://p:1" })).toBeUndefined();
@@ -690,6 +706,14 @@ describe("审查补充", () => {
     expect(() => proxyFor(new URL("https://a.com/"), { HTTPS_PROXY: "socks5://p:1" })).toThrow(
       "http://",
     );
+    expect(() =>
+      proxyFor(new URL("https://a.com/"), { HTTP_PROXY: "http://user:%ZZ@p:8080" }),
+    ).toThrow("代理设置无效");
+    await expect(
+      createDirectFetch(() => false, { HTTP_PROXY: "http://user:%ZZ@127.0.0.1:8080" })(
+        "https://a.com/",
+      ),
+    ).rejects.toThrow("代理设置无效");
   });
 
   it("走代理时用 CONNECT 连到本地检查过的 IP，代理不再解析域名", async () => {

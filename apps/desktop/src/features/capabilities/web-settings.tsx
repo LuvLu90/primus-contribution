@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Switch } from "@/components/ui/switch";
 import { Row, Section } from "@/features/settings/settings-section";
 import { getPlatform } from "@/lib/platform";
 import { strings } from "@/lib/strings";
+import { buttonClass } from "./ui";
 
 // 设置·能力中心·联网（ADR 0020）：是否允许 AI 联网搜索（web_search）与读取网页（web_fetch），默认开。
 // 薄壳写 users/<SID>/app/web.json，Core 的 primus-web 在每轮对话开始前读取，不需要重启内核。
@@ -17,26 +18,35 @@ function errorText(e: unknown, fallback: string): string {
 
 export function WebSettings() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const seqRef = useRef(0);
+
+  const load = useCallback(async () => {
+    const seq = ++seqRef.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const s = await (await getPlatform()).webSettingsGet();
+      if (seq !== seqRef.current) return;
+      setEnabled(s.enabled);
+    } catch (e) {
+      if (seq !== seqRef.current) return;
+      // 读取失败时状态未知（Core 可能仍沿用上次缓存的开启状态），不要显示成“已关闭”
+      setEnabled(null);
+      setError(errorText(e, t.loadFailed));
+    } finally {
+      if (seq === seqRef.current) setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    let alive = true;
-    getPlatform()
-      .then((p) => p.webSettingsGet())
-      .then(
-        (s) => alive && setEnabled(s.enabled),
-        (e) => {
-          if (!alive) return;
-          // 读不到设置时 Core 也按关闭处理；显示关闭，改动开关会重新写入
-          setEnabled(false);
-          setError(errorText(e, t.loadFailed));
-        },
-      );
+    void load();
     return () => {
-      alive = false;
+      seqRef.current += 1;
     };
-  }, []);
+  }, [load]);
 
   const change = async (next: boolean) => {
     const prev = enabled;
@@ -54,15 +64,38 @@ export function WebSettings() {
     }
   };
 
+  const unknown = enabled === null && !loading && error !== null;
+
   return (
     <Section title={t.title}>
       <Row label={t.enabled} hint={error ?? t.hint}>
-        <Switch
-          ariaLabel={t.enabled}
-          checked={enabled ?? true}
-          disabled={enabled === null || saving}
-          onCheckedChange={(v) => void change(v)}
-        />
+        {unknown ? (
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => void load()}
+              className={buttonClass}
+            >
+              {t.retry}
+            </button>
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => void change(false)}
+              className={buttonClass}
+            >
+              {t.disable}
+            </button>
+          </div>
+        ) : (
+          <Switch
+            ariaLabel={t.enabled}
+            checked={enabled ?? true}
+            disabled={enabled === null || loading || saving}
+            onCheckedChange={(v) => void change(v)}
+          />
+        )}
       </Row>
     </Section>
   );

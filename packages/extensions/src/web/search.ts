@@ -227,20 +227,29 @@ export function formatResults(query: string, hits: SearchHit[]): string {
   let used = head.length + 120;
   let shown = 0;
   for (const [i, h] of hits.entries()) {
-    const summary =
-      h.summary.length > MAX_SUMMARY_CHARS
-        ? `${h.summary.slice(0, MAX_SUMMARY_CHARS)}…`
-        : h.summary;
-    let block = [
-      `[${i + 1}] ${clip(h.title, MAX_FIELD_CHARS)}`,
-      `链接：${clip(h.url, MAX_FIELD_CHARS)}`,
-      ...(h.date ? [`日期：${clip(h.date, 64)}`] : []),
-      ...(summary ? [`摘要：${summary}`] : []),
-    ].join("\n");
     const room = MAX_RESULT_CHARS - used - 2;
-    if (block.length > room) {
-      if (shown > 0 || room <= 0) break;
-      block = clip(block, room);
+    const prefix = [
+      `[${i + 1}] ${clip(h.title, MAX_FIELD_CHARS)}`,
+      // 完整保留链接，不裁剪 URL（避免模型用截断后的坏链接调用 web_fetch）
+      `链接：${h.url}`,
+      ...(h.date ? [`日期：${clip(h.date, 64)}`] : []),
+    ].join("\n");
+    if (prefix.length > room) continue;
+    let block = prefix;
+    if (h.summary) {
+      const summary =
+        h.summary.length > MAX_SUMMARY_CHARS
+          ? `${h.summary.slice(0, MAX_SUMMARY_CHARS)}…`
+          : h.summary;
+      const candidate = `${prefix}\n摘要：${summary}`;
+      if (candidate.length <= room) {
+        block = candidate;
+      } else if (shown === 0) {
+        const summaryRoom = room - prefix.length - 1 - "摘要：".length;
+        if (summaryRoom > 1) block = `${prefix}\n摘要：${clip(h.summary, summaryRoom)}`;
+      } else {
+        continue;
+      }
     }
     parts.push(block);
     used += block.length + 2;

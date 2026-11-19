@@ -293,4 +293,28 @@ describe("联网步骤（ADR 0020）", () => {
     fireEvent.click(screen.getByRole("button", { name: /已阅读/ }));
     expect(await screen.findByText("工具未注册")).toBeTruthy();
   });
+
+  it("已取消的搜索与网页读取只显示已停止，不标成失败", async () => {
+    renderTurn(
+      [
+        assistant([
+          { type: "toolCall", id: "sc", name: "web_search", arguments: { query: "q" } },
+          { type: "toolCall", id: "fc", name: "web_fetch", arguments: { url: "https://a.com" } },
+        ]),
+        webResult("sc", "web_search", { status: "cancelled", query: "q", results: [] }, true),
+        webResult("fc", "web_fetch", { status: "cancelled", url: "https://a.com" }, true),
+      ],
+      true,
+      false,
+    );
+    const searchRow = screen.getByRole("button", { name: /已搜索/ });
+    const fetchRow = screen.getByRole("button", { name: /已阅读/ });
+    expect(searchRow.textContent).toContain(t.web.cancelled);
+    expect(searchRow.textContent).not.toContain(t.web.failed);
+    expect(fetchRow.textContent).toContain(t.web.cancelled);
+    expect(fetchRow.textContent).not.toContain(t.web.failed);
+    fireEvent.click(searchRow);
+    fireEvent.click(fetchRow);
+    expect(screen.queryByText(t.web.failed)).toBeNull();
+  });
 });

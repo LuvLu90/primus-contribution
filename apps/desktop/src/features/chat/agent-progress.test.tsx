@@ -55,6 +55,27 @@ describe("唇条里的计划进度", () => {
     expect(popover().className).toContain("group-hover/lp:opacity-100");
   });
 
+  it("焦点在输入框、鼠标悬停进度摘要时按 Escape 也能收起，离开后恢复", () => {
+    vi.useFakeTimers();
+    const { container } = render(
+      <div>
+        <textarea aria-label="输入框" />
+        <LipProgress items={items} />
+      </div>,
+    );
+    const popover = () => container.querySelector("[data-lip-popover]") as HTMLElement;
+    const textarea = screen.getByRole("textbox", { name: "输入框" });
+    const root = screen.getByTestId("lip-progress");
+    textarea.focus();
+    fireEvent.mouseEnter(root);
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(popover().className).not.toContain("group-hover/lp:opacity-100");
+    expect(popover().className).not.toContain("group-focus-within/lp:opacity-100");
+    fireEvent.mouseLeave(root);
+    act(() => vi.runAllTimers());
+    expect(popover().className).toContain("group-hover/lp:opacity-100");
+  });
+
   it("全部完成后显示“全部步骤已完成”，停留后淡出；又有未完成的步骤时重新出现", () => {
     vi.useFakeTimers();
     const done = items.map((i) => ({ ...i, status: "completed" as const }));

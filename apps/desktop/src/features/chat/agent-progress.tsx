@@ -194,13 +194,37 @@ export function LipProgress({
   // Escape 收起弹出列表（不必移开焦点或指针，WCAG 1.4.13）；指针与焦点都离开整块后恢复，下次悬停 / 聚焦再展开
   const [dismissed, setDismissed] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const hoveredRef = useRef(false);
+  const visible = !(hidden || items.length === 0 || phase === "gone");
+  const isHovered = () => {
+    const root = rootRef.current;
+    return Boolean(hoveredRef.current || root?.matches(":hover"));
+  };
   const restore = () => {
     const root = rootRef.current;
-    if (root && (root.matches(":hover") || root.contains(document.activeElement))) return;
+    if (root && (isHovered() || root.contains(document.activeElement))) return;
     setDismissed(false);
   };
 
-  if (hidden || items.length === 0 || phase === "gone") return null;
+  // 焦点留在输入框等处、指针悬停进度摘要时，Escape 不会冒泡到根节点，需在全局监听
+  useEffect(() => {
+    if (!visible) {
+      hoveredRef.current = false;
+      return;
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const root = rootRef.current;
+      if (!root) return;
+      if (hoveredRef.current || root.matches(":hover") || root.contains(document.activeElement)) {
+        setDismissed(true);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [visible]);
+
+  if (!visible) return null;
 
   const ratio = items.length ? doneCount / items.length : 0;
 
@@ -216,7 +240,13 @@ export function LipProgress({
         e.stopPropagation();
         setDismissed(true);
       }}
-      onMouseLeave={() => setTimeout(restore)}
+      onMouseEnter={() => {
+        hoveredRef.current = true;
+      }}
+      onMouseLeave={() => {
+        hoveredRef.current = false;
+        setTimeout(restore);
+      }}
       onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setTimeout(restore);
       }}

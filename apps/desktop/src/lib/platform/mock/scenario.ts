@@ -295,8 +295,9 @@ export function continueScenario(now: number): ScenarioResult {
 export function steerRecords(
   items: readonly { text: string; images?: ImageContent[] }[],
   now: number,
+  remaining: readonly string[] = [],
 ): CoreRecord[] {
-  const records: CoreRecord[] = [{ type: "queue_update", steering: [], followUp: [] }];
+  const records: CoreRecord[] = [{ type: "queue_update", steering: [...remaining], followUp: [] }];
   items.forEach(({ text, images }, i) => {
     // 带图片的插话与 Core 一致：正文与图片一起写进用户消息
     const content = images?.length ? [{ type: "text" as const, text }, ...images] : text;

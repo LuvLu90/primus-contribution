@@ -110,8 +110,8 @@ function SearchRow({
   const running = status === "running";
   const query = details?.query || argText(call, "query");
   const results = details?.status === "done" ? details.results : [];
-  const failed = status === "error" || details?.status === "failed";
   const cancelled = details?.status === "cancelled";
+  const failed = !cancelled && (status === "error" || details?.status === "failed");
   return (
     <div>
       <StepButton
@@ -201,8 +201,8 @@ function FetchRow({
   try {
     site = bareSite(new URL(url).hostname);
   } catch {}
-  const failed = status === "error" || details?.status === "failed";
   const cancelled = details?.status === "cancelled";
+  const failed = !cancelled && (status === "error" || details?.status === "failed");
   const find = argText(call, "find");
   const label = details?.title || site || url;
   const info =

@@ -143,7 +143,7 @@ mod tests {
         let key = image_api_key();
         assert!(key.starts_with("sk-"));
         assert!(!BUILTIN_IMAGE_API_KEY.contains(key.as_str()));
-        assert_ne!(key, api_key());
+        assert!(key != api_key(), "内置图片密钥不能与对话密钥相同");
         assert!(IMAGE_BASE_URL.starts_with("https://") && !IMAGE_BASE_URL.ends_with('/'));
     }
 
@@ -151,14 +151,14 @@ mod tests {
     fn search_api_keys_are_decoded() {
         let keys = search_api_keys();
         assert_eq!(keys.len(), 2);
-        assert_ne!(keys[0], keys[1]);
+        assert!(keys[0] != keys[1], "两把内置搜索密钥不能相同");
         for (key, hex) in keys.iter().zip(BUILTIN_SEARCH_API_KEYS) {
             assert!(key.starts_with("sk-"));
             // 每行一把交给扩展：密钥里不能有换行等控制字符
             assert!(!key.chars().any(char::is_control));
             assert!(!hex.contains(key.as_str()), "源码中不出现明文密钥");
-            assert_ne!(key, &api_key());
-            assert_ne!(key, &image_api_key());
+            assert!(key != &api_key(), "内置搜索密钥不能与对话密钥相同");
+            assert!(key != &image_api_key(), "内置搜索密钥不能与图片密钥相同");
         }
         assert!(SEARCH_BASE_URL.starts_with("https://") && !SEARCH_BASE_URL.ends_with('/'));
     }

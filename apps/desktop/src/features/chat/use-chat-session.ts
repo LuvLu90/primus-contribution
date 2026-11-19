@@ -607,6 +607,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
 
   const steer = useCallback(
     async (message: string, images?: ImageContent[]): Promise<PromptDisposition | undefined> => {
+      setErrorState((e) => (e?.kind === "resync" ? e : undefined));
       const c = conn.current;
       if (!c) {
         fail(new Error(strings.chat.sessionNotOpen));
@@ -642,6 +643,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   }, [fail]);
 
   const continueTurn = useCallback(async (): Promise<boolean> => {
+    setErrorState((e) => (e?.kind === "resync" ? e : undefined));
     const c = conn.current;
     if (!c) {
       fail(new Error(strings.chat.sessionNotOpen));

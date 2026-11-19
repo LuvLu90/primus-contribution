@@ -554,4 +554,37 @@ describe("设置·能力中心·联网（ADR 0020）", () => {
     expect(await screen.findByText("磁盘已满")).toBeTruthy();
     expect((toggle as HTMLInputElement).checked).toBe(true);
   });
+
+  it("读取失败时不显示为已关闭，支持显式关闭联网", async () => {
+    const set = vi.fn(async (enabled: boolean) => ({ enabled }));
+    setup({
+      webSettingsGet: async () => Promise.reject(new Error("文件被占用")),
+      webSettingsSet: set,
+    });
+    expect(await screen.findByText("文件被占用")).toBeTruthy();
+    // 未知状态：不显示误导性的关闭开关
+    expect(screen.queryByRole("switch", { name: tw.enabled })).toBeNull();
+    // 显式关闭联网会直接提交 false
+    fireEvent.click(screen.getByRole("button", { name: tw.disable }));
+    await waitFor(() => expect(set).toHaveBeenCalledWith(false));
+    const toggle = await screen.findByRole("switch", { name: tw.enabled });
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("读取失败后点击重试可恢复显示当前设置", async () => {
+    let failRead = true;
+    setup({
+      webSettingsGet: async () => {
+        if (failRead) throw new Error("权限不足");
+        return { enabled: true };
+      },
+    });
+    expect(await screen.findByText("权限不足")).toBeTruthy();
+    expect(screen.queryByRole("switch", { name: tw.enabled })).toBeNull();
+    failRead = false;
+    fireEvent.click(screen.getByRole("button", { name: tw.retry }));
+    const toggle = await screen.findByRole("switch", { name: tw.enabled });
+    await waitFor(() => expect((toggle as HTMLInputElement).disabled).toBe(false));
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+  });
 });

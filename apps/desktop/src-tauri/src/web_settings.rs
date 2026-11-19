@@ -62,10 +62,16 @@ mod tests {
         let paths = data_paths(&tmp.0);
         let file = settings_file(&paths);
         assert_eq!(file, paths.app_dir().join("web.json"));
-        assert_eq!(WebSettings::load(&file).unwrap(), WebSettings { enabled: true });
+        assert_eq!(
+            WebSettings::load(&file).unwrap(),
+            WebSettings { enabled: true }
+        );
 
         WebSettings { enabled: false }.save(&file).unwrap();
-        assert_eq!(WebSettings::load(&file).unwrap(), WebSettings { enabled: false });
+        assert_eq!(
+            WebSettings::load(&file).unwrap(),
+            WebSettings { enabled: false }
+        );
         // 扩展按这个格式读取
         let text = fs::read_to_string(&file).unwrap();
         let json: serde_json::Value = serde_json::from_str(&text).unwrap();

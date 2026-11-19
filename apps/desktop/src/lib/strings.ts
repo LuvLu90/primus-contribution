@@ -314,11 +314,15 @@ export const strings = {
     modeSyncFailed: "权限模式未能同步到内核，已暂停发送",
     permissionMode: "权限模式",
     permissions: {
-      ask: { label: "每次询问", short: "询问", hint: "修改文件、运行命令和联网前都先征求你的同意" },
+      ask: {
+        label: "每次询问",
+        short: "询问",
+        hint: "修改文件、运行命令前先征求你的同意；联网搜索与网页读取由“联网”开关控制",
+      },
       edit: {
         label: "自动编辑",
         short: "自动编辑",
-        hint: "工作区内的编辑直接执行，命令和联网仍会询问",
+        hint: "工作区内的编辑直接执行，运行命令仍会询问；联网搜索与网页读取由“联网”开关控制",
       },
       full: {
         label: "完全访问",
@@ -707,6 +711,8 @@ export const strings = {
         hint: "开启后，AI 会在需要最新信息时自己搜索网页、打开链接阅读。关闭后从下一条消息起生效。",
         loadFailed: "读取联网设置失败",
         saveFailed: "保存联网设置失败",
+        retry: "重试",
+        disable: "关闭联网",
       },
       newSessionHint: "改动在新建的会话中生效，已打开的会话不受影响。",
       cancel: "取消",

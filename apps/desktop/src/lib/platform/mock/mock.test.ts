@@ -722,3 +722,60 @@ describe("mock 打开文件", () => {
     info.mockRestore();
   });
 });
+
+describe("mock 插话逐条投递", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("两条插话时逐条移出：第一条回复期间停止，第二条仍可由 clear_queue 取回", async () => {
+    const platform = createMockPlatform({ intervalMs: 10, batchSize: 1 });
+    const records: CoreRecord[] = [];
+    const { sessionKey } = await platform.sessionOpen("ws", undefined, (b) =>
+      records.push(...b.records),
+    );
+    await platform.coreSend(sessionKey, { id: "p-1", type: "prompt", message: "hi" });
+    // 开始流式回复后连续插入两条
+    await vi.advanceTimersByTimeAsync(20);
+    await platform.coreSend(sessionKey, {
+      id: "s-1",
+      type: "prompt",
+      message: "第一条插话",
+      streamingBehavior: "steer",
+    });
+    await platform.coreSend(sessionKey, {
+      id: "s-2",
+      type: "prompt",
+      message: "第二条插话",
+      streamingBehavior: "steer",
+    });
+    // 推进直到第一条插话的用户消息已开始推送（但整轮未结束）
+    for (let i = 0; i < 200; i++) {
+      await vi.advanceTimersByTimeAsync(10);
+      const startedFirstSteer = records.some(
+        (r) =>
+          r.type === "message_start" &&
+          r.message.role === "user" &&
+          r.message.content === "第一条插话",
+      );
+      if (startedFirstSteer) break;
+    }
+    expect(
+      records.some(
+        (r) =>
+          r.type === "message_start" &&
+          r.message.role === "user" &&
+          r.message.content === "第一条插话",
+      ),
+    ).toBe(true);
+    // 此时清空队列并停止：第二条插话仍在 steering 中，应被取回
+    await platform.coreSend(sessionKey, { id: "c-1", type: "clear_queue" });
+    await platform.coreSend(sessionKey, { id: "a-1", type: "abort" });
+    await vi.runAllTimersAsync();
+    const cleared = records.find((r) => "id" in r && r.id === "c-1") as {
+      success: boolean;
+      data: { steering: string[] };
+    };
+    expect(cleared?.success).toBe(true);
+    expect(cleared?.data.steering).toEqual(["第二条插话"]);
+  });
+});
