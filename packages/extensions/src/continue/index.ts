@@ -16,7 +16,7 @@ interface ContinueApi {
   sendMessage: (
     message: { customType: string; content: string; display: boolean },
     options?: { triggerTurn?: boolean },
-  ) => Promise<void>;
+  ) => void;
 }
 
 function isContinueApi(pi: unknown): pi is ContinueApi {
@@ -32,12 +32,16 @@ export default function primusContinue(pi: unknown): void {
       // 命令在 prompt() 里执行，Core 要等它返回才回 handled；sendMessage 触发的新一轮要跑完才结束，
       // 所以放到下一个事件循环再开始，不阻塞命令的响应
       setTimeout(() => {
-        pi.sendMessage(
-          { customType: CONTINUE_COMMAND, content: CONTINUE_PROMPT, display: false },
-          { triggerTurn: true },
-        ).catch(() => {
-          // 已有一轮在运行等情况：不处理，界面按 Core 的事件显示
-        });
+        // 公开 API 的 sendMessage 返回 void（内部丢弃了发送的 Promise），失败不会回传到这里；
+        // 只兜住同步异常（如扩展已停用），避免在定时器回调里抛出未捕获的错误
+        try {
+          pi.sendMessage(
+            { customType: CONTINUE_COMMAND, content: CONTINUE_PROMPT, display: false },
+            { triggerTurn: true },
+          );
+        } catch {
+          // 不处理，界面按 Core 的事件显示
+        }
       }, 0);
     },
   });

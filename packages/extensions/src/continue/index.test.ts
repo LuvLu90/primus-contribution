@@ -7,7 +7,7 @@ describe("primus-continue", () => {
     vi.useFakeTimers();
     try {
       const commands = new Map<string, (args: string, ctx: unknown) => Promise<void>>();
-      const sendMessage = vi.fn().mockResolvedValue(undefined);
+      const sendMessage = vi.fn((): void => undefined);
       primusContinue({
         registerCommand: (name: string, o: { handler: (a: string, c: unknown) => Promise<void> }) =>
           commands.set(name, o.handler),
@@ -23,6 +23,26 @@ describe("primus-continue", () => {
         { customType: CONTINUE_COMMAND, content: CONTINUE_PROMPT, display: false },
         { triggerTurn: true },
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sendMessage 同步抛错时不在定时器里抛出未捕获异常", async () => {
+    vi.useFakeTimers();
+    try {
+      const commands = new Map<string, (args: string, ctx: unknown) => Promise<void>>();
+      const sendMessage = vi.fn((): void => {
+        throw new Error("inactive");
+      });
+      primusContinue({
+        registerCommand: (name: string, o: { handler: (a: string, c: unknown) => Promise<void> }) =>
+          commands.set(name, o.handler),
+        sendMessage,
+      });
+      await commands.get(CONTINUE_COMMAND)?.("", {});
+      await expect(vi.runAllTimersAsync()).resolves.not.toThrow();
+      expect(sendMessage).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

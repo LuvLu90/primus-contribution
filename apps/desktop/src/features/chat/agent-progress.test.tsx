@@ -76,6 +76,21 @@ describe("唇条里的计划进度", () => {
     expect(popover().className).toContain("group-hover/lp:opacity-100");
   });
 
+  it("Escape 收起后暂时隐藏再恢复：再次悬停能正常展开", () => {
+    const { container, rerender } = render(<LipProgress items={items} />);
+    const popover = () => container.querySelector("[data-lip-popover]") as HTMLElement;
+    fireEvent.mouseEnter(screen.getByTestId("lip-progress"));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(popover().className).not.toContain("group-hover/lp:opacity-100");
+    // 隐藏期间没有离开事件，也没有执行恢复
+    rerender(<LipProgress items={items} hidden />);
+    expect(trigger()).toBeNull();
+    rerender(<LipProgress items={items} />);
+    fireEvent.mouseEnter(screen.getByTestId("lip-progress"));
+    expect(popover().className).toContain("group-hover/lp:opacity-100");
+    expect(popover().className).toContain("group-focus-within/lp:opacity-100");
+  });
+
   it("全部完成后显示“全部步骤已完成”，停留后淡出；又有未完成的步骤时重新出现", () => {
     vi.useFakeTimers();
     const done = items.map((i) => ({ ...i, status: "completed" as const }));

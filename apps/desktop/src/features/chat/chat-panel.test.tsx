@@ -1315,6 +1315,49 @@ describe("对话区（mock 事件流）", () => {
     expect(screen.getByText(t.stopped)).toBeTruthy();
   }, 20000);
 
+  it("停止时 Core 已清空插话队列、响应丢失：插话放回输入框，不自动重发，空闲后再清一次队列", async () => {
+    const base = createMockPlatform({ intervalMs: 150, batchSize: 1 });
+    let lose = true;
+    // 第一次 clear_queue 交给 mock 执行（Core 已清空），但调用方拿不到结果
+    const coreSend = vi.fn(async (key: string, record: Parameters<typeof base.coreSend>[1]) => {
+      if (record.type === "clear_queue" && lose) {
+        lose = false;
+        await base.coreSend(key, record);
+        throw new Error("响应丢失");
+      }
+      return base.coreSend(key, record);
+    });
+    setPlatformForTesting({ ...base, coreSend });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "长任务" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("article", { name: t.assistant }, { timeout: 5000 });
+    fireEvent.change(input, { target: { value: "改成先写测试" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByTestId("pending-steer", {}, { timeout: 3000 });
+    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(""));
+    fireEvent.click(screen.getByRole("button", { name: t.stop }));
+    // 插话回到输入框，待插入气泡撤下；仍然发出停止
+    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe("改成先写测试"));
+    expect(screen.queryByTestId("pending-steer")).toBeNull();
+    await waitFor(() => expect(coreSend.mock.calls.some(([, r]) => r.type === "abort")).toBe(true));
+    // 本轮结束后再清一次队列；插话没有被自动发出
+    await waitFor(() => expect(screen.getByText(t.stopped)).toBeTruthy(), { timeout: 8000 });
+    await waitFor(() =>
+      expect(coreSend.mock.calls.filter(([, r]) => r.type === "clear_queue")).toHaveLength(2),
+    );
+    const prompts = coreSend.mock.calls.filter(
+      ([, r]) =>
+        r.type === "prompt" &&
+        (r as { message?: string }).message === "改成先写测试" &&
+        (r as { streamingBehavior?: string }).streamingBehavior !== "steer",
+    );
+    expect(prompts).toHaveLength(0);
+    expect(screen.queryByText(/你刚才说：「改成先写测试」/)).toBeNull();
+    expect((input as HTMLTextAreaElement).value).toBe("改成先写测试");
+  }, 20000);
+
   it("已停止的回复显示“继续”：发 /primus-continue，不新增用户气泡", async () => {
     const base = createMockPlatform({ intervalMs: 60, batchSize: 2 });
     const coreSend = vi.fn(base.coreSend);

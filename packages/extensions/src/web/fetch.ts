@@ -4,6 +4,7 @@
 // 安全：只允许 http / https 公网地址（每次跳转都重新检查，最多 5 次），不带 Cookie 与凭证；
 // 响应体最多读 5 MB；内容只当作数据交给模型（不可信的外部内容）。
 
+import { createHash } from "node:crypto";
 import type { WebFetchDetails } from "@primus/protocol";
 import { htmlTitle, htmlToMarkdown } from "./html.ts";
 import { checkPublicUrl, linkedSignal, readLimited, WebError } from "./net.ts";
@@ -20,6 +21,8 @@ export const MAX_REDIRECTS = 5;
 /** 页内查找：最多返回的命中数与每处前后的字符数 */
 export const MAX_FIND_MATCHES = 8;
 export const FIND_CONTEXT_CHARS = 300;
+/** 页内查找关键词的最大长度（超长直接拒绝，不静默截短） */
+export const MAX_FIND_CHARS = 200;
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0 Safari/537.36 Primus";
@@ -29,6 +32,8 @@ export interface FetchParams {
   find?: string;
   offset?: number;
   max_chars?: number;
+  /** 续读时带上上次返回的正文版本；与本次正文不一致时从头返回 */
+  version?: string;
 }
 
 export interface NormalizedFetch {
@@ -36,11 +41,13 @@ export interface NormalizedFetch {
   find: string;
   offset: number;
   maxChars: number;
+  version: string;
 }
 
 export function normalizeFetch(p: Partial<FetchParams> | undefined): NormalizedFetch {
   const url = typeof p?.url === "string" ? p.url.trim() : "";
-  const find = typeof p?.find === "string" ? p.find.trim().slice(0, 200) : "";
+  const find = typeof p?.find === "string" ? p.find.trim() : "";
+  const version = typeof p?.version === "string" ? p.version.trim().slice(0, 64) : "";
   const off = Number(p?.offset);
   const max = Number(p?.max_chars);
   return {
@@ -50,7 +57,13 @@ export function normalizeFetch(p: Partial<FetchParams> | undefined): NormalizedF
     maxChars: Number.isFinite(max)
       ? Math.min(MAX_CHARS_LIMIT, Math.max(1000, Math.trunc(max)))
       : DEFAULT_MAX_CHARS,
+    version,
   };
+}
+
+/** 正文版本：正文的短哈希。续读提示里带上它，网页在两次读取之间变了就能发现（旧偏移不再对应原位置） */
+export function textVersion(text: string): string {
+  return createHash("sha256").update(text).digest("hex").slice(0, 12);
 }
 
 /** 标题最多保留的字符数（标题进 details 与每次返回的开头，不受 max_chars 限制） */
@@ -207,9 +220,14 @@ export async function runFetch(
     details.error = "缺少网址（url）";
     return { details, text: `[failed] ${details.error}`, isError: true };
   }
+  if (p.find.length > MAX_FIND_CHARS) {
+    details.error = `查找关键词过长（${p.find.length} 字），最多 ${MAX_FIND_CHARS} 字；请换一个更短的关键词`;
+    return { details, text: `[failed] ${details.error}`, isError: true };
+  }
   try {
     const page = await fetchPage(deps, p.url, signal);
     const total = page.text.length;
+    const version = textVersion(page.text);
     details.status = "done";
     details.finalUrl = page.finalUrl;
     details.contentType = page.contentType;
@@ -243,19 +261,34 @@ export async function runFetch(
             ? "已读取的前 5 MB 里没有找到这个词（后面的内容没有读取）。可以换个关键词，或不带 find 直接阅读。"
             : "页面里没有找到这个词。可以换个关键词，或不带 find 直接阅读。",
         );
-      else lines.push("", "需要更多上下文时，用 offset 设为上面的位置附近再读取。");
+      else
+        lines.push(
+          "",
+          `需要更多上下文时，用 offset 设为上面的位置附近、version=${version} 再读取。`,
+        );
       return { details, text: lines.join("\n") };
     }
-    const start = Math.min(p.offset, total);
+    // 续读时正文版本变了：旧偏移不再对应原来的位置，从头返回并说明
+    const changed = p.offset > 0 && p.version !== "" && p.version !== version;
+    const start = changed ? 0 : Math.min(p.offset, total);
     const end = Math.min(total, start + p.maxChars);
     details.range = [start, end];
     const lines = [
       ...head,
+      ...(changed
+        ? [
+            `注意：网页在上次读取后已变化（版本 ${p.version} → ${version}），offset=${p.offset} 不再对应原来的位置，已从开头重新返回。`,
+          ]
+        : []),
       `内容：第 ${start}–${end} 字，共 ${total} 字${cut}`,
       "",
       page.text.slice(start, end),
     ];
-    if (end < total) lines.push("", `（未完，继续阅读请用 offset=${end}，或用 find 查找关键词）`);
+    if (end < total)
+      lines.push(
+        "",
+        `（未完，继续阅读请用 offset=${end}、version=${version}，或用 find 查找关键词）`,
+      );
     return { details, text: lines.join("\n") };
   } catch (e) {
     if (signal?.aborted) {

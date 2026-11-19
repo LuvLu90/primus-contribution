@@ -210,8 +210,13 @@ export interface McpServerView {
   enabled: boolean;
   exposure: string;
   description: string | null;
-  /** Core 会拒绝这个条目的原因 */
+  /** Core 会拒绝这个条目的原因（定义本身无效、名字冲突、被主文件遮蔽）：Core 不加载它 */
   error: string | null;
+  /**
+   * `.agents/mcp.json` 的服务器：主文件里的覆盖项与原定义合并后校验不通过的原因。Core 报错、不套用覆盖项，
+   * 仍按原定义加载（ADR 0022），所以与 {@link error} 分开
+   */
+  overrideError?: string | null;
   /** `.agents/mcp.json` 的服务器：启停来自同级主文件里的覆盖项（ADR 0022） */
   overridden?: boolean;
 }
@@ -298,6 +303,9 @@ export function listServers(doc: McpDocument, shared?: McpDocument | null): McpS
  * 同名（或只差 - 与 _）的服务器时与 Core 一样记为冲突：Core 使用 `primary` 那一条。“完整定义”指不是覆盖项的条目
  * （有 command / url / type，或根本不是对象），**不论能否通过校验**：Core 的 `readConfigLevel` 先登记命名空间再校验，
  * 主文件里无效的同名定义同样让 `.agents` 那一条被跳过（两条都不加载，主文件那条的错误由 {@link listServers} 显示）。
+ * 同一个文件内则不同：Core 的 `claim` 对同一路径的条目不报冲突，只在合并时与**已加载**的服务器比较命名空间，
+ * 所以 `"my-tools": {"command": 123}` 之后的 `"my_tools": {"command": "ok"}` 照常加载；这里同样只登记通过校验的名字。
+ * 覆盖项与原定义合并后校验不通过时记在 `overrideError`（不是 `error`），按原定义显示。
  * `global` 为 false 时（项目级）不允许 `auth`。
  */
 export function listSharedServers(
@@ -323,11 +331,12 @@ export function listSharedServers(
     }
     const override = Object.hasOwn(primaryServers, name) ? primaryServers[name] : undefined;
     let applied: Obj | null = isApplicableOverride(override) ? override : null;
+    let overrideError: string | null = null;
     // 与 Core 一样校验合并后的条目：覆盖项的值不合法时报错，并按原定义（不套用覆盖项）显示
     if (applied && !error && isRecord(entry)) {
       const merged = validateServer(name, { ...entry, ...applied }, opts.global ?? true);
       if ("error" in merged) {
-        error = merged.error;
+        overrideError = merged.error;
         applied = null;
       }
     }
@@ -342,6 +351,7 @@ export function listSharedServers(
       exposure: typeof rec.exposure === "string" ? exposureName(rec.exposure) : DEFAULT_EXPOSURE,
       description: typeof rec.description === "string" ? rec.description : null,
       error,
+      overrideError,
       overridden,
     };
   });

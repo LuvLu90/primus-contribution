@@ -169,6 +169,29 @@ describe("mock 能力中心", () => {
     expect(out.errors.join("\n")).toContain('server "broken": args must be an array of strings');
   });
 
+  it("共享服务器名与原型上的属性同名（constructor）：用户级没写这条时不算冲突，照常列出", async () => {
+    const c = createMockCapabilities({
+      agentsMcp: JSON.stringify({
+        mcpServers: { constructor: { command: "docs" }, toString: { command: "notes" } },
+      }),
+    });
+    const out = JSON.parse((await c.mcpList()).stdout);
+    const names = out.servers.map((s: { name: string }) => s.name);
+    expect(names).toContain("constructor");
+    expect(names).toContain("toString");
+    expect(out.errors.join("\n")).not.toContain("is also defined in");
+    const file = await c.mcpConfigRead();
+    await c.mcpConfigWrite(
+      JSON.stringify({ mcpServers: { constructor: { enabled: false } } }),
+      file.version,
+    );
+    const after = JSON.parse((await c.mcpList()).stdout);
+    expect(after.servers.find((s: { name: string }) => s.name === "constructor")).toMatchObject({
+      enabled: false,
+      state: "disabled",
+    });
+  });
+
   it("覆盖项含 enabled / exposure / toolExposure 以外的键：报无效覆盖，保留共享定义的启停；合法的 enabled: false 仍生效", async () => {
     const c = createMockCapabilities({
       agentsMcp: JSON.stringify({

@@ -96,7 +96,10 @@ function privateV4(ip: string): boolean {
     (a === 172 && b >= 16 && b <= 31) ||
     (a === 192 && b === 168) ||
     (a === 192 && b === 0 && p[2] === 0) ||
+    (a === 192 && b === 0 && p[2] === 2) || // 192.0.2.0/24 TEST-NET-1（文档专用）
     (a === 198 && (b === 18 || b === 19)) ||
+    (a === 198 && b === 51 && p[2] === 100) || // 198.51.100.0/24 TEST-NET-2
+    (a === 203 && b === 0 && p[2] === 113) || // 203.0.113.0/24 TEST-NET-3
     a >= 224
   );
 }
@@ -117,8 +120,12 @@ export function isPrivateAddress(ip: string): boolean {
     const lo = Number.parseInt(hex[2] ?? "0", 16);
     return privateV4(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
   }
-  const first = Number.parseInt(host.split(":")[0] || "0", 16);
+  const groups = host.split(":");
+  const first = Number.parseInt(groups[0] || "0", 16);
+  // 第二组：首组之后若紧跟 "::" 压缩，第二组为空串即 0
+  const second = Number.parseInt(groups[1] || "0", 16);
   return (
+    (first === 0x2001 && second === 0x0db8) || // 2001:db8::/32 文档专用
     (first & 0xfe00) === 0xfc00 || // fc00::/7 唯一本地
     (first & 0xffc0) === 0xfe80 || // fe80::/10 链路本地
     (first & 0xffc0) === 0xfec0 || // fec0::/10 站点本地（已废弃，仍可能在内网使用）

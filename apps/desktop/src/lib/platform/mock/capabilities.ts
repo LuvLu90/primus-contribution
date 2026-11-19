@@ -310,6 +310,9 @@ export function createMockCapabilities(options: MockCapabilitiesOptions = {}): C
         typeof v === "object" && v !== null && !Array.isArray(v);
       const isOverride = (v: Record<string, unknown>) =>
         v.command === undefined && v.url === undefined && v.type === undefined;
+      // 只认自有键：`constructor`、`toString` 等原型上的名字不算用户写的条目
+      const own = (map: Record<string, unknown>, name: string) =>
+        Object.hasOwn(map, name) ? map[name] : undefined;
       const badArgs = (v: Record<string, unknown>) =>
         v.args !== undefined &&
         !(Array.isArray(v.args) && v.args.every((a) => typeof a === "string"));
@@ -317,7 +320,7 @@ export function createMockCapabilities(options: MockCapabilitiesOptions = {}): C
       const valid: [string, Record<string, unknown>, string][] = [];
       for (const [name, entry] of Object.entries(servers)) {
         // 覆盖 ~/.agents/mcp.json 服务器的条目在下面套用
-        if (isObj(entry) && isOverride(entry) && isObj(shared[name])) continue;
+        if (isObj(entry) && isOverride(entry) && isObj(own(shared, name))) continue;
         if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
           errors.push(`${MOCK_MCP_PATH}: server "${name}" must be an object`);
           continue;
@@ -335,15 +338,15 @@ export function createMockCapabilities(options: MockCapabilitiesOptions = {}): C
           errors.push(`${MOCK_AGENTS_MCP_PATH}: server "${name}" must be an object`);
           continue;
         }
-        const own = servers[name];
-        if (own !== undefined && !(isObj(own) && isOverride(own))) {
+        const mine = own(servers, name);
+        if (mine !== undefined && !(isObj(mine) && isOverride(mine))) {
           errors.push(
             `${MOCK_AGENTS_MCP_PATH}: server "${name}" is also defined in ${MOCK_MCP_PATH}, which is used`,
           );
           continue;
         }
         // 与 Core 一样：覆盖项只能改 enabled / exposure / toolExposure，含其他键时报错、整条不套用（保留共享定义的启停）
-        let override = isObj(own) ? own : null;
+        let override = isObj(mine) ? mine : null;
         if (override && Object.keys(override).some((k) => !OVERRIDE_KEYS.includes(k))) {
           errors.push(
             `${MOCK_MCP_PATH}: server "${name}": an override can only set ${OVERRIDE_KEYS.join(", ")}`,

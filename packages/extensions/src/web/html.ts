@@ -79,19 +79,42 @@ export function decodeEntities(text: string): string {
 }
 
 // 网页内容不可信：所有扫描都保证线性耗时（正则同步执行、无法中断，畸形页面不能拖住 Core）。
-// 开始标签到其后第一个 `>` 为止（与浏览器的宽松解析一致，属性里的 `>` 不处理）；
+// 开始标签到其后第一个引号外的 `>` 为止（属性值里允许出现 `>`）；
 // 找不到 `>` 或结束标签时立即停止（后面的同类标签也不会有）。
 
-/** 查找 `pos` 之后第一个 `>`，记住上次的结果，连续查找总耗时线性 */
+/**
+ * 从 `pos`（标签名之后）找标签结束的 `>`：跳过 `=` 之后的引号属性值。
+ * 引号不闭合时退回引号外的第一个 `>`（不让一个坏引号吞掉整页）；都没有返回 -1。
+ * 从 `pos` 到结果最多扫两遍，线性。
+ */
+function tagEnd(s: string, pos: number): number {
+  let prev = "";
+  for (let i = pos; i < s.length; i++) {
+    const c = s[i] as string;
+    if (c === ">") return i;
+    if ((c === '"' || c === "'") && prev === "=") {
+      const q = s.indexOf(c, i + 1);
+      if (q < 0) return s.indexOf(">", pos);
+      i = q;
+      prev = c;
+      continue;
+    }
+    if (c !== " " && c !== "\t" && c !== "\n" && c !== "\r" && c !== "\f") prev = c;
+  }
+  return -1;
+}
+
+/**
+ * 查找 `pos` 之后的标签结束（`tagEnd`）。调用方按位置递增调用（下一次从上一个结果之后开始），
+ * 一旦某次找不到，之后的查找直接返回 -1，连续查找总耗时线性。
+ */
 function gtFinder(s: string): (pos: number) => number {
-  let cached = -1;
   let none = Number.POSITIVE_INFINITY;
   return (pos) => {
     if (pos >= none) return -1;
-    if (cached >= pos) return cached;
-    cached = s.indexOf(">", pos);
-    if (cached < 0) none = pos;
-    return cached;
+    const end = tagEnd(s, pos);
+    if (end < 0) none = pos;
+    return end;
   };
 }
 
@@ -102,7 +125,7 @@ export function stripTags(html: string): string {
   for (;;) {
     const lt = html.indexOf("<", at);
     if (lt < 0) break;
-    const gt = html.indexOf(">", lt + 1);
+    const gt = tagEnd(html, lt + 1);
     if (gt < 0) break;
     out += html.slice(at, lt);
     at = gt + 1;
@@ -259,7 +282,7 @@ function contentRegion(html: string): string {
   // <body> 到最后一个 </body>（没有结束标签时到末尾）
   const open = /<body\b/i.exec(html);
   if (!open) return html;
-  const gt = html.indexOf(">", open.index);
+  const gt = tagEnd(html, open.index + open[0].length);
   if (gt < 0) return html;
   const start = gt + 1;
   const close = /<\/body\s{0,64}>/gi;
@@ -288,7 +311,14 @@ export function htmlToMarkdown(html: string, baseUrl?: string): string {
       /class\s{0,64}=\s{0,64}["'][^"']{0,512}?\blang(?:uage)?-([\w+-]{1,64})/i.exec(
         inner.slice(0, 1024),
       )?.[1] ?? "";
-    blocks.push(`\`\`\`${lang}\n${code}\n\`\`\``);
+    // 围栏要长于内容里独占一行的反引号序列（否则该行会提前关闭代码块），至少 3 个
+    let longest = 0;
+    for (const line of code.split("\n")) {
+      const run = /^[ \t]*(`+)[ \t]*$/.exec(line)?.[1]?.length ?? 0;
+      if (run > longest) longest = run;
+    }
+    const fence = "`".repeat(Math.max(3, longest + 1));
+    blocks.push(`${fence}${lang}\n${code}\n${fence}`);
     return `${MARK}${blocks.length - 1}${MARK}`;
   });
 
@@ -301,7 +331,9 @@ export function htmlToMarkdown(html: string, baseUrl?: string): string {
     const text = stripTags(inner).replace(/\s+/g, " ").trim();
     const href = absoluteHref(attr(attrs, "href"), baseUrl);
     if (!text) return "";
-    return href ? `[${text}](${href})` : text;
+    // href 已在 absoluteHref 里解码过一次；文本最后还要整体解码，这里把 `&` 写回 `&amp;`，
+    // 让那次解码只还原出原样的 `&`（`&amp;copy;` 解码一次得到字面 `&copy;`，不能再变成 ©）
+    return href ? `[${text}](${href.replaceAll("&", "&amp;")})` : text;
   });
   s = replaceTags(s, /<img\b/gi, (tag) => {
     const alt = attr(tag, "alt")?.trim();

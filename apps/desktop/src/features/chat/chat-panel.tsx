@@ -785,6 +785,20 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   // 每次停止一个令牌：旧的 abort 迟到失败时不清除新一轮的停止状态
   const [stopping, setStopping] = useState(false);
   const stopToken = useRef<symbol | null>(null);
+  // 停止时清队列结果不确定：本轮结束后再清一次 Core 队列（插话已放回输入框）
+  const clearQueueWhenIdle = useRef(false);
+  // 把请求前记下、此刻仍未写入对话的插话放回输入框（文字接在草稿前，图片放回附件），并撤下待插入气泡
+  const restoreSteersToComposer = (saved: typeof pendingSteers) => {
+    const pendingIds = new Set(pendingSteersRef.current.map((x) => x.id));
+    const items = saved.filter((x) => pendingIds.has(x.id));
+    if (items.length === 0) return;
+    const ids = new Set(items.map((x) => x.id));
+    setSteers((l) => l.filter((x) => !ids.has(x.id)));
+    const text = items.map((x) => x.text).join("\n\n");
+    setDraft((d) => (d.trim() ? `${text}\n\n${d}` : text));
+    const images = items.flatMap((x) => x.images ?? []);
+    if (images.length > 0) attachments.addBlobs(images.map(imageToBlob));
+  };
   const stop = () => {
     if (!state.running || stopToken.current) return;
     const token = Symbol("stop");
@@ -793,8 +807,16 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     void (async () => {
       // 先取回还没写进对话的插话，停止后作为一条新消息立即发出
       if (pendingSteersRef.current.length > 0) {
+        // 请求前先记下插话（文字与图片）：响应丢失时 Core 可能已经清空了队列，仍要能找回
+        const saved = pendingSteersRef.current.slice();
         const taken = await clearQueue();
-        if (taken && taken.length > 0) {
+        if (taken === undefined) {
+          // 结果不确定（超时、写入失败或失败响应）：Core 可能已清空队列、也可能还留着。
+          // 不自动重发（可能与 Core 的投递重复），把仍未写入的插话放回输入框由用户决定是否再发，
+          // 并在本轮结束后再清一次队列，免得用户重发时 Core 里残留的副本也被投递
+          restoreSteersToComposer(saved);
+          clearQueueWhenIdle.current = true;
+        } else if (taken.length > 0) {
           const items = pendingSteersRef.current.slice(-taken.length);
           setSteers([]);
           const images = items.flatMap((x) => x.images ?? []);
@@ -810,7 +832,13 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
             stopToken.current = null;
             setStopping(false);
           }
-          if (!runningRef.current) sendResume();
+          if (!runningRef.current) {
+            if (clearQueueWhenIdle.current) {
+              clearQueueWhenIdle.current = false;
+              void clearQueue();
+            }
+            sendResume();
+          }
           return;
         }
       }
@@ -826,6 +854,10 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     if (state.running) return;
     stopToken.current = null;
     setStopping(false);
+    if (clearQueueWhenIdle.current) {
+      clearQueueWhenIdle.current = false;
+      void clearQueue();
+    }
     sendResume();
   }, [state.running]);
   // 取回插话时输入正被另一条发送占用（提交锁）：锁释放后、仍空闲时再发出取回的插话

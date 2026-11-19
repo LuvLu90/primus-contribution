@@ -445,14 +445,51 @@ describe(".agents/mcp.json（与其他工具共用，只读，ADR 0022）", () =
     );
   });
 
-  it("覆盖项的值不合法时报错，按原定义显示", () => {
+  it("覆盖项的值不合法时报错，按原定义显示（记在 overrideError，error 为空：Core 仍加载原定义）", () => {
     const shared = doc({ docs: { command: "d" } });
     const view = listSharedServers(shared, doc({ docs: { enabled: "false" } }))[0];
-    expect(view).toMatchObject({ enabled: true, overridden: false });
-    expect(view?.error).not.toBeNull();
+    expect(view).toMatchObject({ enabled: true, overridden: false, error: null });
+    expect(view?.overrideError).toContain("enabled");
+    const bad = listSharedServers(shared, doc({ docs: { exposure: "nope" } }))[0];
+    expect(bad).toMatchObject({ error: null, exposure: "codemode" });
+    expect(bad?.overrideError).toContain("exposure");
     expect(listSharedServers(shared, doc({ docs: { enabled: false } }))[0]).toMatchObject({
       enabled: false,
       error: null,
+      overrideError: null,
     });
+  });
+
+  it("共享定义本身无效时记在 error，不设 overrideError", () => {
+    const shared = doc({ docs: { command: 1 } });
+    const view = listSharedServers(shared, doc({ docs: { enabled: "x" } }))[0];
+    expect(view?.error).not.toBeNull();
+    expect(view?.overrideError).toBeNull();
+  });
+
+  it("同一共享文件内与 Core 一致：无效条目不占命名空间，后面只差 - 与 _ 的有效条目照常加载", () => {
+    // Core readConfigLevel：claim 对同一文件的条目不报冲突；合并时只与已加载（通过校验）的服务器比较命名空间
+    const views = listSharedServers(
+      doc({ "my-tools": { command: 123 }, my_tools: { command: "ok" } }),
+      null,
+    );
+    expect(views[0]?.error).toContain("my-tools");
+    expect(views[1]).toMatchObject({ name: "my_tools", error: null });
+    // 两条都有效时后一条冲突
+    const both = listSharedServers(doc({ "a-b": { command: "x" }, a_b: { command: "y" } }), null);
+    expect(both[0]?.error).toBeNull();
+    expect(both[1]?.error).toContain("a-b");
+  });
+
+  it("原型上的名字（constructor、toString）只按自有键匹配主文件", () => {
+    const shared = doc({ constructor: { command: "docs" }, toString: { command: "t" } });
+    const views = listSharedServers(shared, doc({}));
+    expect(views.map((v) => [v.name, v.error, v.overridden])).toEqual([
+      ["constructor", null, false],
+      ["toString", null, false],
+    ]);
+    const off = listSharedServers(shared, doc({ constructor: { enabled: false } }));
+    expect(off[0]).toMatchObject({ enabled: false, overridden: true, error: null });
+    expect(listServers(doc({ constructor: { enabled: false } }), shared)).toEqual([]);
   });
 });

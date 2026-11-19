@@ -181,8 +181,10 @@ export async function requestSearch(
       }),
       signal: link.signal,
     }).catch(failed);
+    const retryable = (status: number) =>
+      status === 401 || status === 403 || status === 429 || status >= 500;
     const classify = (status: number, message: string): never => {
-      const retry = status === 401 || status === 403 || status === 429 || status >= 500;
+      const retry = retryable(status);
       throw new WebError(
         retry ? `搜索服务暂不可用（HTTP ${status}）` : `搜索服务拒绝了这次请求：${message}`,
         retry,
@@ -190,7 +192,12 @@ export async function requestSearch(
       );
     };
     if (!res.ok) {
-      // 先按状态分类；错误说明只读前一部分（过大的错误响应不影响换密钥）
+      // 可换密钥的状态不展示服务的说明：不读正文，取消后立即换密钥（迟迟不结束的正文不拖到超时）
+      if (retryable(res.status)) {
+        void res.body?.cancel().catch(() => undefined);
+        classify(res.status, "");
+      }
+      // 其余错误展示原因：只读前一部分（过大的错误响应不影响结果）
       const { bytes } = await readLimited(res, 64 * 1024, "truncate").catch(() => ({
         bytes: new Uint8Array(),
       }));
@@ -198,17 +205,21 @@ export async function requestSearch(
     }
     const { bytes } = await readLimited(res, MAX_RESPONSE_BYTES, "error").catch(failed);
     const text = new TextDecoder().decode(bytes);
-    let body: { code?: unknown };
+    const unparsable = () => new WebError("搜索服务返回的内容无法解析", true);
+    let body: { code?: unknown; data?: unknown };
     try {
       const parsed: unknown = JSON.parse(text);
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw 0;
-      body = parsed as { code?: unknown };
+      body = parsed as { code?: unknown; data?: unknown };
     } catch {
-      throw new WebError("搜索服务返回的内容无法解析", true);
+      throw unparsable();
     }
     // 业务码不是 200 时按 HTTP 状态同样处理（服务有时 HTTP 200 + 业务错误码）
     if (typeof body.code === "number" && body.code !== 200)
       classify(body.code, errorMessage(text) || `code ${body.code}`);
+    // 成功响应必须带 code 与 data（LangSearch 文档）；缺了不当成“没有结果”，换下一把密钥
+    if (body.code === undefined || typeof body.data !== "object" || body.data === null)
+      throw unparsable();
     return parseResults(body);
   } finally {
     link.done();
@@ -304,7 +315,8 @@ export class KeyPool {
           ? COOLDOWN_AUTH_MS
           : undefined;
     if (ms === undefined) return;
-    this.cooldown.set(index, this.now() + ms);
+    // 已有更晚的冷却（如先 401 后 429）时保留较晚的截止时间
+    this.cooldown.set(index, Math.max(this.cooldown.get(index) ?? 0, this.now() + ms));
     this.version.set(index, this.stamp(index) + 1);
   }
 

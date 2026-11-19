@@ -209,7 +209,9 @@ export function LipProgress({
   // 焦点留在输入框等处、指针悬停进度摘要时，Escape 不会冒泡到根节点，需在全局监听
   useEffect(() => {
     if (!visible) {
+      // 暂时隐藏时离开 / 失焦事件不会触发：同时重置 Escape 的收起状态，恢复显示后首次悬停或聚焦能正常展开
       hoveredRef.current = false;
+      setDismissed(false);
       return;
     }
     const onKeyDown = (e: KeyboardEvent) => {

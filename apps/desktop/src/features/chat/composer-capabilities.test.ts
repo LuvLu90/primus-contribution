@@ -238,6 +238,114 @@ describe("MCP：项目级遮蔽全局服务器", () => {
     setPlatformForTesting(undefined);
   });
 
+  it("覆盖项的值不合法时 Core 报错、按原定义加载：共享服务器仍列出", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    vi.spyOn(platform, "mcpConfigRead").mockResolvedValue({
+      path: "/core/mcp.json",
+      text: JSON.stringify({
+        mcpServers: { docs: { exposure: "nope" }, off: { enabled: false, exposure: "bad" } },
+      }),
+      version: "v",
+      agents: {
+        path: "/home/.agents/mcp.json",
+        text: JSON.stringify({
+          mcpServers: {
+            docs: { command: "docs" },
+            off: { command: "off" },
+            broken: { command: 1 },
+          },
+        }),
+        error: null,
+      },
+    });
+    // off 的覆盖项整条无效、不套用 enabled: false，按原定义启用；broken 定义本身无效，不列出
+    expect(mcp(await loadCapabilities(null))).toEqual(["docs@global", "off@global"]);
+    setPlatformForTesting(undefined);
+  });
+
+  it("工作区就是主目录：.agents/mcp.json 只按全局级读一次，用户级覆盖项的停用不被项目级重读冲掉", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const shared = JSON.stringify({
+      mcpServers: { docs: { command: "docs" }, keep: { command: "keep" } },
+    });
+    vi.spyOn(platform, "mcpConfigRead").mockResolvedValue({
+      path: "/core/mcp.json",
+      text: JSON.stringify({ mcpServers: { docs: { enabled: false } } }),
+      version: "v",
+      agents: { path: "/home/me/.agents/mcp.json", text: shared, error: null },
+    });
+    vi.spyOn(platform, "workspaceInspect").mockResolvedValue({
+      path: "/home/me",
+      agentsMd: null,
+      agentsMdTruncated: false,
+      extensions: [],
+      skills: [],
+      mcpServers: ["proj"],
+      agentsMcpServers: ["docs", "keep"],
+      agentsSkills: [],
+    });
+    const files: Record<string, string> = {
+      "/home/me/.agents/mcp.json": shared,
+      "/home/me/.primus/mcp.json": JSON.stringify({ mcpServers: { proj: { command: "p" } } }),
+    };
+    const preview = vi
+      .spyOn(platform, "previewFile")
+      .mockImplementation(async (path) =>
+        path in files
+          ? { kind: "text", text: files[path] as string, truncated: false, size: 1 }
+          : Promise.reject(new Error("missing")),
+      );
+    const list = await loadCapabilities({
+      path: "/home/me/",
+      name: "me",
+      trusted: true,
+      needsTrust: false,
+    });
+    expect(mcp(list)).toEqual(["proj@project", "keep@global"]);
+    expect(preview.mock.calls.map(([p]) => p)).not.toContain("/home/me/.agents/mcp.json");
+    setPlatformForTesting(undefined);
+  });
+
+  it("项目级定义与全局服务器只差 - 与 _ 时与 Core 一样冲突：跳过项目那条，保留全局那条", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    vi.spyOn(platform, "mcpConfigRead").mockResolvedValue({
+      path: "/core/mcp.json",
+      text: JSON.stringify({ mcpServers: { "my-tools": { command: "g", enabled: false } } }),
+      version: "v",
+      agents: null,
+    });
+    vi.spyOn(platform, "workspaceInspect").mockResolvedValue({
+      path: "/p",
+      agentsMd: null,
+      agentsMdTruncated: false,
+      extensions: [],
+      skills: [],
+      mcpServers: ["my_tools", "other"],
+      agentsMcpServers: [],
+      agentsSkills: [],
+    });
+    vi.spyOn(platform, "previewFile").mockResolvedValue({
+      kind: "text",
+      text: JSON.stringify({
+        mcpServers: { my_tools: { command: "p" }, other: { command: "o" } },
+      }),
+      truncated: false,
+      size: 1,
+    });
+    const list = await loadCapabilities({
+      path: "/p",
+      name: "p",
+      trusted: true,
+      needsTrust: false,
+    });
+    // 全局那条停用（不列出），项目那条因冲突不加载
+    expect(mcp(list)).toEqual(["other@project"]);
+    setPlatformForTesting(undefined);
+  });
+
   it("主文件里无效的同名定义与 Core 一样遮蔽 .agents 的服务器（两条都不加载）", async () => {
     const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
     setPlatformForTesting(platform);

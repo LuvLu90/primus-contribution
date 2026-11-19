@@ -265,7 +265,8 @@ export function createDirectFetch(
           if (Array.isArray(v)) for (const x of v) h.append(k, x);
           else h.set(k, String(v));
         }
-        const noBody = status === 204 || status === 304 || method === "HEAD";
+        // 204 / 205 / 304 与 HEAD 没有正文；给它们非空流会被 Response 构造器拒绝
+        const noBody = status === 204 || status === 205 || status === 304 || method === "HEAD";
         let body: ReadableStream | null = null;
         if (noBody) res.resume();
         else {
@@ -282,6 +283,12 @@ export function createDirectFetch(
           res.destroy();
           reject(e);
         }
+      });
+      // HTTP 101 协议升级：Node 不会调用响应回调，也不会触发 error；不处理的话 Promise 永远等待
+      req.on("upgrade", (res, socket) => {
+        socket.destroy();
+        res.destroy();
+        reject(new WebError(`网页要求协议升级（HTTP ${res.statusCode ?? 101}），不支持读取`));
       });
       req.on("error", reject);
       req.end();

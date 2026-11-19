@@ -253,6 +253,26 @@ describe("设置·能力中心·MCP", () => {
     );
   });
 
+  it("覆盖项的值不合法：共享服务器按原定义显示并标出覆盖项错误，开关不可用", async () => {
+    const platform = createMockPlatform();
+    const f = await platform.mcpConfigRead();
+    const servers = JSON.parse(f.text ?? "{}").mcpServers ?? {};
+    await platform.mcpConfigWrite(
+      JSON.stringify({ mcpServers: { ...servers, "shared-docs": { exposure: "nope" } } }),
+      f.version,
+    );
+    setPlatformForTesting(platform);
+    render(<CapabilitiesSettings />);
+    openMcp();
+    const shared = await row(tm.shared.title, "shared-docs");
+    expect(shared.textContent).toContain(tm.invalid);
+    expect(shared.textContent).toContain("exposure");
+    expect(shared.textContent).toContain(tm.exposures.codemode);
+    const sw = within(shared).getByRole("switch", { name: "启用 shared-docs" });
+    expect(sw.getAttribute("aria-checked")).toBe("true");
+    expect(sw.hasAttribute("disabled") || sw.getAttribute("data-disabled") !== null).toBe(true);
+  });
+
   it("共享定义在页面打开后被改成停用：启停按冲突重新读取，再启用时写 enabled: true", async () => {
     const platform = setup();
     const read = platform.mcpConfigRead.bind(platform);

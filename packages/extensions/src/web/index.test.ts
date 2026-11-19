@@ -1,10 +1,10 @@
 import { createServer, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { connect as netConnect } from "node:net";
+import { createServer as createNetServer, connect as netConnect } from "node:net";
 import { gzipSync } from "node:zlib";
 import { WEBFETCH_TOOL, WEBSEARCH_TOOL } from "@primus/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { findInText, normalizeFetch, runFetch } from "./fetch.ts";
+import { findInText, MAX_FIND_CHARS, normalizeFetch, runFetch, textVersion } from "./fetch.ts";
 import { decodeEntities, htmlTitle, htmlToMarkdown } from "./html.ts";
 import web, {
   createWeb,
@@ -496,6 +496,7 @@ describe("web_fetch", () => {
       find: "",
       offset: 0,
       maxChars: 40_000,
+      version: "",
     });
   });
 
@@ -819,7 +820,7 @@ describe("审查补充", () => {
     expect(isPrivateAddress("fec0::1")).toBe(true);
     expect(isPrivateAddress("feff::1")).toBe(true);
     expect(isPrivateAddress("ff00::1")).toBe(true);
-    expect(isPrivateAddress("2001:db8::1")).toBe(false);
+    expect(isPrivateAddress("2001:4860::1")).toBe(false);
     expect(htmlToMarkdown('<a data-href="/t" href="/docs">文档</a>', "https://a.com/")).toBe(
       "[文档](https://a.com/docs)",
     );
@@ -830,5 +831,237 @@ describe("审查补充", () => {
     expect(htmlToMarkdown("<p>前</p><pre>a\n\n\n\nb</pre><p>后</p>")).toBe(
       "前\n\n```\na\n\n\n\nb\n```\n\n后",
     );
+  });
+
+  it("HTTP 101 协议升级时立即以错误结束，不会一直等待", async () => {
+    const server = createNetServer((sock) => {
+      sock.once("data", () =>
+        sock.write(
+          "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+        ),
+      );
+      sock.on("error", () => undefined);
+    });
+    await new Promise<void>((r) => server.listen(0, r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const started = Date.now();
+      await expect(createDirectFetch(() => false, {})(`http://localhost:${port}/`)).rejects.toThrow(
+        "协议升级",
+      );
+      expect(Date.now() - started).toBeLessThan(2000);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("HTTP 205 按无正文处理，普通 200 照常读正文", async () => {
+    const server = createServer((req, res) => {
+      if (req.url === "/reset") {
+        res.writeHead(205);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("正文");
+    });
+    await new Promise<void>((r) => server.listen(0, r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const f = createDirectFetch(() => false, {});
+      const reset = await f(`http://localhost:${port}/reset`);
+      expect(reset.status).toBe(205);
+      expect(reset.body).toBeNull();
+      const ok = await f(`http://localhost:${port}/`);
+      expect(await ok.text()).toBe("正文");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("后到的 429 不缩短已有的鉴权冷却，但仍更新冷却版本", () => {
+    let t = 0;
+    const pool = new KeyPool(["a", "b"], () => t);
+    pool.fail(0, 401);
+    const stamp = pool.stamp(0);
+    pool.fail(0, 429);
+    expect(pool.stamp(0)).toBe(stamp + 1);
+    // 60 秒后 429 的冷却已过，但 401 的 10 分钟冷却仍在
+    t = 2 * 60_000;
+    pool.order();
+    expect(pool.order()[0]?.key).toBe("b");
+    expect(pool.order()[0]?.key).toBe("b");
+    t = 11 * 60_000;
+    const keys = [pool.order()[0]?.key, pool.order()[0]?.key];
+    expect(keys).toContain("a");
+  });
+
+  it("HTTP 200 缺少 code 或 data 时换另一把密钥；合法的空结果照常接受", async () => {
+    for (const bad of [{}, { data: { webPages: { value: [] } } }, { code: 200 }]) {
+      const { deps, fetchMock } = makeDeps(async (_u, init) =>
+        authOf(init) === "Bearer sk-key-a" ? json(200, bad) : searchOk(),
+      );
+      const r = await createWeb(deps).search({ query: "q" }, undefined);
+      expect(r.details.status, JSON.stringify(bad)).toBe("done");
+      expect(r.details.results).toHaveLength(2);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    }
+    const { deps, fetchMock } = makeDeps(async () =>
+      json(200, { code: 200, msg: null, data: { webPages: { value: [] } } }),
+    );
+    const r = await createWeb(deps).search({ query: "q" }, undefined);
+    expect(r.details.status).toBe("done");
+    expect(r.details.results).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("可换密钥的状态不读正文：正文迟迟不结束也立即换下一把", async () => {
+    const hanging = (status: number) =>
+      new Response(
+        new ReadableStream({
+          start(c) {
+            c.enqueue(new TextEncoder().encode('{"msg":"slow'));
+          },
+        }),
+        { status },
+      );
+    for (const status of [429, 401, 503]) {
+      const { deps, fetchMock } = makeDeps(async (_u, init) =>
+        authOf(init) === "Bearer sk-key-a" ? hanging(status) : searchOk(),
+      );
+      const started = Date.now();
+      const r = await createWeb(deps).search({ query: "q" }, undefined);
+      expect(r.details.status, String(status)).toBe("done");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(Date.now() - started).toBeLessThan(1000);
+    }
+  });
+
+  it("文档专用地址按准确的 CIDR 边界拒绝，相邻公网地址放行", () => {
+    for (const ip of [
+      "192.0.2.0",
+      "192.0.2.255",
+      "198.51.100.0",
+      "198.51.100.255",
+      "203.0.113.0",
+      "203.0.113.255",
+      "2001:db8::",
+      "2001:db8::1",
+      "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff",
+      "::ffff:192.0.2.1",
+    ])
+      expect(isPrivateAddress(ip), ip).toBe(true);
+    for (const ip of [
+      "192.0.1.255",
+      "192.0.3.0",
+      "198.51.99.255",
+      "198.51.101.0",
+      "203.0.112.255",
+      "203.0.114.0",
+      "2001:db9::1",
+      "2001:db7:ffff::1",
+      "2001::1",
+    ])
+      expect(isPrivateAddress(ip), ip).toBe(false);
+  });
+
+  it("链接里的实体只解码一次", () => {
+    expect(
+      htmlToMarkdown('<a href="/docs?topic=AT&amp;copy;">文档 &amp;copy;</a>', "https://a.com/"),
+    ).toBe("[文档 &copy;](https://a.com/docs?topic=AT&copy;)");
+    expect(htmlToMarkdown('<a href="/s?a=1&amp;b=2">搜索</a>', "https://a.com/")).toBe(
+      "[搜索](https://a.com/s?a=1&b=2)",
+    );
+  });
+
+  it("代码块围栏长于内容里独占一行的反引号序列", () => {
+    expect(htmlToMarkdown("<pre>a\n```\nb</pre>")).toBe("````\na\n```\nb\n````");
+    expect(htmlToMarkdown("<pre>x\n  `````  \ny</pre>")).toBe("``````\nx\n  `````  \ny\n``````");
+    // 行内的反引号不影响围栏长度
+    expect(htmlToMarkdown("<pre>a ``` b</pre>")).toBe("```\na ``` b\n```");
+  });
+
+  it("属性值里的 > 不当作标签结束", () => {
+    expect(htmlToMarkdown('<p><a title="x > y" href="/guide">指南</a></p>', "https://a.com/")).toBe(
+      "[指南](https://a.com/guide)",
+    );
+    expect(
+      htmlToMarkdown(
+        '<p><a title=\'a>b\' href="/g"><span data-x="1>2">读</span>我</a></p>',
+        "https://a.com/",
+      ),
+    ).toBe("[读我](https://a.com/g)");
+    // 引号不闭合时退回第一个 >，不吞掉后面的内容
+    expect(htmlToMarkdown('<p><span title="坏>正文</span></p>')).toBe("正文");
+  });
+
+  it("续读带正文版本：未变化时按 offset 续读，变化时从头返回并说明", async () => {
+    let text = "甲".repeat(3000);
+    const deps = {
+      fetch: vi.fn(
+        async () => new Response(text, { status: 200, headers: { "Content-Type": "text/plain" } }),
+      ) as unknown as typeof fetch,
+      lookup: async () => ["93.184.216.34"],
+    };
+    const first = await runFetch(
+      deps,
+      normalizeFetch({ url: "https://a.com/", max_chars: 1000 }),
+      undefined,
+    );
+    const v = textVersion(text);
+    expect(first.text).toContain(`offset=1000、version=${v}`);
+    const same = await runFetch(
+      deps,
+      normalizeFetch({ url: "https://a.com/", offset: 1000, max_chars: 1000, version: v }),
+      undefined,
+    );
+    expect(same.details.range).toEqual([1000, 2000]);
+    expect(same.text).not.toContain("已变化");
+    text = "乙".repeat(2800);
+    const changed = await runFetch(
+      deps,
+      normalizeFetch({ url: "https://a.com/", offset: 1000, max_chars: 1000, version: v }),
+      undefined,
+    );
+    expect(changed.details.range).toEqual([0, 1000]);
+    expect(changed.text).toContain("已变化");
+    expect(changed.text).toContain(`version=${textVersion(text)}`);
+    // 不带 version 时照旧按 offset
+    const legacy = await runFetch(
+      deps,
+      normalizeFetch({ url: "https://a.com/", offset: 1000, max_chars: 1000 }),
+      undefined,
+    );
+    expect(legacy.details.range).toEqual([1000, 2000]);
+  });
+
+  it("超长的查找关键词明确拒绝，不静默截短", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(`${"a".repeat(200)}c`, {
+          status: 200,
+          headers: { "Content-Type": "text/plain" },
+        }),
+    );
+    const deps = {
+      fetch: fetchMock as unknown as typeof fetch,
+      lookup: async () => ["93.184.216.34"],
+    };
+    const long = `${"a".repeat(MAX_FIND_CHARS)}b`;
+    expect(normalizeFetch({ url: "https://a.com/", find: long }).find).toBe(long);
+    const r = await runFetch(
+      deps,
+      normalizeFetch({ url: "https://a.com/", find: long }),
+      undefined,
+    );
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("过长");
+    expect(fetchMock).not.toHaveBeenCalled();
+    const ok = await runFetch(
+      deps,
+      normalizeFetch({ url: "https://a.com/", find: "a".repeat(MAX_FIND_CHARS) }),
+      undefined,
+    );
+    expect(ok.details.matches).toBe(1);
   });
 });

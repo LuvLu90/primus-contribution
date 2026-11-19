@@ -424,9 +424,9 @@ export function McpSettings() {
                       {s.description && (
                         <p className="mt-0.5 line-clamp-2 text-xs text-muted">{s.description}</p>
                       )}
-                      {s.error && (
+                      {(s.error || s.overrideError) && (
                         <p className="mt-0.5 text-xs text-danger">
-                          {tm.invalid}：{s.error}
+                          {tm.invalid}：{s.error ?? s.overrideError}
                         </p>
                       )}
                       {r && !s.error && (
@@ -458,7 +458,7 @@ export function McpSettings() {
                     <Switch
                       ariaLabel={fill(tm.enable, { name: s.name })}
                       checked={s.enabled}
-                      disabled={busy !== null || !editable || s.error !== null}
+                      disabled={busy !== null || !editable || s.error !== null || !!s.overrideError}
                       onCheckedChange={(enabled) => void toggleShared(s, enabled)}
                     />
                   </li>
