@@ -20,13 +20,13 @@ pub(crate) const SEED_PROVIDER_ID: &str = "ioply";
 const SEED_API: Api = Api::OpenAiResponses;
 
 /// 内置渠道接口地址：内置地址只写在这里，更换时只改这一处。
-const SEED_BASE_URL: &str = "https://api.690990.xyz/v1";
+const SEED_BASE_URL: &str = "https://agent.690990.xyz/v1";
 
 /// 内置渠道密钥（简单加密：按 [`KEY_MASK`] 循环异或后转十六进制），运行时由 [`api_key`] 还原。
 /// 更换密钥时只改这一行，生成新值：
 /// `python3 -c "import sys;m=b'primus-builtin';k=sys.argv[1].encode();print(bytes(b^m[i%len(m)] for i,b in enumerate(k)).hex())" <新密钥>`
 /// 并把旧密钥的摘要追加到 [`LEGACY_API_KEY_SHA256`]。
-pub(crate) const BUILTIN_API_KEY: &str = "031944153332475b4702382c072546252a174c1d6a0b3e1302360e141634193a3e1a1b17040e5d1e5f163e20055e3d3f5b271f";
+pub(crate) const BUILTIN_API_KEY: &str = "0319440521385c380f3309265b0f37315a02191a413a1d0e0b01030804082b040d1f6932463b2d121e5c1f213c5e074b7f572d";
 
 /// 密钥加密用的异或掩码。
 const KEY_MASK: &[u8] = b"primus-builtin";
@@ -49,8 +49,10 @@ fn decode(hex: &str) -> String {
 /// 历史版本用过的内置密钥的 SHA-256（小写十六进制）。只存摘要，内置密钥只有 [`BUILTIN_API_KEY`] 一处（加密存放）。
 /// 保险库里是这些密钥（或没有密钥）时同步为 [`api_key`]，其他值视为用户自己换的密钥，不覆盖。
 /// 更换密钥时把旧密钥的摘要追加到这里。
-const LEGACY_API_KEY_SHA256: &[&str] =
-    &["54a2f0dbde8b80d465fb9272ef0f10ad8bec1075f1994bad12d430fbc8664fbd"];
+const LEGACY_API_KEY_SHA256: &[&str] = &[
+    "54a2f0dbde8b80d465fb9272ef0f10ad8bec1075f1994bad12d430fbc8664fbd",
+    "a2a9d8130ffa1b7472e72c01400cd61fc278b3784f19d7dd8b28cf108028225e",
+];
 
 /// 测试用的“历史内置密钥”：测试里不能出现真实历史密钥，用它代替。
 #[cfg(test)]
