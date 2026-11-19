@@ -5,7 +5,8 @@
 //!   -e <agent-core>/extensions/primus-bundle.js`，工作目录为项目目录。
 //! - 环境变量（第 4.4 节）：`PRIMUS_CODING_AGENT_DIR`、`PRIMUS_CODING_AGENT_SESSION_DIR`、`TEMP`/`TMP` 指向
 //!   `data/users/<SID>`，`PRIMUS_SKIP_VERSION_CHECK=1`、`PRIMUS_TELEMETRY`、`PRIMUS_OFFLINE`，内置图片生成用的
-//!   `PRIMUS_IMAGE_BASE_URL` 与 `PRIMUS_EXE`（ADR 0018），并清空 `NODE_OPTIONS`；
+//!   `PRIMUS_IMAGE_BASE_URL` 与 `PRIMUS_EXE`（ADR 0018）、`PRIMUS_SEARCH_BASE_URL` 与 `PRIMUS_WEB_SETTINGS`（ADR 0020），
+//!   并清空 `NODE_OPTIONS`；
 //!   开着 Windows 系统代理时另设 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`（`platform::proxy`）。
 //!   其余环境变量（如 `PATH`）照常继承，工具命令需要它们。
 //! - 内置 Python（ADR 0010）：`resources/runtime/python` 存在时把它与用户包的 `bin/` 放到 `PATH` 最前，
@@ -310,6 +311,13 @@ fn apply_core_env(
         .env("PRIMUS_TELEMETRY", if telemetry { "1" } else { "0" })
         // 内置图片生成（ADR 0018）：primus-imagegen 用 PRIMUS_EXE 拉起 `--secret builtin:image` 取密钥
         .env("PRIMUS_IMAGE_BASE_URL", crate::builtin::IMAGE_BASE_URL)
+        // 联网搜索与读取网页（ADR 0020）：primus-web 用 `--secret builtin:search` 取搜索密钥，
+        // 每轮对话开始前读联网开关文件
+        .env("PRIMUS_SEARCH_BASE_URL", crate::builtin::SEARCH_BASE_URL)
+        .env(
+            "PRIMUS_WEB_SETTINGS",
+            crate::web_settings::settings_file(paths),
+        )
         .env_remove("NODE_OPTIONS");
     match std::env::current_exe() {
         Ok(exe) => cmd.env("PRIMUS_EXE", exe),
@@ -1318,6 +1326,18 @@ pub(crate) mod tests {
             Some(Some(crate::builtin::IMAGE_BASE_URL.into()))
         );
         assert_eq!(
+            env_of(&cmd, "PRIMUS_SEARCH_BASE_URL"),
+            Some(Some(crate::builtin::SEARCH_BASE_URL.into()))
+        );
+        assert_eq!(
+            env_of(&cmd, "PRIMUS_WEB_SETTINGS"),
+            Some(Some(
+                crate::web_settings::settings_file(&paths)
+                    .to_string_lossy()
+                    .into_owned()
+            ))
+        );
+        assert_eq!(
             env_of(&cmd, "PRIMUS_EXE"),
             Some(Some(
                 std::env::current_exe()
@@ -1371,6 +1391,8 @@ pub(crate) mod tests {
             "PRIMUS_TELEMETRY",
             "PRIMUS_OFFLINE",
             "PRIMUS_IMAGE_BASE_URL",
+            "PRIMUS_SEARCH_BASE_URL",
+            "PRIMUS_WEB_SETTINGS",
             "PRIMUS_EXE",
             "NODE_OPTIONS",
         ] {

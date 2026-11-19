@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@primus/protocol";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { strings } from "@/lib/strings";
 import { AgentTurn } from "./agent-turn";
@@ -169,5 +169,106 @@ describe("生成图片（ADR 0018）", () => {
       false,
     );
     expect(screen.getByText(`${strings.chat.imagegen.failed}：无法连接图片服务`)).toBeTruthy();
+  });
+});
+
+describe("联网步骤（ADR 0020）", () => {
+  const webResult = (toolCallId: string, toolName: string, details: unknown, isError = false) =>
+    ({
+      role: "toolResult",
+      toolCallId,
+      toolName,
+      content: [{ type: "text", text: "…" }],
+      details,
+      isError,
+      timestamp: 3,
+    }) as unknown as AgentMessage;
+
+  const results = Array.from({ length: 8 }, (_, i) => ({
+    title: `结果 ${i + 1}`,
+    url: `https://www.site${i + 1}.com/p`,
+    site: `www.site${i + 1}.com`,
+  }));
+
+  function renderWeb() {
+    return renderTurn(
+      [
+        assistant([
+          {
+            type: "toolCall",
+            id: "s1",
+            name: "web_search",
+            arguments: { query: "Rust 1.99 发布" },
+          },
+          {
+            type: "toolCall",
+            id: "f1",
+            name: "web_fetch",
+            arguments: { url: "https://blog.rust-lang.org/x" },
+          },
+        ]),
+        webResult("s1", "web_search", { status: "done", query: "Rust 1.99 发布", results }),
+        webResult("f1", "web_fetch", {
+          status: "done",
+          url: "https://blog.rust-lang.org/x",
+          finalUrl: "https://blog.rust-lang.org/x",
+          title: "Announcing Rust 1.99",
+          contentType: "text/html",
+          totalChars: 5000,
+          range: [0, 5000],
+        }),
+      ],
+      true,
+      false,
+    );
+  }
+
+  it("搜索一行“已搜索 关键词”，下面一排站点标记（最多 6 个，其余显示数字）", () => {
+    renderWeb();
+    const row = screen.getByRole("button", { name: /已搜索/ });
+    expect(row.textContent).toContain(t.tools.web.done);
+    expect(row.textContent).toContain("Rust 1.99 发布");
+    expect(row.querySelector('[data-icon="globe"]')).toBeTruthy();
+    const marks = screen.getAllByRole("button", { name: /^结果 \d（site\d\.com）$/ });
+    expect(marks).toHaveLength(6);
+    expect(marks[0]?.textContent).toBe("S");
+    expect(screen.getByText("+2")).toBeTruthy();
+  });
+
+  it("读取网页一行“已阅读 标题”，不与搜索合并成汇总行", () => {
+    renderWeb();
+    const row = screen.getByRole("button", { name: /已阅读/ });
+    expect(row.textContent).toContain("Announcing Rust 1.99");
+    expect(row.textContent).toContain("blog.rust-lang.org");
+    expect(screen.queryByText(t.groups.web.done)).toBeNull();
+  });
+
+  it("点来源先确认再打开外部链接", async () => {
+    renderWeb();
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /^结果 1（site1\.com）$/ })[0] as HTMLElement,
+    );
+    expect(await screen.findByText(t.web.linkDescription)).toBeTruthy();
+    expect(screen.getByText("https://www.site1.com/p")).toBeTruthy();
+  });
+
+  it("失败的搜索标红并在展开后显示原因", async () => {
+    renderTurn(
+      [
+        assistant([{ type: "toolCall", id: "s2", name: "web_search", arguments: { query: "x" } }]),
+        webResult(
+          "s2",
+          "web_search",
+          { status: "failed", query: "x", results: [], error: "无法连接搜索服务" },
+          true,
+        ),
+      ],
+      true,
+      false,
+    );
+    const row = screen.getByRole("button", { name: /已搜索/ });
+    expect(row.textContent).toContain(t.web.failed);
+    fireEvent.click(row);
+    expect(await screen.findByText("无法连接搜索服务")).toBeTruthy();
   });
 });

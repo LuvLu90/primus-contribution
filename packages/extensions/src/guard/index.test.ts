@@ -46,7 +46,9 @@ describe("primus-guard 权限判断", () => {
     expect(n("write", { path: "a.ts" })).toBe(true);
     expect(n("edit", { path: "a.ts" })).toBe(true);
     expect(n("bash", { command: "ls" })).toBe(true);
-    expect(n("web_fetch", { url: "https://x" })).toBe(true);
+    // 其他联网工具询问；内置的 web_search / web_fetch 由设置里的开关控制，不询问（ADR 0020）
+    expect(n("browser_open", { url: "https://x" })).toBe(true);
+    expect(n("web_fetch", { url: "https://x" })).toBe(false);
   });
 
   it("自动编辑：工作区内读写放行，命令与工作区外的修改仍询问", () => {
@@ -1007,5 +1009,21 @@ describe("primus-guard 图片生成（generate_image，ADR 0018）", () => {
   it("计划模式交给常规规则，询问时说明要上传的参考图", () => {
     expect(decidePlan(gen({ prompt: "x" }), annotations, cwd, ge)).toBeUndefined();
     expect(describeCall(gen({ prompt: "x", images: ["/tmp/a.png"] }), cwd)).toContain("/tmp/a.png");
+  });
+});
+
+describe("primus-guard 联网搜索与读取网页（ADR 0020）", () => {
+  const ro = { readOnlyHint: true, openWorldHint: true };
+  it("任何模式都放行，计划模式交给常规规则（放行）", () => {
+    for (const toolName of ["web_search", "web_fetch"]) {
+      const call = { toolName, input: { query: "x", url: "https://example.com" } };
+      for (const mode of ["ask", "edit", "full"] as const)
+        expect(decide(mode, call, "/w", ro), `${mode} ${toolName}`).toBe("allow");
+      expect(decidePlan(call, ro, "/w")).toBeUndefined();
+    }
+  });
+
+  it("名字相近的其他联网工具仍按常规规则询问", () => {
+    expect(decide("ask", { toolName: "web_browse", input: {} }, "/w", ro)).toBe("ask");
   });
 });

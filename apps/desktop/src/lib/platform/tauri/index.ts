@@ -34,6 +34,8 @@ export function createTauriPlatform(): Platform {
     dialogPickFolder: () => call("dialogPickFolder"),
     dialogPickFiles: () => call("dialogPickFiles"),
     imageSave: (path) => call("imageSave", { path }),
+    webSettingsGet: () => call("webSettingsGet"),
+    webSettingsSet: (enabled) => call("webSettingsSet", { enabled }),
 
     sessionDefaultWorkspace: () => call("sessionDefaultWorkspace"),
     sessionList: (workspace, cursor) => call("sessionList", { workspace, cursor }),

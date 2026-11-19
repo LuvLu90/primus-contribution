@@ -6,17 +6,11 @@ import {
   type ImageGenDetails,
   PLAN_SUBMIT_TOOL,
   type PlanSubmitDetails,
+  WEB_TOOLS,
+  WEBFETCH_TOOL,
+  WEBSEARCH_TOOL,
 } from "@primus/protocol";
-import {
-  memo,
-  type ReactNode,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FileIcon, Icon, type IconName } from "@/components/icons";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
@@ -28,6 +22,8 @@ import { ImageGenCard } from "./image-gen-card";
 import { MarkdownText } from "./message-content";
 import { PlanCard } from "./plan-card";
 import { ElapsedTimer, ThinkingWave } from "./thinking-wave";
+import { WebTrail } from "./web-trail";
+import { Collapse, StepButton } from "./work-step";
 
 // 一轮回复（一条用户消息之后的全部助手消息与工具结果）按“工作过程 + 总结”展示：
 // 业界一般叫 Chain of Thought / 推理与工具调用分组（Vercel AI Elements 的 ChainOfThought、
@@ -54,6 +50,8 @@ const toolKinds: Record<string, ToolKind> = {
   ls: "search",
   glob: "search",
   [IMAGEGEN_TOOL]: "image",
+  [WEBSEARCH_TOOL]: "web",
+  [WEBFETCH_TOOL]: "fetch",
 };
 
 const toolIcons: Record<ToolKind, IconName> = {
@@ -65,8 +63,12 @@ const toolIcons: Record<ToolKind, IconName> = {
   skill: "bulb",
   mcp: "server",
   image: "image",
+  web: "globe",
+  fetch: "link",
   other: "tool",
 };
+
+const WEB_TOOL_NAMES = new Set<string>(WEB_TOOLS);
 
 /** 读取技能目录里的文件（`SKILL.md` 或任意 `skills/` 目录下的文件）算作使用技能 */
 const SKILL_PATH = /(^|[\\/])(SKILL\.md$|skills[\\/])/i;
@@ -90,12 +92,16 @@ interface CallInfo {
   status: ToolStatus;
   /** 输出内容（原始块）：只在展开时才拼成文本，流式过程中每次渲染不去拼接大段输出 */
   content: unknown;
+  /** 工具结果的结构化 details（联网步骤据此显示来源） */
+  details?: unknown;
 }
 
 type Step =
   | { kind: "note"; key: string; text: string; live: boolean }
   | { kind: "thought"; key: string; text: string }
-  | { kind: "tools"; key: string; calls: ToolCallBlock[] };
+  | { kind: "tools"; key: string; calls: ToolCallBlock[] }
+  /** 联网搜索与读取网页（ADR 0020）：连续的联网调用一行一行显示成研究轨迹 */
+  | { kind: "web"; key: string; calls: ToolCallBlock[] };
 
 interface TurnLayout {
   steps: Step[];
@@ -164,9 +170,10 @@ function layoutTurn(messages: AgentMessage[], streaming: boolean): TurnLayout {
           return;
         }
         if (block.name === IMAGEGEN_TOOL) images.push(block);
+        const kind = WEB_TOOL_NAMES.has(block.name) ? "web" : "tools";
         const prev = steps.at(-1);
-        if (prev?.kind === "tools") prev.calls.push(block);
-        else steps.push({ kind: "tools", key, calls: [block] });
+        if (prev?.kind === kind) prev.calls.push(block);
+        else steps.push({ kind, key, calls: [block] });
       }
     });
   });
@@ -207,25 +214,6 @@ function Elapsed({ start, end, running }: { start: number; end?: number; running
   );
 }
 
-/** 高度平滑展开/收起：grid 行从 0fr 过渡到 1fr，内容同时淡入 */
-function Collapse({ open, id, children }: { open: boolean; id?: string; children: ReactNode }) {
-  // 收起时不渲染内容：长工作过程里成百上千行输出不必常驻 DOM（等收起动画结束再卸载）
-  const [mounted, setMounted] = useState(open);
-  useEffect(() => {
-    if (open) {
-      setMounted(true);
-      return;
-    }
-    const timer = setTimeout(() => setMounted(false), 400);
-    return () => clearTimeout(timer);
-  }, [open]);
-  return (
-    <div id={id} className="collapse-grid" data-open={open || undefined} inert={!open}>
-      <div className="min-h-0 overflow-hidden">{(open || mounted) && children}</div>
-    </div>
-  );
-}
-
 function argOf(call: ToolCallBlock): string {
   const a = call.arguments ?? {};
   const pick = (k: string) => (typeof a[k] === "string" ? (a[k] as string) : undefined);
@@ -256,57 +244,6 @@ const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? 
 
 /** 输出最多显示这么多字符（取末尾）：长输出只看结尾 */
 const OUTPUT_LIMIT = 6000;
-
-function StepButton({
-  open,
-  onToggle,
-  controls,
-  icon,
-  children,
-  live,
-  failed,
-  lead,
-  trailing,
-  labelClass,
-}: {
-  open: boolean;
-  onToggle: () => void;
-  controls: string;
-  icon: IconName;
-  children: ReactNode;
-  live?: boolean;
-  failed?: boolean;
-  /** 代替图标显示在行首（思考进行中的波纹点阵） */
-  lead?: ReactNode;
-  /** 文字后面的附加内容（思考计时） */
-  trailing?: ReactNode;
-  /** 文字的额外类（思考进行中的流光；给了就不再用 live 的呼吸） */
-  labelClass?: string;
-}) {
-  return (
-    <button
-      type="button"
-      aria-expanded={open}
-      aria-controls={controls}
-      onClick={onToggle}
-      className="group/step -mx-1.5 flex max-w-full items-center gap-2 rounded-lg px-1.5 py-[3px] text-left text-sm text-muted outline-none transition-colors duration-200 hover:bg-hover/60 hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
-    >
-      {lead ?? <Icon name={icon} size="sm" className={cn(failed && "text-danger")} />}
-      <span className={cn("min-w-0 truncate", labelClass ?? (live && "text-pulse"))}>
-        {children}
-      </span>
-      {trailing}
-      <Icon
-        name="chevron-right"
-        size="sm"
-        className={cn(
-          "text-muted opacity-0 transition-[rotate,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/step:opacity-100 group-focus-visible/step:opacity-100",
-          open && "rotate-90 opacity-100",
-        )}
-      />
-    </button>
-  );
-}
 
 /** 一次工具调用：一行“已运行 git status”，展开看命令与输出 */
 function ToolCallRow({ call, info }: { call: ToolCallBlock; info: CallInfo }) {
@@ -481,6 +418,7 @@ function StepView({
 }) {
   if (step.kind === "tools")
     return <ToolGroup calls={step.calls} infoOf={infoOf} turnRunning={turnRunning} />;
+  if (step.kind === "web") return <WebTrail calls={step.calls} infoOf={infoOf} />;
   if (step.kind === "thought") return <ThoughtStep text={step.text} />;
   return (
     <MarkdownText text={step.text} streaming={step.live} className="py-0.5 text-base text-fg/85" />
@@ -559,7 +497,11 @@ export const AgentTurn = memo(function AgentTurn({
         ? "error"
         : "done"
       : (run?.status ?? (running ? "running" : "done"));
-    return { status, content: result?.content ?? run?.result?.content };
+    return {
+      status,
+      content: result?.content ?? run?.result?.content,
+      details: result?.details ?? run?.result?.details,
+    };
   };
   const answerText = answer.map((a) => a.text).join("\n\n");
 

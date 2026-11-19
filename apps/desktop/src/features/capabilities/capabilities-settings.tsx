@@ -5,8 +5,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/glass-
 import { strings } from "@/lib/strings";
 import { McpSettings } from "./mcp-settings";
 import { SkillsSettings } from "./skills-settings";
+import { WebSettings } from "./web-settings";
 
-// 设置·能力中心（ADR 0017）：技能与 MCP 两个页签。不提供市场，只管理本机已有的与用户指定来源的能力。
+// 设置·能力中心（ADR 0017）：上方是联网开关（ADR 0020），下面是技能与 MCP 两个页签。不提供市场，只管理本机已有的与用户指定来源的能力。
 
 const t = strings.settings.capabilities;
 type Tab = keyof typeof t.tabs;
@@ -26,6 +27,7 @@ export function CapabilitiesSettings() {
   };
   return (
     <div className="flex flex-col gap-6">
+      <WebSettings />
       <span id={labelId} className="sr-only">
         {t.tabsLabel}
       </span>

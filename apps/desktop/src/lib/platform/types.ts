@@ -1,4 +1,4 @@
-import type { CoreBatch, RpcCommand } from "@primus/protocol";
+import type { CoreBatch, RpcCommand, WebSettings } from "@primus/protocol";
 
 // 平台接口（附录 B 薄壳命令）。前端只依赖这里的类型，不直接依赖 Tauri。
 // 返回值中细节尚未定稿的字段先用宽松类型，随对应模块落地再收紧。
@@ -258,6 +258,11 @@ export interface Platform {
    * 取消时返回 null，成功返回保存的路径；不是生成的图片或图片已删除时报错（错误文案可直接显示）
    */
   imageSave(path: string): Promise<string | null>;
+
+  /** 联网设置（ADR 0020）：是否允许 AI 联网搜索与读取网页；没有设置时为默认（开启） */
+  webSettingsGet(): Promise<WebSettings>;
+  /** 修改联网设置；下一轮对话开始时生效，不需要重启内核 */
+  webSettingsSet(enabled: boolean): Promise<WebSettings>;
 
   /**
    * 会话列表：最后活动时间倒序、每页 50 条、不含已归档。`workspace` 为 null 时列出全部工作区，
@@ -561,6 +566,8 @@ export const COMMANDS = {
   dialogPickFolder: "dialog_pick_folder",
   dialogPickFiles: "dialog_pick_files",
   imageSave: "image_save",
+  webSettingsGet: "web_settings_get",
+  webSettingsSet: "web_settings_set",
   sessionDefaultWorkspace: "session_default_workspace",
   sessionList: "session_list",
   sessionSearch: "session_search",

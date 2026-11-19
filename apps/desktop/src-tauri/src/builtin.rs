@@ -9,6 +9,7 @@
 //!   只要地址与它不同，启动时就迁移到当前地址（清空模型清单后重新获取），旧地址不需要保留；
 //!   保险库里的旧内置密钥同步为当前常量；用户自己换过的密钥不覆盖。
 //! - 内置图片生成服务（ADR 0018）的地址与密钥也只在本文件各一处：[`IMAGE_BASE_URL`]、[`BUILTIN_IMAGE_API_KEY`]。
+//! - 内置联网搜索服务（ADR 0020）同样只在本文件：[`SEARCH_BASE_URL`]、[`BUILTIN_SEARCH_API_KEYS`]（两把，轮流使用）。
 
 use crate::providers::{Api, Provider};
 
@@ -77,6 +78,23 @@ pub(crate) fn image_api_key() -> String {
     decode(BUILTIN_IMAGE_API_KEY)
 }
 
+/// 内置联网搜索服务（ADR 0020，LangSearch Web Search API）：地址明文，更换时只改这一处；
+/// 经环境变量 `PRIMUS_SEARCH_BASE_URL` 传给 Core 的 primus-web 扩展（请求 `<地址>/web-search`）。
+pub(crate) const SEARCH_BASE_URL: &str = "https://api.langsearch.com/v1";
+
+/// 内置联网搜索服务密钥（两把，与 [`BUILTIN_API_KEY`] 同样按 [`KEY_MASK`] 循环异或后转十六进制），运行时由
+/// [`search_api_keys`] 还原。只经 `Primus.exe --secret builtin:search` 交给 Core 作业内的调用方（每行一把），
+/// 不写入任何文件；primus-web 轮流使用，一把限流或失效时换另一把。更换时只改这里（生成命令同上）。
+pub(crate) const BUILTIN_SEARCH_API_KEYS: [&str; 2] = [
+    "0319440f104a1f07405f0941505e48460b5f444a1e5a435c0e115a0d42170b5f14401b",
+    "0319445b14151550460f0e17590a12460c54404a1e52430a09470b5d4146595b144649",
+];
+
+/// 还原内置联网搜索服务密钥。
+pub(crate) fn search_api_keys() -> Vec<String> {
+    BUILTIN_SEARCH_API_KEYS.iter().map(|k| decode(k)).collect()
+}
+
 /// 旧版内置模型配置在保险库中的令牌 ID：启动时删除（迁移）。
 pub(crate) const LEGACY_TOKEN_ID: &str = "model-token";
 
@@ -125,5 +143,21 @@ mod tests {
         assert!(!BUILTIN_IMAGE_API_KEY.contains(key.as_str()));
         assert_ne!(key, api_key());
         assert!(IMAGE_BASE_URL.starts_with("https://") && !IMAGE_BASE_URL.ends_with('/'));
+    }
+
+    #[test]
+    fn search_api_keys_are_decoded() {
+        let keys = search_api_keys();
+        assert_eq!(keys.len(), 2);
+        assert_ne!(keys[0], keys[1]);
+        for (key, hex) in keys.iter().zip(BUILTIN_SEARCH_API_KEYS) {
+            assert!(key.starts_with("sk-"));
+            // 每行一把交给扩展：密钥里不能有换行等控制字符
+            assert!(!key.chars().any(char::is_control));
+            assert!(!hex.contains(key.as_str()), "源码中不出现明文密钥");
+            assert_ne!(key, &api_key());
+            assert_ne!(key, &image_api_key());
+        }
+        assert!(SEARCH_BASE_URL.starts_with("https://") && !SEARCH_BASE_URL.ends_with('/'));
     }
 }

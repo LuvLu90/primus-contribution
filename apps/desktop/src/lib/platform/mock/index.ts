@@ -429,6 +429,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
   // 会话索引（模拟薄壳的 session_index）：会话文件路径 → 摘要与已定稿的消息
   const sessionIndex: SessionSummary[] = [];
   const history = new Map<string, AgentMessage[]>();
+  /** 联网设置（浏览器预览只存在内存里） */
+  const webSettings = { enabled: true };
   let indexListener: ((e: SessionIndexEvent) => void) | undefined;
   let indexSeq = 0;
   const notifyIndex = () => {
@@ -1023,6 +1025,11 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       const absolute = mockAbsolutePath(path);
       const name = absolute.split(/[\\/]/).pop() ?? "image.png";
       return `C:\\Users\\demo\\Downloads\\${name}`;
+    },
+    webSettingsGet: async () => ({ ...webSettings }),
+    webSettingsSet: async (enabled) => {
+      webSettings.enabled = enabled;
+      return { ...webSettings };
     },
     workspaceTrust: async (path, trusted) => {
       const ws = workspaces.get(path);

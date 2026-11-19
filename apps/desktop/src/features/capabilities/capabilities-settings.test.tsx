@@ -530,3 +530,28 @@ describe("entryFromForm", () => {
     expect(() => entryFromForm({ ...form, url: " " }, undefined)).toThrow(tm.dialog.urlRequired);
   });
 });
+
+describe("设置·能力中心·联网（ADR 0020）", () => {
+  afterEach(() => setPlatformForTesting(undefined));
+  const tw = t.web;
+
+  it("默认开启；关闭后写入设置", async () => {
+    const platform = setup();
+    const set = vi.spyOn(platform, "webSettingsSet");
+    const toggle = await screen.findByRole("switch", { name: tw.enabled });
+    await waitFor(() => expect((toggle as HTMLInputElement).disabled).toBe(false));
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(set).toHaveBeenCalledWith(false));
+    await waitFor(() => expect((toggle as HTMLInputElement).checked).toBe(false));
+  });
+
+  it("保存失败时恢复原值并显示原因", async () => {
+    setup({ webSettingsSet: async () => Promise.reject(new Error("磁盘已满")) });
+    const toggle = await screen.findByRole("switch", { name: tw.enabled });
+    await waitFor(() => expect((toggle as HTMLInputElement).disabled).toBe(false));
+    fireEvent.click(toggle);
+    expect(await screen.findByText("磁盘已满")).toBeTruthy();
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+  });
+});

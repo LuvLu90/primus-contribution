@@ -11,5 +11,7 @@
 | `plan` | `session_start`、`session_compact`、`before_agent_start`、`agent_start`、`turn_end`、`agent_before_settle`（待办提醒）；自定义工具 `plan_submit`、`todo`、`ask_user`（只读约束由 `guard` 经 `plan/gate.ts` 执行） | 计划模式（只读调研 → 提交结构化计划 → 审批后执行）、待办、澄清提问 | `primus:plan`、`primus:todo`、`primus:ask`；`/primus-plan on\|off\|status\|approve <JSON>\|revise <JSON>\|answer <JSON>` |
 | `narrate` | `before_agent_start` | 往系统提示词末尾追加“进度说明”：调用工具前、每个阶段结束时用一两句话说明在做什么，最后一条回复写总结（桌面端按“工作过程 + 总结”展示） | — |
 | `preview` | 自定义工具 `preview`（只读、不联网，guard 不弹确认） | 在右栏打开文件或文件夹的预览；返回结构化状态 `shown` / `unsupported` / `not_found` / `denied` / `too_large` / `no_ui`（`@primus/protocol` 的 `PreviewToolDetails`） | `primus:preview` |
+| `imagegen` | 自定义工具 `generate_image` | 对话内生成图片（ADR 0018） | — |
+| `web` | 自定义工具 `web_search`、`web_fetch`（只读、联网，guard 任何模式放行）；`before_agent_start` | 联网搜索（内置 LangSearch，两把密钥轮流、故障切换）与读取网页（公网 http / https，HTML 转 Markdown，分段与页内查找）；按设置里的“联网”开关（`PRIMUS_WEB_SETTINGS`）每轮增减工具，打开时在系统提示词加当前日期（ADR 0020） | — |
 
 数据格式：`{ "v": 1, "type": "<主题>", "data": { ... } }`，通过 `ctx.ui.setWidget("primus:<主题>", [JSON])` 发送。

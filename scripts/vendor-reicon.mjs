@@ -50,6 +50,7 @@ export const ICONS = {
   "archive-restore": { source: "ArchiveUp" },
   mic: { source: "Microphone" },
   link: { source: "Link" },
+  globe: { source: "Globe" },
   // 输入框“+”菜单：添加文件、计划模式
   attach: { source: "Paperclip" },
   bulb: { source: "Bulb" },

@@ -387,3 +387,66 @@ export interface ImageGenDetails {
   /** 失败原因（给用户看） */
   error?: string;
 }
+
+// ---------- primus-web：联网搜索与读取网页（ADR 0020） ----------
+
+/** 联网搜索工具名（primus-web 注册的自定义工具） */
+export const WEBSEARCH_TOOL = "web_search";
+/** 读取网页工具名（primus-web 注册的自定义工具） */
+export const WEBFETCH_TOOL = "web_fetch";
+/** 两个联网工具（设置里关闭联网时一起停用） */
+export const WEB_TOOLS = [WEBSEARCH_TOOL, WEBFETCH_TOOL] as const;
+
+/** 搜索结果的时间范围（LangSearch freshness；另可传 `YYYY-MM-DD` 或 `YYYY-MM-DD..YYYY-MM-DD`） */
+export const WEBSEARCH_FRESHNESS = ["noLimit", "oneDay", "oneWeek", "oneMonth", "oneYear"] as const;
+export type WebSearchFreshness = (typeof WEBSEARCH_FRESHNESS)[number];
+
+/** 一次搜索最多返回的结果数 */
+export const WEBSEARCH_MAX_COUNT = 20;
+
+/** 联网工具结果的状态：done 完成；failed 失败（原因在 error）；cancelled 用户停止 */
+export type WebToolStatus = "done" | "failed" | "cancelled";
+
+/** 一条搜索结果（前端显示来源用，不含摘要正文） */
+export interface WebSearchResult {
+  title: string;
+  url: string;
+  /** 域名（`www.example.com`） */
+  site: string;
+  /** 发布日期（服务给出时，ISO 字符串） */
+  date?: string;
+}
+
+/** web_search 工具结果的 details */
+export interface WebSearchDetails {
+  status: WebToolStatus;
+  query: string;
+  results: WebSearchResult[];
+  error?: string;
+}
+
+/** web_fetch 工具结果的 details */
+export interface WebFetchDetails {
+  status: WebToolStatus;
+  /** 请求的地址 */
+  url: string;
+  /** 跳转后的最终地址 */
+  finalUrl?: string;
+  /** 网页标题 */
+  title?: string;
+  /** 内容类型（`text/html` 等，不含参数） */
+  contentType?: string;
+  /** 正文总字符数（转换成文本之后） */
+  totalChars?: number;
+  /** 本次返回的字符范围 [start, end) */
+  range?: [number, number];
+  /** 按 find 查找时命中的次数 */
+  matches?: number;
+  error?: string;
+}
+
+/** 联网设置（薄壳 `web_settings_get` / `web_settings_set`，文件 `users/<SID>/app/web.json`） */
+export interface WebSettings {
+  /** 允许 AI 联网搜索与读取网页（默认开） */
+  enabled: boolean;
+}

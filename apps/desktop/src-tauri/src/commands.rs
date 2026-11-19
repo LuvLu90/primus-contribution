@@ -245,6 +245,25 @@ pub(crate) fn image_save(
     Ok(Some(dest.to_string_lossy().into_owned()))
 }
 
+/// 联网设置（ADR 0020）：是否允许 AI 联网搜索与读取网页。文件不存在或无效时为默认（开启）。
+#[tauri::command]
+pub(crate) fn web_settings_get(paths: State<'_, DataPaths>) -> crate::web_settings::WebSettings {
+    crate::web_settings::WebSettings::load(&crate::web_settings::settings_file(&paths))
+}
+
+/// 修改联网设置并保存；Core 的 primus-web 在下一轮对话开始前读取，不需要重启 Core。
+#[tauri::command]
+pub(crate) fn web_settings_set(
+    paths: State<'_, DataPaths>,
+    enabled: bool,
+) -> Result<crate::web_settings::WebSettings, String> {
+    let settings = crate::web_settings::WebSettings { enabled };
+    settings
+        .save(&crate::web_settings::settings_file(&paths))
+        .map_err(|e| format!("保存联网设置失败：{e}"))?;
+    Ok(settings)
+}
+
 /// `session_open` 的返回值。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

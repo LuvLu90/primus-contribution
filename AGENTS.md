@@ -33,7 +33,7 @@
 
 ### 2.5 安全（基础版）
 - 密钥绝不明文落盘：走 `vault`（DPAPI）；`models.json` 里只放取密钥的命令（`--secret provider:<渠道 ID>`）。
-- 不要在代码、日志、测试快照、提交中写入任何真实密钥或证书。例外只有两个内置密钥，都只能加密放在 `apps/desktop/src-tauri/src/builtin.rs` 各一处：内置渠道（ioply）的 `BUILTIN_API_KEY`（技术方案第 9.8 节、ADR 0008）与内置图片生成服务的 `BUILTIN_IMAGE_API_KEY`（ADR 0018），不得复制到其他文件、日志、测试快照、提交说明或 PR 描述。
+- 不要在代码、日志、测试快照、提交中写入任何真实密钥或证书。例外只有三组内置密钥，都只能加密放在 `apps/desktop/src-tauri/src/builtin.rs` 各一处：内置渠道（ioply）的 `BUILTIN_API_KEY`（技术方案第 9.8 节、ADR 0008）、内置图片生成服务的 `BUILTIN_IMAGE_API_KEY`（ADR 0018）与内置联网搜索服务的两把 `BUILTIN_SEARCH_API_KEYS`（ADR 0020），不得复制到其他文件、日志、测试快照、提交说明或 PR 描述。
 - 用户模型渠道的密钥只进保险库（`provider:<渠道 ID>`）：不写进 `providers.json`、`models.json`、命令行参数、环境变量与日志，返回给 WebView 的只有 `hasKey` 与末 4 位 `keyHint`。
 - 危险操作必须经过 `primus-guard` 的确认流程；不要为了测试方便绕过它。
 
