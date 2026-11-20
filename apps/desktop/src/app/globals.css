@@ -1843,30 +1843,16 @@ html.window-effects.solid-window body {
     imggen-unfold-fade 0.35s ease-out backwards;
 }
 
-/* 结果揭示：羽化的圆形遮罩从中心扩开（--reveal 0% → 132%），同时淡入、去模糊，1.55s */
-@property --imggen-reveal {
-  syntax: "<percentage>";
-  inherits: false;
-  initial-value: 0%;
-}
-
+/* 结果揭示：粒子拼出马赛克后，真图在其上淡入、去模糊（0.5s），马赛克画布同时淡出 */
 .imggen-reveal {
-  --imggen-reveal: 0%;
   opacity: 0;
-  filter: blur(10px);
-  mask-image: radial-gradient(
-    circle at 50% 50%,
-    #000 calc(var(--imggen-reveal) - 26%),
-    transparent var(--imggen-reveal)
-  );
+  filter: blur(4px);
   transition:
-    --imggen-reveal 1.55s cubic-bezier(0.4, 0, 0.2, 1),
-    opacity 1.55s cubic-bezier(0.4, 0, 0.2, 1),
-    filter 1.55s cubic-bezier(0.4, 0, 0.2, 1);
+    opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1),
+    filter 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .imggen-reveal[data-shown] {
-  --imggen-reveal: 132%;
   opacity: 1;
   filter: blur(0);
 }
@@ -1898,47 +1884,6 @@ html.window-effects.solid-window body {
   animation: imggen-shimmer 3.4s linear infinite;
 }
 
-/* 倒计时的翻页数字：上半页落下、下半页翻起 */
-@keyframes imggen-flap-fall {
-  from {
-    filter: brightness(1);
-    transform: rotateX(0);
-  }
-  to {
-    filter: brightness(0.86);
-    transform: rotateX(-90deg);
-  }
-}
-
-@keyframes imggen-flap-rise {
-  0% {
-    filter: brightness(0.86);
-    transform: rotateX(90deg);
-  }
-  70% {
-    transform: rotateX(-9deg);
-  }
-  86% {
-    transform: rotateX(4deg);
-  }
-  100% {
-    filter: brightness(1);
-    transform: rotateX(0);
-  }
-}
-
-.imggen-flap-fall {
-  transform-origin: bottom;
-  backface-visibility: hidden;
-  animation: imggen-flap-fall 0.15s cubic-bezier(0.55, 0, 0.9, 0.35) forwards;
-}
-
-.imggen-flap-rise {
-  transform-origin: top;
-  backface-visibility: hidden;
-  animation: imggen-flap-rise 0.23s cubic-bezier(0.25, 0.7, 0.35, 1) 0.15s both;
-}
-
 /* 框内提示（已复制、已保存）：上浮淡入、去模糊 */
 @keyframes imggen-toast-in {
   from {
@@ -1964,11 +1909,6 @@ html.window-effects.solid-window body {
     color: var(--color-muted);
     background-image: none;
     animation: none;
-  }
-  .imggen-flap-fall,
-  .imggen-flap-rise {
-    animation-duration: 1ms;
-    animation-delay: 0s;
   }
 }
 
