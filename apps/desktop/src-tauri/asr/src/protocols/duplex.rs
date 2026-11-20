@@ -226,7 +226,7 @@ mod tests {
         {
             let v: Value = serde_json::from_str(&run_task(m, "abc")).unwrap();
             let vocab = &v["payload"]["parameters"]["vocabulary"];
-            if m.id.starts_with("paraformer") || m.id.contains("8k") {
+            if !crate::hotwords::takes_vocabulary(m.id) {
                 assert!(vocab.is_null(), "{}", m.id);
             } else {
                 assert_eq!(vocab["乾元"], 5, "{}", m.id);

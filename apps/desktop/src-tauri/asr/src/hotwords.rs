@@ -79,11 +79,10 @@ pub fn vocabulary() -> Value {
 
 /// 这款实时模型的 run-task 里能不能带即时热词（`parameters.vocabulary`）。
 ///
-/// 百炼文档里支持即时热词的是 Qwen-Audio-ASR 系列和 Fun-ASR 主模型；Paraformer、Fun-ASR 8k
+/// 百炼文档里支持即时热词的只有 Qwen-Audio-ASR 系列；Fun-ASR-Realtime、Paraformer、Fun-ASR 8k
 /// 只认预先建好的 `vocabulary_id`，不带，免得未知参数被当成“模型用不了”而停用一天。
 pub fn takes_vocabulary(model_id: &str) -> bool {
     model_id.starts_with("qwen-audio-")
-        || model_id == "fun-asr-realtime"
         || model_id.starts_with("fun-asr-flash-2")
 }
 
@@ -107,7 +106,7 @@ mod tests {
             if w.is_ascii() {
                 assert!(w.split(' ').count() <= 7, "{w}");
             } else {
-                assert!(w.chars().filter(|c| !c.is_ascii()).count() <= 15, "{w}");
+                assert!(w.chars().count() <= 15, "{w}");
             }
         }
     }
@@ -130,7 +129,8 @@ mod tests {
         for m in crate::models::MODELS {
             let expect = !m.id.starts_with("paraformer")
                 && !m.id.contains("8k")
-                && !m.id.starts_with("qwen3-");
+                && !m.id.starts_with("qwen3-")
+                && m.id != "fun-asr-realtime";
             assert_eq!(takes_vocabulary(m.id), expect, "{}", m.id);
         }
     }

@@ -74,9 +74,20 @@ export async function copyImage(src: string): Promise<void> {
 
 /** 粒子格距（CSS 像素）：360×450 的框约 60×75 = 4500 颗 */
 export const PARTICLE_GAP = 6;
-/** 画布底色与粒子静止色 */
-const FLOOR_COLOR = "#0b0b0f";
-const INK: [number, number, number] = [228, 230, 240];
+/** 画布底色与粒子静止色：取 globals.css 的设计令牌，读不到（如测试环境）时用同值兜底 */
+const FLOOR_FALLBACK = "#0b0b0f";
+const INK_FALLBACK: [number, number, number] = [228, 230, 240];
+
+function readToken(el: Element, name: string): string {
+  return getComputedStyle(el).getPropertyValue(name).trim();
+}
+
+function hexRgb(hex: string): [number, number, number] | null {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m?.[1]) return null;
+  const n = Number.parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
 /** 升起：开始时刻、随机错峰上限、单颗用时（秒） */
 const RISE_AT_S = 0.6;
 const RISE_JITTER_S = 0.7;
@@ -177,6 +188,8 @@ function useParticles(running: boolean) {
     const g = canvas?.getContext("2d");
     if (!canvas || !box || !g || !running) return;
     const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    const FLOOR_COLOR = readToken(canvas, "--color-imggen-canvas") || FLOOR_FALLBACK;
+    const INK = hexRgb(readToken(canvas, "--color-imggen-ink")) ?? INK_FALLBACK;
     const start = performance.now();
     let rect = box.getBoundingClientRect();
     let dirty = true;

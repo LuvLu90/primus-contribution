@@ -163,6 +163,10 @@
   --color-file-vue-navy: #35495e;
   --color-file-yellow-600: #fdd835;
   --color-file-yellow-800: #f9a825;
+
+  /* 图片生成的粒子成像画布：固定深色底与浅色粒子（不随主题变，画布里由 image-gen-card 读取） */
+  --color-imggen-canvas: #0b0b0f;
+  --color-imggen-ink: #e4e6f0;
 }
 
 :root {
@@ -1843,13 +1847,11 @@ html.window-effects.solid-window body {
     imggen-unfold-fade 0.35s ease-out backwards;
 }
 
-/* 结果揭示：粒子拼出马赛克后，真图在其上淡入、去模糊（0.5s），马赛克画布同时淡出 */
+/* 结果揭示：粒子拼出马赛克后，真图在其上淡入（0.5s，只动 opacity），马赛克画布同时淡出 */
 .imggen-reveal {
   opacity: 0;
   filter: blur(4px);
-  transition:
-    opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1),
-    filter 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .imggen-reveal[data-shown] {
