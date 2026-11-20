@@ -843,6 +843,7 @@ export const strings = {
       metric: "热力图指标",
       metrics: { daily: "每天", weekly: "每周", cumulative: "累计总量" },
       clearDate: "全部日期",
+      applyDate: "确定",
       weekdays: ["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
       mixedCurrency: "统计周期内有多种币种，成本可在悬停提示中查看。",
       requestMetric: "请求次数",
@@ -911,6 +912,7 @@ export const strings = {
       projectsFailed: "无法读取项目列表，可继续搜索聊天。",
       hint: "输入聊天标题或内容查找归档。搜索最多返回 50 条会话结果。",
       empty: "没有找到匹配的已归档聊天",
+      truncated: "匹配结果已达 50 条上限，可能未显示全部归档聊天，请细化关键词或按项目筛选。",
       open: "查看聊天",
       restore: "取消归档",
       restored: "聊天已恢复到列表",
@@ -1013,7 +1015,7 @@ export const strings = {
       introduction: "乾元（Primus）",
       updateNow: "立刻更新",
       description:
-        " 是一款面向教师、科研人员及日常办公用户的智能桌面 Agent。产品基于 Pi Agent Core 构建，结合大语言模型与本地工具调用能力，致力于通过自然语言交互实现 Word、Excel、PPT 等办公文档的智能生成、编辑与管理。同时，乾元支持通过 Skills、MCP 和插件扩展功能，以简洁直观的操作方式降低 AI 使用门槛，为用户提供高效、便捷、安全的智能办公体验。",
+        " 是一款面向教师、科研人员及日常办公用户的智能桌面 Agent。产品基于 Core 构建，结合大语言模型与本地工具调用能力，致力于通过自然语言交互实现 Word、Excel、PPT 等办公文档的智能生成、编辑与管理。同时，乾元支持通过 Skills、MCP 和插件扩展功能，以简洁直观的操作方式降低 AI 使用门槛，为用户提供高效、便捷、安全的智能办公体验。",
     },
     groupItems: {
       models: "默认思考强度、子 Agent 模型",

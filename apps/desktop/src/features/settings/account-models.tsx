@@ -71,7 +71,17 @@ export function AccountSettings() {
         setStatus(await platform.authLogin());
       } else {
         await platform.authLogout();
-        setStatus(await platform.authStatus());
+        // 登出已成功：先落到未登录，状态刷新失败不回退旧账户、也不报登出失败
+        setStatus((prev) => ({
+          loggedIn: false,
+          account: null,
+          loginAvailable: prev?.loginAvailable ?? false,
+        }));
+        try {
+          setStatus(await platform.authStatus());
+        } catch {
+          // 保留已登出状态
+        }
       }
     } catch (failure) {
       setError(errorText(failure, action === "login" ? ta.loginFailed : ta.logoutFailed));

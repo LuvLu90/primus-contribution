@@ -104,6 +104,29 @@ describe("设置·账号与模型", () => {
     expect(authStatus).toHaveBeenCalledTimes(2);
   });
 
+  it("登出成功但刷新状态失败：仍显示未登录，不报登出失败", async () => {
+    const signedIn: AuthStatus = {
+      loggedIn: true,
+      account: { id: "test-account", name: "测试教师", kind: "service" },
+      loginAvailable: true,
+    };
+    const authStatus = vi
+      .fn()
+      .mockResolvedValueOnce(signedIn)
+      .mockRejectedValue(new Error("刷新失败"));
+    const authLogout = vi.fn(async () => {});
+    usePlatform({ authStatus, authLogout });
+    render(<AccountSettings />);
+
+    expect(await screen.findByText(signedIn.account?.name ?? "")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: ta.logout }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe(ta.notSignedIn));
+    expect(screen.queryByText(signedIn.account?.name ?? "")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(ta.logoutFailed)).toBeNull();
+    expect(authStatus).toHaveBeenCalledTimes(2);
+  });
+
   it("模型页随 models_watch 推送更新", async () => {
     let push: ((info: ModelsInfo) => void) | undefined;
     usePlatform({

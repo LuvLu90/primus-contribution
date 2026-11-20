@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { strings } from "@/lib/strings";
 import { type ModelCall, UsageSettings } from "./usage-settings";
 
@@ -75,10 +75,36 @@ describe("用量设置", () => {
       screen.getByLabelText(t.date, { selector: "input" }).getAttribute("max"),
     );
     expect(screen.queryByRole("button", { name: t.date })).toBeNull();
-    expect(screen.queryByRole("button", { name: t.clearDate })).toBeNull();
     expect(screen.getByRole("button", { name: t.time })).toBeTruthy();
+    // 只打开弹层不提交筛选
+    expect(table.getByText("Older")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: t.applyDate }));
     expect(table.getByText(t.noMatchingCalls)).toBeTruthy();
     expect(screen.getByText("300")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: t.time }));
+    fireEvent.click(screen.getByRole("button", { name: t.clearDate }));
+    expect(table.getByText("Older")).toBeTruthy();
+    expect(table.getByText("Recent")).toBeTruthy();
+  });
+
+  it("按 Escape 取消日期选择时保留原有记录", () => {
+    render(<UsageSettings calls={[call("older", -3, "Older", 200)]} />);
+    const table = within(screen.getByRole("table", { name: t.calls }));
+    fireEvent.click(screen.getByRole("button", { name: t.time }));
+    fireEvent.keyDown(screen.getByRole("dialog", { name: t.date }), { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: t.date })).toBeNull();
+    expect(table.getByText("Older")).toBeTruthy();
+  });
+
+  it("空调用记录的 Token 总量为 0，无来源或 total 未知时保持暂无数据", () => {
+    const { unmount } = render(<UsageSettings calls={[]} />);
+    const tokensCard = () => screen.getByText(t.tokens, { selector: "dt" }).nextElementSibling;
+    expect(tokensCard()?.textContent).toBe("0");
+    unmount();
+
+    render(<UsageSettings calls={[{ ...call("unknown", -1, "Unknown", 1), total: null }]} />);
+    expect(tokensCard()?.textContent).toBe(t.noData);
   });
 
   it("每日和累计总量按真实 Token 计算", () => {
@@ -100,5 +126,25 @@ describe("用量设置", () => {
     expect(cell()?.className).toContain("bg-usage-4");
     fireEvent.mouseDown(screen.getByRole("tab", { name: t.metrics.weekly }));
     expect(cell()?.getAttribute("aria-label")).toContain("每周：");
+  });
+
+  describe("跨过当地午夜", () => {
+    afterEach(() => vi.useRealTimers());
+
+    it("日期变化后新的调用计入时间窗口", () => {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      vi.setSystemTime(new Date(2026, 10, 20, 23, 59, 30));
+      const late: ModelCall = {
+        ...call("next-day", 0, "NextDay", 42),
+        timestamp: new Date(2026, 10, 21, 0, 0, 10).getTime(),
+      };
+      const { rerender } = render(<UsageSettings calls={[]} />);
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      rerender(<UsageSettings calls={[late]} />);
+      const table = within(screen.getByRole("table", { name: t.calls }));
+      expect(table.getByText("NextDay")).toBeTruthy();
+    });
   });
 });

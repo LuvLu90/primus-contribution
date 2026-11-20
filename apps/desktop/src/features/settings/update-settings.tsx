@@ -97,38 +97,34 @@ export function UpdateSettings({
         </div>
       )}
       <Section title={tu.title}>
-        <Row
-          label={tu.currentVersion}
-          hint={compact || status.available ? undefined : tu.unavailableHint}
-        >
+        <Row label={tu.currentVersion} hint={status.available ? undefined : tu.unavailableHint}>
           <span className="text-sm text-muted tabular-nums">{status.currentVersion}</span>
         </Row>
-        {!compact && (
-          <>
-            <Row label={tu.autoUpdate}>
-              <Switch
-                ariaLabel={tu.autoUpdate}
-                checked={status.settings.autoUpdate}
-                disabled={saving}
-                onCheckedChange={(autoUpdate) => void save({ autoUpdate })}
-              />
-            </Row>
-            <Row label={tu.channel} labelId={channelLabel}>
-              <Tabs
-                value={status.settings.channel}
-                onValueChange={(v) => void save({ channel: v as UpdateChannel })}
-              >
-                <TabsList aria-labelledby={channelLabel}>
-                  {CHANNELS.map((c) => (
-                    <TabsTrigger key={c} value={c} disabled={saving}>
-                      {tu.channels[c]}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-            </Row>
-          </>
-        )}
+        {/* 自动更新与更新通道在紧凑模式（关于页）也保留：应用内没有其他入口能改这两项 */}
+
+        <Row label={tu.autoUpdate}>
+          <Switch
+            ariaLabel={tu.autoUpdate}
+            checked={status.settings.autoUpdate}
+            disabled={saving}
+            onCheckedChange={(autoUpdate) => void save({ autoUpdate })}
+          />
+        </Row>
+        <Row label={tu.channel} labelId={channelLabel}>
+          <Tabs
+            value={status.settings.channel}
+            onValueChange={(v) => void save({ channel: v as UpdateChannel })}
+          >
+            <TabsList aria-labelledby={channelLabel}>
+              {CHANNELS.map((c) => (
+                <TabsTrigger key={c} value={c} disabled={saving}>
+                  {tu.channels[c]}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        </Row>
+
         <Row
           label={compact ? strings.settings.about.updateNow : tu.checkNow}
           hint={stateText ?? undefined}

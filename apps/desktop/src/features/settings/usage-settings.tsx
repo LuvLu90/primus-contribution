@@ -58,8 +58,9 @@ function formatCost(cost: Cost) {
 }
 
 function getTotals(calls: readonly ModelCall[] | null) {
-  if (!calls?.length)
-    return { requests: calls?.length ?? null, tokens: null, cost: t.noData, costAmount: null };
+  // null 为没有数据来源（未知）；空数组为已知没有调用，Token 记为 0
+  if (calls === null) return { requests: null, tokens: null, cost: t.noData, costAmount: null };
+  if (calls.length === 0) return { requests: 0, tokens: 0, cost: t.noData, costAmount: null };
   let tokens = 0;
   let tokensKnown = true;
   let costKnown = true;
@@ -99,6 +100,8 @@ export function UsageSettings({
   const swipe = useRef<{ pointerId: number; x: number; metric: Metric } | null>(null);
   const [date, setDate] = useState("");
   const [calendarOpen, setCalendarOpen] = useState(false);
+  /** 弹层内的临时日期；确认后才写入筛选 `date`，取消不改变已有筛选 */
+  const [draftDate, setDraftDate] = useState("");
   const [account, setAccount] = useState<AuthStatus | null>(null);
   const [accountError, setAccountError] = useState(false);
 
@@ -117,7 +120,30 @@ export function UsageSettings({
     };
   }, []);
   const [sessionError, setSessionError] = useState(false);
-  const [today] = useState(() => new Date());
+  const [today, setToday] = useState(() => new Date());
+
+  // 跨过当地午夜或窗口重新激活时校正“今天”，时间窗口与日期上限随之更新
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const sync = () => {
+      const now = new Date();
+      setToday((previous) => (dayKey(previous) === dayKey(now) ? previous : now));
+      clearTimeout(timer);
+      const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      timer = setTimeout(sync, nextMidnight.getTime() - now.getTime() + 1000);
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") sync();
+    };
+    sync();
+    window.addEventListener("focus", sync);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("focus", sync);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
 
   const start = new Date(today.getFullYear(), today.getMonth() - 11, 1);
   const end = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
@@ -356,7 +382,7 @@ export function UsageSettings({
                           type="button"
                           aria-expanded={calendarOpen}
                           onClick={() => {
-                            if (!calendarOpen && !date) setDate(dayKey(today));
+                            if (!calendarOpen) setDraftDate(date || dayKey(today));
                             setCalendarOpen(!calendarOpen);
                           }}
                           className="flex items-center gap-1 text-left hover:text-accent"
@@ -379,12 +405,32 @@ export function UsageSettings({
                               className={fieldClass}
                               min={dayKey(start)}
                               max={dayKey(today)}
-                              value={date || dayKey(today)}
-                              onChange={(event) => {
-                                setDate(event.target.value);
-                                setCalendarOpen(false);
-                              }}
+                              value={draftDate}
+                              onChange={(event) => setDraftDate(event.target.value)}
                             />
+                            <div className="mt-2 flex justify-end gap-2">
+                              <button
+                                type="button"
+                                className="rounded-lg px-2 py-1 text-sm hover:bg-hover"
+                                onClick={() => {
+                                  setDate("");
+                                  setCalendarOpen(false);
+                                }}
+                              >
+                                {t.clearDate}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={!draftDate}
+                                className="rounded-lg px-2 py-1 text-sm ring-1 ring-border enabled:hover:bg-hover disabled:text-muted"
+                                onClick={() => {
+                                  setDate(draftDate);
+                                  setCalendarOpen(false);
+                                }}
+                              >
+                                {t.applyDate}
+                              </button>
+                            </div>
                           </div>
                         )}
                       </div>

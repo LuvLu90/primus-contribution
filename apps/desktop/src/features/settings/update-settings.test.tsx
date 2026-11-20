@@ -41,12 +41,22 @@ describe("设置·更新", () => {
     usePlatform(base, { updateCheck });
     render(<UpdateSettings compact />);
     expect(await screen.findByText(base.currentVersion)).toBeTruthy();
-    expect(screen.queryByRole("switch")).toBeNull();
-    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.getByRole("switch", { name: tu.autoUpdate })).toBeTruthy();
+    expect(screen.getAllByRole("tab").length).toBeGreaterThan(0);
     expect(screen.queryByText(tu.unavailableHint)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: strings.settings.about.updateNow }));
     expect(await screen.findByText(tu.upToDate)).toBeTruthy();
     expect(updateCheck).toHaveBeenCalled();
+  });
+  it("关于页精简版本区在更新不可用时仍显示说明", async () => {
+    usePlatform({ ...base, available: false });
+    render(<UpdateSettings compact />);
+    expect(await screen.findByText(base.currentVersion)).toBeTruthy();
+    expect(screen.getByText(tu.unavailableHint)).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: strings.settings.about.updateNow }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
   });
   afterEach(() => {
     setPlatformForTesting(undefined);

@@ -59,7 +59,10 @@ export function CapabilitySettings() {
   }, [path]);
 
   const items = {
-    skills: inspected?.details?.skills,
+    // 项目技能来自 `.primus/skills`（skills）与 `.agents/skills`（agentsSkills，保留目录前缀）
+    skills: inspected?.details
+      ? [...inspected.details.skills, ...inspected.details.agentsSkills]
+      : undefined,
     mcp: inspected?.details?.mcpServers,
     plugins: inspected?.details?.extensions,
     connectors: undefined,

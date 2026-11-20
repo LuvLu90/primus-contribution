@@ -23,6 +23,8 @@ import { strings } from "@/lib/strings";
 import { Row, Section } from "./settings-section";
 
 const t = strings.settings.archived;
+/** `sessionSearch` 的返回上限（含未归档会话） */
+const SEARCH_LIMIT = 50;
 const sessionText = strings.sessions;
 const actionClass =
   "rounded-lg border border-border px-2.5 py-1.5 text-sm enabled:hover:bg-hover disabled:text-muted";
@@ -64,6 +66,7 @@ export function ArchivedSettings() {
   const [notice, setNotice] = useState("");
 
   const [searching, setSearching] = useState(false);
+  const [truncated, setTruncated] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -71,6 +74,7 @@ export function ArchivedSettings() {
       const keyword = query.trim();
       if (!keyword) {
         setResults(null);
+        setTruncated(false);
         setSearching(false);
         return;
       }
@@ -80,8 +84,12 @@ export function ArchivedSettings() {
       setNotice("");
       try {
         const platform = await getPlatform();
-        const matches = await platform.sessionSearch(null, keyword);
-        if (active) setResults(matches.filter((session) => session.archived));
+        // 选了项目时交给接口在截断前按工作区筛选；接口无归档筛选与分页，命中上限时提示细化关键词
+        const matches = await platform.sessionSearch(project || null, keyword);
+        if (active) {
+          setTruncated(matches.length >= SEARCH_LIMIT);
+          setResults(matches.filter((session) => session.archived));
+        }
       } catch {
         if (active) setError(sessionText.searchFailed);
       } finally {
@@ -92,7 +100,7 @@ export function ArchivedSettings() {
       active = false;
       clearTimeout(timer);
     };
-  }, [query]);
+  }, [query, project]);
 
   async function changeSession(session: SessionSummary, remove: boolean) {
     if (busy || searching) return;
@@ -287,6 +295,11 @@ export function ArchivedSettings() {
       {searching && results === null && (
         <p role="status" className="text-sm">
           {sessionText.searching}
+        </p>
+      )}
+      {truncated && results !== null && (
+        <p role="status" className="text-sm text-muted">
+          {t.truncated}
         </p>
       )}
       {visible?.length === 0 && <p className="text-sm text-muted">{t.empty}</p>}

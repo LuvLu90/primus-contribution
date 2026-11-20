@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useRouter } from "next/navigation";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type Platform, type SessionSummary, setPlatformForTesting } from "@/lib/platform";
@@ -131,11 +131,11 @@ describe("设置页", () => {
       workspace: "/chat",
       name: "归档课件",
     };
-    const sessionSearch = vi.fn(async () => [
-      session,
-      other,
-      { ...session, name: "普通聊天", archived: false },
-    ]);
+    const sessionSearch = vi.fn(async (workspace: string | null, _query: string) =>
+      [session, other, { ...session, name: "普通聊天", archived: false }].filter(
+        (item) => workspace === null || item.workspace === workspace,
+      ),
+    );
     const sessionArchive = vi.fn(async () => {});
     const sessionDelete = vi.fn(async () => {});
     const platform: Partial<Platform> = {
@@ -164,12 +164,15 @@ describe("设置页", () => {
       fireEvent.click(await screen.findByRole("menuitemradio", { name: item }));
     };
     await selectMenu(t.archived.allProjects, "教学项目");
+    await waitFor(() => expect(sessionSearch).toHaveBeenCalledWith("/test", "课"));
+    expect(await screen.findByText(session.name ?? "")).toBeTruthy();
     expect(screen.queryByText(other.name)).toBeNull();
-    expect(screen.getByText(session.name ?? "")).toBeTruthy();
     await selectMenu("教学项目", t.archived.chats);
+    expect(await screen.findByText(other.name)).toBeTruthy();
     expect(screen.queryByText(session.name ?? "")).toBeNull();
-    expect(screen.getByText(other.name)).toBeTruthy();
     await selectMenu(t.archived.chats, t.archived.allProjects);
+    expect(await screen.findByText(session.name ?? "")).toBeTruthy();
+    expect(await screen.findByText(other.name)).toBeTruthy();
     await selectMenu(t.archived.allChats, t.archived.alphabetical);
     expect(screen.getByRole("button", { name: t.archived.allChats })).toBeTruthy();
     await selectMenu(t.archived.allChats, t.archived.updated);
