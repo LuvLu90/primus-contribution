@@ -528,9 +528,9 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
   ): Promise<ToolResult> {
     lastCtx = ctx;
     const t = TEXT.planSubmit;
-    if (state.phase !== "planning") {
-      const details: PlanSubmitDetails = { id: "", status: "not_planning" };
-      return result(t.notPlanning, details, { isError: true });
+    if (state.phase === "awaiting") {
+      const details: PlanSubmitDetails = { id: state.id ?? "", status: "invalid" };
+      return result(t.alreadyAwaiting, details, { isError: true });
     }
     const plan = normalizePlan(params);
     if (typeof plan === "string") {
@@ -540,6 +540,13 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
     if (ctx.hasUI !== true || typeof ctx.ui?.setWidget !== "function") {
       const details: PlanSubmitDetails = { id: "", status: "no_ui", plan };
       return result(t.noUi, details, { isError: true });
+    }
+    const prevPhase = state.phase;
+    if (prevPhase !== "planning") {
+      state.reminders = 0;
+      state.turnsSince = 0;
+      state.forceFull = false;
+      state.exitNotice = false;
     }
     state.count++;
     const id = `p${state.count}`;
@@ -560,7 +567,7 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
     // 等待期间会话已重新开始：状态属于新会话，不能改也不能持久化
     if (myEpoch !== epoch) {
       const details: PlanSubmitDetails = { id, status: "cancelled", plan };
-      return result(t.cancelled, details, { isError: true, terminate: true });
+      return result(t.cancelled(false), details, { isError: true, terminate: true });
     }
 
     if (decision.kind === "approve") {
@@ -598,11 +605,14 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
       };
       return result(t.revise(decision.feedback), details, { isError: true });
     }
-    if (state.phase === "awaiting") state.phase = "planning";
+    if (state.phase === "awaiting") state.phase = prevPhase;
     state.status = "cancelled";
     commit(ctx);
     const details: PlanSubmitDetails = { id, status: "cancelled", plan };
-    return result(t.cancelled, details, { isError: true, terminate: true });
+    return result(t.cancelled(state.phase === "planning"), details, {
+      isError: true,
+      terminate: true,
+    });
   }
 
   async function todo(params: unknown, ctx: PlanContext): Promise<ToolResult> {

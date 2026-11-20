@@ -136,15 +136,43 @@ describe("primus-plan", () => {
     expect(userTurn()).toBeUndefined();
   });
 
-  it("不在计划模式时 plan_submit 报错；计划格式不对时报错", async () => {
-    const { tools, ctx, cmd } = setup();
+  it("非计划模式可直接调用 plan_submit；计划格式不对时报错且不改变状态", async () => {
+    const { tools, ctx, cmd, plan, gate } = setup();
     const submit = tools[PLAN_SUBMIT_TOOL] as Tool;
-    const r = await submit.execute("t1", PLAN, undefined, undefined, ctx);
-    expect(r.isError).toBe(true);
-    expect(r.details?.status).toBe("not_planning");
-    await cmd("on");
-    const bad = await submit.execute("t2", { title: "x", steps: [] }, undefined, undefined, ctx);
+
+    const bad = await submit.execute("t0", { title: "x", steps: [] }, undefined, undefined, ctx);
+    expect(bad.isError).toBe(true);
     expect(bad.details?.status).toBe("invalid");
+    expect(plan.state.phase).toBe("off");
+    expect(gate.readOnly).toBe(false);
+
+    // 未开启计划模式时提交 → 进入 awaiting；用户取消后回到 off
+    const ac = new AbortController();
+    const p1 = submit.execute("t1", PLAN, ac.signal, undefined, ctx);
+    await Promise.resolve();
+    expect(plan.state.phase).toBe("awaiting");
+    expect(gate.readOnly).toBe(true);
+    ac.abort();
+    const r1 = await p1;
+    expect(r1).toMatchObject({ isError: true, terminate: true });
+    expect(r1.details?.status).toBe("cancelled");
+    expect(plan.state.phase).toBe("off");
+    expect(gate.readOnly).toBe(false);
+
+    // 未开启计划模式时提交 → 要求修改后进入 planning；批准后进入 executing
+    const p2 = submit.execute("t2", PLAN, undefined, undefined, ctx);
+    await Promise.resolve();
+    await cmd(`revise ${JSON.stringify({ id: "p2", feedback: "补上回滚步骤" })}`);
+    expect((await p2).details?.status).toBe("revising");
+    expect(plan.state.phase).toBe("planning");
+    expect(gate.readOnly).toBe(true);
+
+    const p3 = submit.execute("t3", PLAN, undefined, undefined, ctx);
+    await Promise.resolve();
+    await cmd(`approve ${JSON.stringify({ id: "p3", permission: "keep" })}`);
+    expect((await p3).details?.status).toBe("approved");
+    expect(plan.state.phase).toBe("executing");
+    expect(gate.readOnly).toBe(false);
   });
 
   it("提交后阻塞；批准（用户改过计划）后进入执行、预填待办、写计划文件", async () => {
