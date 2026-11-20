@@ -587,8 +587,21 @@ export const strings = {
     languageValue: "简体中文",
     startup: "启动与窗口",
     minimizeToTray: "关闭窗口时最小化到托盘",
-    notifications: "通知",
-    notifyEnabled: "运行完成、需要确认或出错时发送系统通知",
+    notifications: "通知与提示音",
+    notify: {
+      turnComplete: "任务完成时通知",
+      turnCompleteHint: "一轮结束或出错时；自己停止的不提醒",
+      turnCompleteModes: { never: "从不", background: "在后台时", always: "始终" },
+      needsInput: "需要你处理时通知",
+      needsInputHint: "等待确认操作、回答提问或批准计划，且窗口不在前台或在看别的会话时",
+      sound: "提示音",
+      soundHint: "提醒时播放；完成、需要处理、出错各是一种声音",
+      previewDone: "试听完成",
+      previewInput: "试听需要处理",
+      loadFailed: "读取通知设置失败",
+      saveFailed: "保存通知设置失败",
+      retry: "重试",
+    },
     comingSoon: "这一组设置会在后续版本提供，包括：",
     account: {
       title: "账号",
@@ -1031,6 +1044,20 @@ export const strings = {
   errors: {
     title: "出错了",
     retry: "重试",
+  },
+  /** 系统通知的文案（ADR 0023）：标题写发生了什么，正文写会话与内容摘要 */
+  notifications: {
+    appName: "乾元",
+    untitled: "新会话",
+    done: "任务已完成",
+    doneBody: "回复已完成",
+    error: "运行出错",
+    errorBody: "这一轮没有完成",
+    confirm: "需要你确认",
+    choose: "需要你选择",
+    input: "需要你输入",
+    ask: "有问题需要你回答",
+    plan: "计划等待你批准",
   },
 } as const;
 

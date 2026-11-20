@@ -67,6 +67,37 @@ export interface SessionIndexEvent {
   seq: number;
 }
 
+/**
+ * 通知与提示音设置（ADR 0023）：`users/<SID>/app/notifications.json`。
+ * - `turnComplete`：一轮结束（完成或出错）时：从不 / 只在后台时 / 始终。用户自己停止的不提醒
+ * - `needsInput`：需要用户确认、选择、回答或批准计划时提醒（只在后台时）
+ * - `sound`：提醒时播放提示音
+ * “后台”：窗口不在前台，或这个会话不是当前显示的会话
+ */
+export type TurnCompleteNotify = "never" | "background" | "always";
+
+export interface NotificationSettings {
+  turnComplete: TurnCompleteNotify;
+  needsInput: boolean;
+  sound: boolean;
+}
+
+export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
+  turnComplete: "background",
+  needsInput: true,
+  sound: true,
+};
+
+/** 一条系统通知（`notification_show`） */
+export interface NotificationRequest {
+  title: string;
+  body: string;
+  /** 点击通知时原样交回 `notificationWatch` 的回调（前端用标签 ID，点开后切到这个会话） */
+  tag: string;
+  /** 需要用户处理：窗口不在前台时同时闪烁任务栏按钮 */
+  attention: boolean;
+}
+
 export interface Page<T> {
   items: T[];
   nextCursor?: string;
@@ -269,6 +300,15 @@ export interface Platform {
   webSettingsGet(): Promise<WebSettings>;
   /** 修改联网设置；下一轮对话开始时生效，不需要重启内核 */
   webSettingsSet(enabled: boolean): Promise<WebSettings>;
+
+  /** 通知与提示音设置（ADR 0023）；没有设置时为默认值 */
+  notificationSettingsGet(): Promise<NotificationSettings>;
+  /** 保存通知与提示音设置（整份），返回保存后的值 */
+  notificationSettingsSet(settings: NotificationSettings): Promise<NotificationSettings>;
+  /** 发送一条系统通知（Windows Toast，自身不带声音：提示音由前端播放）；系统不支持时静默忽略 */
+  notificationShow(request: NotificationRequest): Promise<void>;
+  /** 订阅通知点击：薄壳先把主窗口显示到前台，再把通知的 `tag` 交给回调；再次调用替换旧的订阅 */
+  notificationWatch(onActivate: (tag: string) => void): Promise<void>;
 
   /**
    * 会话列表：最后活动时间倒序、每页 50 条、不含已归档。`workspace` 为 null 时列出全部工作区，
@@ -585,6 +625,10 @@ export const COMMANDS = {
   imageSave: "image_save",
   webSettingsGet: "web_settings_get",
   webSettingsSet: "web_settings_set",
+  notificationSettingsGet: "notification_settings_get",
+  notificationSettingsSet: "notification_settings_set",
+  notificationShow: "notification_show",
+  notificationWatch: "notification_watch",
   sessionDefaultWorkspace: "session_default_workspace",
   sessionList: "session_list",
   sessionSearch: "session_search",

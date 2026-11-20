@@ -24,8 +24,10 @@ import {
   AUTH_NOT_AVAILABLE,
   type AuthStatus,
   type BatchListener,
+  DEFAULT_NOTIFICATION_SETTINGS,
   type ModelSummary,
   type ModelsInfo,
+  type NotificationSettings,
   type Platform,
   PlatformError,
   type ProviderApi,
@@ -445,6 +447,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
   const history = new Map<string, AgentMessage[]>();
   /** 联网设置（浏览器预览只存在内存里） */
   const webSettings = { enabled: true };
+  let notificationSettings: NotificationSettings = { ...DEFAULT_NOTIFICATION_SETTINGS };
+  let notificationListener: ((tag: string) => void) | undefined;
   let indexListener: ((e: SessionIndexEvent) => void) | undefined;
   let indexSeq = 0;
   const notifyIndex = () => {
@@ -1096,6 +1100,27 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       const absolute = mockAbsolutePath(path);
       const name = absolute.split(/[\\/]/).pop() ?? "image.png";
       return `C:\\Users\\demo\\Downloads\\${name}`;
+    },
+    notificationSettingsGet: async () => ({ ...notificationSettings }),
+    notificationSettingsSet: async (next) => {
+      notificationSettings = { ...next };
+      return { ...notificationSettings };
+    },
+    // 浏览器预览：用网页通知代替系统通知（用户允许后才显示；不出声，提示音由前端播放）
+    notificationShow: async ({ title, body, tag }) => {
+      const N = (globalThis as { Notification?: typeof Notification }).Notification;
+      if (!N) return;
+      if (N.permission === "default") await N.requestPermission().catch(() => "denied");
+      if (N.permission !== "granted") return;
+      const n = new N(title, { body, tag, silent: true });
+      n.onclick = () => {
+        window.focus();
+        notificationListener?.(tag);
+        n.close();
+      };
+    },
+    notificationWatch: async (onActivate) => {
+      notificationListener = onActivate;
     },
     webSettingsGet: async () => ({ ...webSettings }),
     webSettingsSet: async (enabled) => {

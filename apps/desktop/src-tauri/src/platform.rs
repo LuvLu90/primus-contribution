@@ -11,6 +11,7 @@ use crate::paths::RepairChoice;
 
 pub(crate) mod proxy;
 pub(crate) mod speech;
+pub(crate) mod toast;
 pub(crate) mod webview_permissions;
 
 /// 安装包下载页：修复引导中“重新安装到其他目录”打开它。

@@ -36,6 +36,29 @@ export function createTauriPlatform(): Platform {
     imageSave: (path) => call("imageSave", { path }),
     webSettingsGet: () => call("webSettingsGet"),
     webSettingsSet: (enabled) => call("webSettingsSet", { enabled }),
+    notificationSettingsGet: () => call("notificationSettingsGet"),
+    notificationSettingsSet: (settings) =>
+      call("notificationSettingsSet", {
+        settings: {
+          turnComplete: settings.turnComplete,
+          needsInput: settings.needsInput,
+          sound: settings.sound,
+        },
+      }),
+    notificationShow: (request) =>
+      call("notificationShow", {
+        request: {
+          title: request.title,
+          body: request.body,
+          tag: request.tag,
+          attention: request.attention,
+        },
+      }),
+    notificationWatch: (onActivate) => {
+      const channel = new Channel<string>();
+      channel.onmessage = onActivate;
+      return call("notificationWatch", { onEvent: channel });
+    },
 
     sessionDefaultWorkspace: () => call("sessionDefaultWorkspace"),
     sessionList: (workspace, cursor) => call("sessionList", { workspace, cursor }),
