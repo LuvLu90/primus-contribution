@@ -38,7 +38,7 @@ import {
   runSearch,
   type SearchParams,
 } from "./search.ts";
-import { pageFetch } from "./transport.ts";
+import { pageFetch, searchFetch } from "./transport.ts";
 
 /** 取内置搜索密钥的保险库 ID（薄壳 vault.rs 的 BUILTIN_SEARCH_SECRET） */
 export const SEARCH_SECRET_ID = "builtin:search";
@@ -138,6 +138,7 @@ export const FETCH_PARAMETERS = {
 
 export interface WebDeps {
   env: Record<string, string | undefined>;
+  /** web_search 用的请求（默认 `searchFetch`：TLS 1.2，见 transport.ts） */
   fetch: typeof fetch;
   /** web_fetch 读网页用的请求（缺省同 `fetch`）：默认直连并在连接时检查地址，见 transport.ts */
   pageFetch?: typeof fetch;
@@ -151,7 +152,8 @@ export interface WebDeps {
 
 const defaultDeps = (): WebDeps => ({
   env: process.env,
-  fetch: (...args) => fetch(...args),
+  // 搜索请求限制为 TLS 1.2：Node 24 默认握手在部分网络下连不上 LangSearch（见 transport.ts searchFetch）
+  fetch: searchFetch(),
   pageFetch: pageFetch(),
   lookup: async (host) => (await dnsLookup(host, { all: true })).map((a) => a.address),
   run: (exe, args) =>

@@ -6,10 +6,10 @@
 
 import { lookup as dnsLookup, type LookupAddress } from "node:dns";
 import * as http from "node:http";
-import * as https from "node:https";
+import https from "node:https";
 import { isIP, type LookupFunction, type Socket } from "node:net";
 import { pipeline, Readable } from "node:stream";
-import * as tls from "node:tls";
+import tls from "node:tls";
 import * as zlib from "node:zlib";
 import { isPrivateAddress, PRIVATE_ADDRESS_MESSAGE, WebError } from "./net.ts";
 
@@ -109,6 +109,8 @@ function tunnel(
   blocked: (ip: string) => boolean,
   signal: AbortSignal | undefined,
   lookupImpl: Lookup,
+  tlsOptions: TlsOptions,
+  resolveViaProxy = false,
 ): (opts: unknown, done: (err: Error | null, socket?: Socket) => void) => undefined {
   return (_opts, done) => {
     const asError = (e: unknown): Error => (e instanceof Error ? e : new Error(String(e)));
@@ -130,10 +132,14 @@ function tunnel(
     signal?.addEventListener("abort", onAbort, { once: true });
     const secure = target.protocol === "https:";
     const port = target.port || (secure ? "443" : "80");
-    resolveChecked(target.hostname, blocked, lookupImpl)
-      .then((ip) => {
+    // 网页读取在本地解析并拦截内网地址；内置搜索服务走代理时交由代理解析域名（与 Core 一致）
+    const connectTarget = resolveViaProxy
+      ? Promise.resolve(target.hostname.replace(/^\[|\]$/g, ""))
+      : resolveChecked(target.hostname, blocked, lookupImpl);
+    connectTarget
+      .then((connectHost) => {
         if (settled) return;
-        const authority = `${isIP(ip) === 6 ? `[${ip}]` : ip}:${port}`;
+        const authority = `${isIP(connectHost) === 6 ? `[${connectHost}]` : connectHost}:${port}`;
         const headers: Record<string, string> = { Host: authority };
         if (proxy.username || proxy.password) {
           let cred: string;
@@ -166,6 +172,7 @@ function tunnel(
           const host = target.hostname.replace(/^\[|\]$/g, "");
           try {
             const secured = tls.connect({
+              ...tlsOptions,
               socket,
               ...(isIP(host) ? {} : { servername: host }),
               host,
@@ -219,14 +226,19 @@ export function proxiedOptions(
   };
 }
 
+/** 建立 TLS 时附加的选项（如 `maxVersion`）；直连与代理隧道里都生效 */
+export type TlsOptions = Pick<tls.ConnectionOptions, "maxVersion" | "minVersion">;
+
 /**
- * 与 `fetch` 同形的请求（只用到 web_fetch 需要的部分：method、headers、signal，不跟随跳转）。
- * `blocked`、`env` 与 `lookupImpl` 供测试替换。
+ * 与 `fetch` 同形的请求（只用到 method、headers、字符串 body、signal，不跟随跳转）。
+ * `blocked`、`env`、`lookupImpl` 与 `tlsOptions` 供调用方与测试替换。
  */
 export function createDirectFetch(
   blocked: (ip: string) => boolean = isPrivateAddress,
   env: Env = process.env,
   lookupImpl: Lookup = dnsLookup,
+  tlsOptions: TlsOptions = {},
+  resolveViaProxy = false,
 ): typeof fetch {
   const lookup = guardedLookup(blocked, lookupImpl);
   return ((input: string | URL | Request, init: RequestInit = {}) => {
@@ -238,6 +250,10 @@ export function createDirectFetch(
       "Accept-Encoding": "gzip, deflate, br",
     };
     const signal = init.signal ?? undefined;
+    if (init.body != null && typeof init.body !== "string")
+      return Promise.reject(new TypeError("只支持字符串请求体"));
+    const body = init.body ?? undefined;
+    if (body !== undefined) headers["Content-Length"] = String(Buffer.byteLength(body));
     return new Promise<Response>((resolve, reject) => {
       if (signal?.aborted) {
         reject(signal.reason);
@@ -254,9 +270,9 @@ export function createDirectFetch(
         ? proxiedOptions(
             url,
             { method, headers, signal },
-            tunnel(url, proxy, blocked, signal, lookupImpl),
+            tunnel(url, proxy, blocked, signal, lookupImpl, tlsOptions, resolveViaProxy),
           )
-        : { method, headers, signal, lookup };
+        : { ...tlsOptions, method, headers, signal, lookup };
       const req = mod.request(url, options, (res) => {
         const status = res.statusCode ?? 0;
         const h = new Headers();
@@ -267,7 +283,7 @@ export function createDirectFetch(
         }
         // 204 / 205 / 304 与 HEAD 没有正文；给它们非空流会被 Response 构造器拒绝
         const noBody = status === 204 || status === 205 || status === 304 || method === "HEAD";
-        let body: ReadableStream | null = null;
+        let resBody: ReadableStream | null = null;
         if (noBody) res.resume();
         else {
           const stream = decoded(res);
@@ -275,10 +291,12 @@ export function createDirectFetch(
             h.delete("content-encoding");
             h.delete("content-length");
           }
-          body = Readable.toWeb(stream) as ReadableStream;
+          resBody = Readable.toWeb(stream) as ReadableStream;
         }
         try {
-          resolve(new Response(body, { status, statusText: res.statusMessage ?? "", headers: h }));
+          resolve(
+            new Response(resBody, { status, statusText: res.statusMessage ?? "", headers: h }),
+          );
         } catch (e) {
           res.destroy();
           reject(e);
@@ -291,7 +309,7 @@ export function createDirectFetch(
         reject(new WebError(`网页要求协议升级（HTTP ${res.statusCode ?? 101}），不支持读取`));
       });
       req.on("error", reject);
-      req.end();
+      req.end(body);
     });
   }) as typeof fetch;
 }
@@ -299,4 +317,15 @@ export function createDirectFetch(
 /** web_fetch 默认用的请求 */
 export function pageFetch(): typeof fetch {
   return createDirectFetch();
+}
+
+/**
+ * web_search 用的请求：不走 Core 的全局 fetch（undici），改用 node:https 并把 TLS 限制在 1.2。
+ * Node 24（OpenSSL 3.5）的 TLS 1.3 默认握手（含后量子密钥交换，ClientHello 明显变大）在部分网络链路上
+ * 连 api.langsearch.com 会被中断，表现为约 11 秒后连接重置/超时，搜索一直“无法连接搜索服务”；
+ * 同一请求以 TLS 1.2 握手立即返回 200。搜索地址是内置的固定服务，不做内网地址拦截（兼容代理软件的 fake-ip）；
+ * 代理设置与 Core 一致（HTTP(S)_PROXY / NO_PROXY）。
+ */
+export function searchFetch(env: Env = process.env, lookupImpl: Lookup = dnsLookup): typeof fetch {
+  return createDirectFetch(() => false, env, lookupImpl, { maxVersion: "TLSv1.2" }, true);
 }

@@ -284,9 +284,9 @@ export function LipProgress({
         className={cn(
           "pointer-events-none absolute bottom-full left-1/2 z-30 -translate-x-1/2 translate-y-1 pb-2 opacity-0 blur-[2px] transition-[opacity,translate,filter] duration-[160ms] motion-reduce:transition-none ease-[cubic-bezier(0.22,1,0.36,1)]",
           !dismissed &&
-            "group-hover/lp:pointer-events-auto group-hover/lp:translate-y-0 group-hover/lp:opacity-100 group-hover/lp:blur-0 group-hover/lp:duration-[220ms]",
+            "group-hover/lp:pointer-events-auto group-hover/lp:translate-y-0 group-hover/lp:opacity-100 group-hover/lp:blur-none group-hover/lp:duration-[220ms]",
           !dismissed &&
-            "group-focus-within/lp:pointer-events-auto group-focus-within/lp:translate-y-0 group-focus-within/lp:opacity-100 group-focus-within/lp:blur-0",
+            "group-focus-within/lp:pointer-events-auto group-focus-within/lp:translate-y-0 group-focus-within/lp:opacity-100 group-focus-within/lp:blur-none",
         )}
       >
         <div className="w-[320px] max-w-[calc(100vw-3rem)] rounded-2xl border border-track-strong bg-surface px-2.5 pt-3 pb-2.5 shadow-[0_12px_32px_-12px_rgb(0_0_0/0.3)]">

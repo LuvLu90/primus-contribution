@@ -57,6 +57,14 @@ export const CONTEXT_TYPE = "primus-plan-context";
 const MAX_PLAN_CHARS = 60_000;
 const MAX_STEPS = 12;
 
+export interface PlanSnapshot {
+  phase: PlanPhase;
+  id?: string;
+  status?: PlanStatus;
+  plan?: PlanDoc;
+  path?: string;
+}
+
 export interface PersistedPlan {
   v: 1;
   phase: PlanPhase;
@@ -66,6 +74,8 @@ export interface PersistedPlan {
   status?: PlanStatus;
   plan?: PlanDoc;
   path?: string;
+  /** 进入 awaiting 前的状态快照：取消审批或恢复会话时据此还原（旧记录无此字段时回退到 planning） */
+  beforeAwaiting?: PlanSnapshot;
   todos: TodoItem[];
   /** 本次计划期内已注入的提醒次数 */
   reminders: number;
@@ -418,8 +428,29 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
     for (const resolve of pending.values()) resolve({ kind: "cancel" });
     pending.clear();
     if (state.status === "awaiting") state.status = "cancelled";
+    delete state.beforeAwaiting;
     // 等待中的提问（规划或执行阶段）随计划模式一起作废：卡片收起，工具按未回答返回（这一轮结束）
     cancelAsks();
+  }
+
+  /** 审批取消或会话恢复中断的 awaiting 时，按提交前快照还原状态 */
+  function restoreBeforeAwaiting(snap: PlanSnapshot | undefined): void {
+    delete state.beforeAwaiting;
+    if (!snap) {
+      state.phase = "planning";
+      state.status = "cancelled";
+      return;
+    }
+    if (snap.phase === "executing") {
+      state.phase = "executing";
+      state.id = snap.id;
+      state.status = snap.status;
+      state.plan = snap.plan;
+      state.path = snap.path;
+      return;
+    }
+    state.phase = snap.phase === "off" ? "off" : "planning";
+    state.status = "cancelled";
   }
 
   /** 撤销所有等待中的 ask_user：提问卡片与逐题 select 两种界面都结束 */
@@ -485,11 +516,8 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
         ...saved,
         todos: normalizeTodoItems(saved.todos),
       };
-      // 恢复时审批已断开：降回计划中，下一次全文提醒
-      if (state.phase === "awaiting") {
-        state.phase = "planning";
-        state.status = "cancelled";
-      }
+      // 恢复时审批已断开：按提交前快照还原（旧记录无快照时降回计划中，下一次全文提醒）
+      if (state.phase === "awaiting") restoreBeforeAwaiting(state.beforeAwaiting);
       if (readOnlyPhase(state.phase)) state.forceFull = true;
     }
     execFull = state.phase === "executing";
@@ -528,9 +556,9 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
   ): Promise<ToolResult> {
     lastCtx = ctx;
     const t = TEXT.planSubmit;
-    if (state.phase !== "planning") {
-      const details: PlanSubmitDetails = { id: "", status: "not_planning" };
-      return result(t.notPlanning, details, { isError: true });
+    if (state.phase === "awaiting") {
+      const details: PlanSubmitDetails = { id: state.id ?? "", status: "invalid" };
+      return result(t.alreadyAwaiting, details, { isError: true });
     }
     const plan = normalizePlan(params);
     if (typeof plan === "string") {
@@ -541,6 +569,20 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
       const details: PlanSubmitDetails = { id: "", status: "no_ui", plan };
       return result(t.noUi, details, { isError: true });
     }
+    const before: PlanSnapshot = {
+      phase: state.phase,
+      ...(state.id !== undefined ? { id: state.id } : {}),
+      ...(state.status !== undefined ? { status: state.status } : {}),
+      ...(state.plan !== undefined ? { plan: state.plan } : {}),
+      ...(state.path !== undefined ? { path: state.path } : {}),
+    };
+    if (before.phase !== "planning") {
+      state.reminders = 0;
+      state.turnsSince = 0;
+      state.forceFull = false;
+      state.exitNotice = false;
+    }
+    state.beforeAwaiting = before;
     state.count++;
     const id = `p${state.count}`;
     state.id = id;
@@ -560,10 +602,11 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
     // 等待期间会话已重新开始：状态属于新会话，不能改也不能持久化
     if (myEpoch !== epoch) {
       const details: PlanSubmitDetails = { id, status: "cancelled", plan };
-      return result(t.cancelled, details, { isError: true, terminate: true });
+      return result(t.cancelled(false), details, { isError: true, terminate: true });
     }
 
     if (decision.kind === "approve") {
+      delete state.beforeAwaiting;
       const edited = decision.plan !== undefined && !sameJson(decision.plan, plan);
       const final = edited && decision.plan ? decision.plan : plan;
       if (edited) state.path = writePlanFile(ctx, id, final) ?? state.path;
@@ -585,6 +628,7 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
       return result(t.approved(edited, planToMarkdown(final)), details);
     }
     if (decision.kind === "revise") {
+      delete state.beforeAwaiting;
       // 用户关闭计划模式与打回同时发生时，以关闭为准
       if (state.phase === "awaiting") state.phase = "planning";
       state.status = "revising";
@@ -598,11 +642,17 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
       };
       return result(t.revise(decision.feedback), details, { isError: true });
     }
-    if (state.phase === "awaiting") state.phase = "planning";
-    state.status = "cancelled";
+    if (state.phase === "awaiting") restoreBeforeAwaiting(state.beforeAwaiting);
+    else {
+      delete state.beforeAwaiting;
+      state.status = "cancelled";
+    }
     commit(ctx);
     const details: PlanSubmitDetails = { id, status: "cancelled", plan };
-    return result(t.cancelled, details, { isError: true, terminate: true });
+    return result(t.cancelled(state.phase === "planning"), details, {
+      isError: true,
+      terminate: true,
+    });
   }
 
   async function todo(params: unknown, ctx: PlanContext): Promise<ToolResult> {

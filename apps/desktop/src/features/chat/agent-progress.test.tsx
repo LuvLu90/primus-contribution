@@ -30,6 +30,10 @@ describe("唇条里的计划进度", () => {
     const popover = container.querySelector("[data-lip-popover]") as HTMLElement;
     expect(popover.className).toContain("group-hover/lp:opacity-100");
     expect(popover.className).toContain("group-focus-within/lp:opacity-100");
+    // 显示时去掉模糊：Tailwind v4 没有 blur-0，要用 blur-none，否则列表一直是 blur(2px)
+    expect(popover.className).toContain("group-hover/lp:blur-none");
+    expect(popover.className).toContain("group-focus-within/lp:blur-none");
+    expect(popover.className).not.toMatch(/(^|\s|:)blur-0(\s|$)/);
     const steps = screen.getAllByRole("listitem");
     expect(steps).toHaveLength(5);
     expect(steps[2]?.getAttribute("aria-current")).toBe("step");
