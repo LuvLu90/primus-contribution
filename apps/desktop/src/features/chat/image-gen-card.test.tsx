@@ -2,11 +2,13 @@ import type { ImageGenDetails } from "@primus/protocol";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  cloudPoint,
   DISPLAY_EDGE,
+  elapsedSeconds,
+  flyProgress,
   frameBox,
   ImageGenCard,
-  remainingSeconds,
-  rippleAt,
+  particleGrid,
   TILE_EDGE,
 } from "./image-gen-card";
 
@@ -44,12 +46,13 @@ async function shownImage() {
 }
 
 describe("图片生成卡片", () => {
-  it("生成中：按张数显示展开的 360×450 生成框、波纹画布、流光文字与翻页倒计时", () => {
+  it("生成中：按张数显示展开的生成框、粒子画布，框下是流光文字与计时", () => {
     const { container } = render(
       <ImageGenCard args={{ prompt: "猫", n: 2, intent: "fast" }} details={undefined} running />,
     );
     expect(screen.getAllByText("正在生成图片")).toHaveLength(2);
-    expect(screen.getAllByText("剩余 30 秒")).toHaveLength(2);
+    expect(screen.getAllByText("已用 0 秒")).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "复制图片" })).toBeNull();
     expect(container.querySelectorAll(".imggen-unfold")).toHaveLength(2);
     expect(container.querySelectorAll("canvas")).toHaveLength(2);
     expect(container.querySelectorAll("fieldset")).toHaveLength(2);
@@ -79,15 +82,16 @@ describe("图片生成卡片", () => {
     expect(screen.queryByRole("button", { name: "下一张" })).toBeNull();
   });
 
-  it("倒计时每秒翻页", () => {
+  it("计时每秒加一", () => {
     vi.useFakeTimers();
     try {
       render(<ImageGenCard args={{ prompt: "猫", intent: "fast" }} details={undefined} running />);
-      expect(screen.getByText("剩余 30 秒")).toBeTruthy();
+      expect(screen.getByText("0s")).toBeTruthy();
       act(() => {
         vi.advanceTimersByTime(3000);
       });
-      expect(screen.getByText("剩余 27 秒")).toBeTruthy();
+      expect(screen.getByText("3s")).toBeTruthy();
+      expect(screen.getByText("已用 3 秒")).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }
@@ -98,7 +102,7 @@ describe("图片生成卡片", () => {
     expect(screen.getByText("正在修改图片")).toBeTruthy();
   });
 
-  it("生成中完成：读缩略图后以径向遮罩揭示，出现“已生成图片”与操作行", async () => {
+  it("生成中完成：读缩略图后（无画布时跳过粒子成像）直接淡入，出现“已生成图片”与操作行", async () => {
     const { rerender, container } = render(
       <ImageGenCard args={{ prompt: "一只橘猫" }} details={undefined} running />,
     );
@@ -109,6 +113,8 @@ describe("图片生成卡片", () => {
     expect(screen.getByText("已生成图片")).toBeTruthy();
     const reveal = container.querySelector(".imggen-reveal");
     await waitFor(() => expect(reveal?.hasAttribute("data-shown")).toBe(true));
+    // 框下的“正在生成图片”换成了操作行
+    expect(screen.queryByText("正在生成图片")).toBeNull();
     expect(screen.getByRole("button", { name: "复制图片" })).toBeTruthy();
   });
 
@@ -179,26 +185,42 @@ describe("图片生成卡片", () => {
     expect(screen.getByText("已停止生成图片")).toBeTruthy();
   });
 
-  it("倒计时按意图估计，改图多 15 秒，到 0 后不再减少", () => {
-    expect(remainingSeconds("quality", false, 0)).toBe(60);
-    expect(remainingSeconds("default", true, 10_000)).toBe(50);
-    expect(remainingSeconds("fast", false, 99_000)).toBe(0);
-    expect(remainingSeconds("weird", false, 0)).toBe(45);
+  it("计时取整秒，不为负", () => {
+    expect(elapsedSeconds(0)).toBe(0);
+    expect(elapsedSeconds(12_900)).toBe(12);
+    expect(elapsedSeconds(-5)).toBe(0);
   });
 
-  it("框按图片比例缩进 360×450 内、不裁切，缺宽高时退回默认框", () => {
+  it("框按图片比例缩进 360×450 内、不裁切，缺宽高时按方图", () => {
     expect(frameBox(1024, 1024)).toEqual({ w: 360, h: 360 });
     expect(frameBox(1536, 1024)).toEqual({ w: 360, h: 240 });
     expect(frameBox(1024, 1536)).toEqual({ w: 300, h: 450 });
-    expect(frameBox()).toEqual({ w: 360, h: 450 });
+    expect(frameBox()).toEqual({ w: 360, h: 360 });
   });
 
-  it("波纹：亮环随时间从中心向外扩散，强度不超过 1", () => {
-    // 0.5 秒时第一圈在半径约 0.19 处，0.9 秒时已扩到约 0.35
-    expect(rippleAt(0.5, 0.597, 0.5, 1)).toBeGreaterThan(0.8);
-    expect(rippleAt(0.5, 0.55, 0.9, 1)).toBeLessThan(0.2);
-    expect(rippleAt(0.5, 0.675, 0.9, 1)).toBeGreaterThan(0.8);
-    for (let i = 0; i < 50; i += 1)
-      expect(rippleAt(Math.random(), Math.random(), i / 10, 0.8)).toBeLessThanOrEqual(1);
+  it("粒子：按 6px 格距铺满框，一格一颗", () => {
+    expect(particleGrid(360, 450)).toEqual({ cols: 60, rows: 75 });
+    expect(particleGrid(360, 240)).toEqual({ cols: 60, rows: 40 });
+    expect(particleGrid(2, 2)).toEqual({ cols: 1, rows: 1 });
+  });
+
+  it("粒子云：在云中位置附近小幅晃动", () => {
+    for (let i = 0; i < 200; i += 1) {
+      const p = { cx: 180, cy: 200, ph: Math.random() * 6.3 };
+      const { x, y } = cloudPoint(p, i / 7);
+      expect(Math.abs(x - 180)).toBeLessThanOrEqual(16);
+      expect(Math.abs(y - 200)).toBeLessThanOrEqual(11);
+    }
+  });
+
+  it("成像进度：错峰之前为 0，之后单调增加到 1", () => {
+    expect(flyProgress(0.2, 0.3)).toBe(0);
+    let last = 0;
+    for (let t = 0.3; t <= 1.4; t += 0.05) {
+      const k = flyProgress(t, 0.3);
+      expect(k).toBeGreaterThanOrEqual(last);
+      last = k;
+    }
+    expect(flyProgress(5, 0.3)).toBe(1);
   });
 });

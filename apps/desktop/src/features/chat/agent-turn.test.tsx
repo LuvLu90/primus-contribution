@@ -141,6 +141,19 @@ describe("生成图片（ADR 0018）", () => {
     expect(screen.getByRole("region", { name: strings.chat.imagegen.card })).toBeTruthy();
   });
 
+  it("generate_image 参数还在流式输出时先不出生成框，避免框先按默认比例展开再跳变", () => {
+    renderTurn(
+      [
+        assistant([
+          { type: "toolCall", id: "g1", name: "generate_image", arguments: { prompt: "一只橘猫" } },
+        ]),
+      ],
+      true,
+      true,
+    );
+    expect(screen.queryByRole("region", { name: strings.chat.imagegen.card })).toBeNull();
+  });
+
   it("失败的结果显示原因", () => {
     renderTurn(
       [

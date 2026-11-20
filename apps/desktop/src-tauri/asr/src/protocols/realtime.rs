@@ -14,6 +14,7 @@ use tokio_tungstenite::tungstenite::Message;
 use super::{Emit, FINISH_TIMEOUT, Out};
 use crate::audio::Feed;
 use crate::failure::{Failure, classify};
+use crate::hotwords;
 use crate::models::Model;
 use crate::net::{self, Net};
 
@@ -29,6 +30,7 @@ pub fn session_update(model: &Model) -> String {
             "modalities": ["text"],
             "input_audio_format": "pcm",
             "sample_rate": model.sample_rate,
+            "input_audio_transcription": {"corpus": {"text": hotwords::context()}},
             "turn_detection": {"type": "server_vad", "threshold": 0.2, "silence_duration_ms": 800}
         }
     })
@@ -189,6 +191,10 @@ mod tests {
         let v: Value = serde_json::from_str(&session_update(m)).unwrap();
         assert_eq!(v["session"]["input_audio_format"], "pcm");
         assert_eq!(v["session"]["sample_rate"], 16000);
+        let corpus = v["session"]["input_audio_transcription"]["corpus"]["text"]
+            .as_str()
+            .unwrap();
+        assert!(corpus.contains("乾元") && corpus.contains("Primus"));
         let a: Value = serde_json::from_str(&append(&[1, 2, 3])).unwrap();
         assert_eq!(a["audio"], "AQID");
         // append 与 finish 都带唯一的 event_id

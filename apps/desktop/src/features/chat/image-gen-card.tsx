@@ -1,10 +1,10 @@
 "use client";
 
-// 对话内生成的图片（ADR 0018）。生成框复刻 BoardUI「AI 图像生成」模板（只用现有依赖，自己实现）：
+// 对话内生成的图片（ADR 0018）。生成框是“粒子成像”（只用现有依赖，Canvas 2D 自己实现）：
 // - 最大 360×450 的圆角卡片从 0 高度展开进对话（高度 0.55s，淡入去模糊 0.35s）；
-// - 框内是画布点阵波纹（一圈圈从中心扩散的亮环，9px 点距，边缘淡出），左下“正在生成图片”流光文字，右下翻页数字倒计时；
-// - 完成后画布淡出，图片以羽化的径向遮罩从中心揭示（--reveal 0% → 132%，1.55s，同时去模糊）；上方出现“已生成图片”；
-// - 框下是操作行（复制、保存、查看大图），操作结果在框内底部以提示条显示。
+// - 框内约 4500 颗浅色方点（6px 格距）先铺在深色框底，随后升成一团在原地轻晃的粒子云（与演示页 Wensity 粒子成像同一算法）；框下一行是“正在生成图片”流光文字与正向计时（如 12s）；
+// - 出图后每颗粒子取对应格子的颜色，边落边长大铺满格子（上面的行先落），约 2.3 秒后原图淡入盖住；上方出现“已生成图片”；
+// - 出图后框下那一行换成操作行（复制、保存、查看大图），操作结果在框内底部以提示条显示。
 // 点开看大图（按需读原图），失败或停止时只显示一行说明（原因由模型在回复里解释）。
 // 图片在数据目录里（约束 C2），经 attachment_image 在内存里读成 data URL 显示；保存走薄壳的 image_save（系统“另存为”）。
 
@@ -28,9 +28,9 @@ export const DISPLAY_EDGE = 2048;
 export const FRAME_MAX_W = 360;
 export const FRAME_MAX_H = 450;
 
-/** 把 w×h 按比例缩进 FRAME_MAX_W×FRAME_MAX_H 内（不放大超过该框）；宽高缺失时退回默认框 */
+/** 把 w×h 按比例缩进 FRAME_MAX_W×FRAME_MAX_H 内（不放大超过该框）；宽高缺失（含 auto）时按方图，与工具默认尺寸 1024x1024 一致 */
 export function frameBox(w?: number, h?: number): { w: number; h: number } {
-  if (!w || !h || w <= 0 || h <= 0) return { w: FRAME_MAX_W, h: FRAME_MAX_H };
+  if (!w || !h || w <= 0 || h <= 0) return frameBox(1024, 1024);
   const scale = Math.min(FRAME_MAX_W / w, FRAME_MAX_H / h);
   return { w: Math.round(w * scale), h: Math.round(h * scale) };
 }
@@ -44,13 +44,9 @@ function parseSize(size: string | undefined): { w: number; h: number } | undefin
 /** 框内提示的持续时间 */
 const NOTICE_MS = 2200;
 
-/** 各意图的预计用时（秒），改图另加 15 秒；只用于倒计时显示 */
-const ESTIMATE_S: Record<string, number> = { fast: 30, default: 45, quality: 60 };
-
-/** 预计还要多少秒（不小于 0） */
-export function remainingSeconds(intent: unknown, editing: boolean, elapsedMs: number): number {
-  const total = (ESTIMATE_S[String(intent)] ?? ESTIMATE_S.default ?? 45) + (editing ? 15 : 0);
-  return Math.max(0, Math.ceil(total - elapsedMs / 1000));
+/** 生成已用的整秒数（不小于 0） */
+export function elapsedSeconds(elapsedMs: number): number {
+  return Math.max(0, Math.floor(elapsedMs / 1000));
 }
 
 /** 把图片转成 PNG 写入剪贴板（剪贴板只接受 image/png） */
@@ -69,73 +65,191 @@ export async function copyImage(src: string): Promise<void> {
   await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
 }
 
-// ---- 画布波纹 ----
+// ---- 粒子成像 ----
+// 与演示页里的“Wensity · 粒子成像”同一套算法：
+// 生成中：深色底，浅色方点先铺在框底一条细带里，0.6–1.9 秒内错峰升起，汇成框中偏上的一团高斯粒子云，
+// 每颗在自己的位置附近轻轻晃动（幅度 16×11px）；
+// 出图时：每颗粒子沿直线落到自己的格子，边落边变大到铺满格子（0.84 格），颜色从浅灰过渡到该格像素色，
+// 上面的行先落（错峰 0–1 秒，每颗再加 0–0.5 秒随机），约 2.3 秒后原图在 1 秒内淡入盖住。
 
-/** 亮环宽度（高斯方差，越大环越宽；模板是 0.0112，加宽到一圈约 3–4 个点，更醒目） */
-const RING_WIDTH = 0.02;
+/** 粒子格距（CSS 像素）：360×450 的框约 60×75 = 4500 颗 */
+export const PARTICLE_GAP = 6;
+/** 画布底色与粒子静止色：取 globals.css 的设计令牌，读不到（如测试环境）时用同值兜底 */
+const FLOOR_FALLBACK = "#0b0b0f";
+const INK_FALLBACK: [number, number, number] = [228, 230, 240];
 
-const smoothstep = (a: number, b: number, x: number) => {
-  const k = Math.max(0, Math.min(1, (x - a) / (b - a)));
+function readToken(el: Element, name: string): string {
+  return getComputedStyle(el).getPropertyValue(name).trim();
+}
+
+function hexRgb(hex: string): [number, number, number] | null {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m?.[1]) return null;
+  const n = Number.parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+/** 升起：开始时刻、随机错峰上限、单颗用时（秒） */
+const RISE_AT_S = 0.6;
+const RISE_JITTER_S = 0.7;
+const RISE_S = 1.2;
+/** 框底细带高度（CSS 像素） */
+const FLOOR_BAND_PX = 7;
+/** 粒子云：中心（占框高比例）、高斯标准差（占框宽、框高比例）、晃动幅度（CSS 像素） */
+const CLOUD_Y = 0.45;
+const CLOUD_SX = 0.2;
+const CLOUD_SY = 0.15;
+const WOBBLE_X = 16;
+const WOBBLE_Y = 11;
+/** 落位：单颗用时、按行错峰、随机错峰（秒）；原图淡入的开始与用时（秒，相对出图） */
+const FLY_S = 1.2;
+const FLY_ROW_S = 0.5;
+const FLY_JITTER_S = 0.5;
+const REVEAL_AT_S = 2.3;
+const REVEAL_S = 1;
+/** 落位后方点占格子的比例 */
+const DOT_FILL = 0.84;
+
+/** 框内能放下的粒子行列数 */
+export function particleGrid(
+  w: number,
+  h: number,
+  gap = PARTICLE_GAP,
+): { cols: number; rows: number } {
+  return { cols: Math.max(1, Math.floor(w / gap)), rows: Math.max(1, Math.floor(h / gap)) };
+}
+
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+/** smoothstep */
+export const smooth = (x: number) => {
+  const k = clamp01(x);
   return k * k * (3 - 2 * k);
 };
 
-/** 波纹强度：每 1.3 秒从中心发出一圈，约 2.6 秒扩到边缘，出生与消失都平滑过渡 */
-export function rippleAt(x: number, y: number, time: number, aspect: number): number {
-  const dx = (x - 0.5) * aspect;
-  const dy = y - 0.5;
-  const dist = Math.sqrt(dx * dx + dy * dy) / 0.5;
-  const life = 1.8 / 0.7;
-  const phase = time % 1.3;
-  const rings = Math.ceil(life / 1.3) + 1;
-  let v = 0;
-  for (let i = 0; i < rings; i += 1) {
-    const r = (phase + 1.3 * i) / life;
-    if (r > 1) continue;
-    const d = dist - r;
-    v += Math.exp(-(d * d) / RING_WIDTH) * smoothstep(0, 0.1, r) * (1 - smoothstep(0.62, 1, r));
-  }
-  return Math.min(1, v);
+/** 单颗粒子的落位进度（0–1）：错峰 delay 之后在 FLY_S 内落完 */
+export function flyProgress(sinceAssemble: number, delay: number): number {
+  return smooth((sinceAssemble - delay) / FLY_S);
 }
 
-/** 点阵间距（CSS 像素） */
-const DOT_GAP = 10;
-
-/** 减少动态效果时画的静止亮环 */
-function stillRing(x: number, y: number, aspect: number): number {
-  const d = Math.sqrt(((x - 0.5) * aspect) ** 2 + (y - 0.5) ** 2) / 0.5 - 0.45;
-  return Math.exp(-(d * d) / RING_WIDTH);
+/** 标准正态样本（Box–Muller），截到 ±3 */
+function gauss(): number {
+  const v = Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(Math.random() * Math.PI * 2);
+  return Math.max(-3, Math.min(3, v));
 }
 
-/** 点阵波纹画布：颜色取主题的前景色与次要色（每 0.5 秒重读一次，跟随深浅色切换） */
-function useRipple(stopped: boolean) {
+type Particle = {
+  /** 框底位置 */
+  fx: number;
+  fy: number;
+  /** 云里的位置与晃动相位 */
+  cx: number;
+  cy: number;
+  ph: number;
+  /** 升起错峰、落位错峰 */
+  d1: number;
+  d2: number;
+  /** 格子中心与像素色 */
+  tx: number;
+  ty: number;
+  rgb: [number, number, number];
+  /** 出图那一刻的位置 */
+  sx: number;
+  sy: number;
+};
+
+/** 粒子在云里的位置（t 秒时）：在 (cx, cy) 附近晃动，幅度 WOBBLE_X × WOBBLE_Y */
+export function cloudPoint(
+  p: Pick<Particle, "cx" | "cy" | "ph">,
+  t: number,
+): { x: number; y: number } {
+  return {
+    x: p.cx + WOBBLE_X * Math.sin(t * 0.9 + p.ph),
+    y: p.cy + WOBBLE_Y * Math.cos(t * 1.1 + p.ph * 1.3),
+  };
+}
+
+/** 图片按 object-cover 放进 w×h 时的源矩形 */
+function coverRect(iw: number, ih: number, w: number, h: number) {
+  const scale = Math.max(w / iw, h / ih);
+  const sw = w / scale;
+  const sh = h / scale;
+  return { sx: (iw - sw) / 2, sy: (ih - sh) / 2, sw, sh };
+}
+
+/**
+ * 粒子画布。返回画布 ref 与 assemble(img, onDone)：
+ * 把已载入的图片拼出来，拼好后调 onDone；画布不可用、减少动态效果或粒子未就绪时返回 false（调用方直接显示图片）。
+ */
+function useParticles(running: boolean) {
   const ref = useRef<HTMLCanvasElement>(null);
+  const assembleRef = useRef<(img: HTMLImageElement, onDone: () => void) => boolean>(() => false);
   useEffect(() => {
     const canvas = ref.current;
     const box = canvas?.parentElement;
     const g = canvas?.getContext("2d");
-    if (!canvas || !box || !g || stopped) return;
+    if (!canvas || !box || !g || !running) return;
     const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    const FLOOR_COLOR = readToken(canvas, "--color-imggen-canvas") || FLOOR_FALLBACK;
+    const INK = hexRgb(readToken(canvas, "--color-imggen-ink")) ?? INK_FALLBACK;
     const start = performance.now();
     let rect = box.getBoundingClientRect();
     let dirty = true;
     let frame = 0;
+    let parts: Particle[] = [];
+    let gridKey = "";
+    let cell = PARTICLE_GAP;
+    /** 出图的时刻（秒，相对 start）；未出图为 -1 */
+    let assembleAt = -1;
+    let image: HTMLImageElement | null = null;
+    let onDone: (() => void) | null = null;
+
     const ro = new ResizeObserver(() => {
       rect = box.getBoundingClientRect();
       dirty = true;
     });
     ro.observe(box);
-    // 底点用次要文字色；亮环用彩虹色，深色外观下提亮。每 0.5 秒重读一次，跟随深浅色切换
-    const readTheme = () => ({
-      neutral: getComputedStyle(box).getPropertyValue("--color-muted").trim() || "#6e6e73",
-      dark: document.documentElement.classList.contains("dark"),
-    });
-    let theme = readTheme();
-    let themeAt = start;
-    let dpr = 1;
+
+    /** 按框大小铺粒子（出图后不再重铺） */
+    const build = () => {
+      const { cols, rows } = particleGrid(rect.width, rect.height);
+      const key = `${cols}x${rows}`;
+      if (key === gridKey || assembleAt >= 0) return;
+      gridKey = key;
+      cell = Math.min(rect.width / cols, rect.height / rows);
+      const ox = (rect.width - cols * cell) / 2;
+      const oy = (rect.height - rows * cell) / 2;
+      parts = [];
+      for (let row = 0; row < rows; row += 1) {
+        for (let col = 0; col < cols; col += 1) {
+          parts.push({
+            fx: Math.random() * rect.width,
+            fy: rect.height - 3 - Math.random() * FLOOR_BAND_PX,
+            cx: rect.width / 2 + gauss() * rect.width * CLOUD_SX,
+            cy: rect.height * CLOUD_Y + gauss() * rect.height * CLOUD_SY,
+            ph: Math.random() * Math.PI * 2,
+            d1: Math.random() * RISE_JITTER_S,
+            d2: Math.random() * FLY_JITTER_S + (row / rows) * FLY_ROW_S * 2,
+            tx: ox + (col + 0.5) * cell,
+            ty: oy + (row + 0.5) * cell,
+            rgb: INK,
+            sx: 0,
+            sy: 0,
+          });
+        }
+      }
+    };
+
+    /** 生成中粒子的位置：在框底轻轻抖，升起后在云里晃动 */
+    const livePoint = (p: Particle, t: number) => {
+      const rp = smooth((t - RISE_AT_S - p.d1) / RISE_S);
+      const c = cloudPoint(p, t);
+      const jig = (1 - rp) * Math.sin(t * 7 + p.ph) * 0.8;
+      return { x: p.fx + (c.x - p.fx) * rp, y: p.fy + jig + (c.y - p.fy) * rp };
+    };
+
     const draw = (now: number) => {
       if (dirty) {
         dirty = false;
-        dpr = Math.min(window.devicePixelRatio || 1, 3);
+        const dpr = Math.min(window.devicePixelRatio || 1, 3);
         const w = Math.max(1, Math.round(rect.width * dpr));
         const h = Math.max(1, Math.round(rect.height * dpr));
         if (canvas.width !== w || canvas.height !== h) {
@@ -143,121 +257,105 @@ function useRipple(stopped: boolean) {
           canvas.height = h;
         }
         g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        build();
       }
-      if (now - themeAt > 500) {
-        theme = readTheme();
-        themeAt = now;
-      }
-      const elapsed = (now - start) / 1000;
-      const light = theme.dark ? 66 : 52;
-      const cols = Math.ceil(rect.width / DOT_GAP) + 1;
-      const rows = Math.ceil(rect.height / DOT_GAP) + 1;
-      const ox = (rect.width - (cols - 1) * DOT_GAP) / 2;
-      const oy = (rect.height - (rows - 1) * DOT_GAP) / 2;
-      const aspect = rect.width / rect.height;
-      // 点心对齐到物理像素中心：Windows 125% / 150% 缩放下不再被抗锯齿糊成一团
-      const snap = (v: number) => (Math.round(v * dpr - 0.5) + 0.5) / dpr;
-      g.clearRect(0, 0, rect.width, rect.height);
-      for (let r = 0; r < rows; r += 1) {
-        const y = snap(oy + DOT_GAP * r);
-        const ny = y / rect.height;
-        for (let c = 0; c < cols; c += 1) {
-          const x = snap(ox + DOT_GAP * c);
-          const nx = x / rect.width;
-          const v = still ? stillRing(nx, ny, aspect) : rippleAt(nx, ny, elapsed, aspect);
-          const edge = Math.max(0, Math.min(1, 6 * nx, (1 - nx) * 6, 6 * ny, (1 - ny) * 6));
-          if (v > 0.12) {
-            // 色相随角度绕中心分布并缓慢旋转，外圈略偏移，形成流动的彩虹环
-            const angle = Math.atan2(ny - 0.5, (nx - 0.5) * aspect);
-            const hue = ((angle * 180) / Math.PI + elapsed * 60 + 360) % 360;
-            g.globalAlpha = edge * Math.min(1, 0.35 + 0.65 * v);
-            g.fillStyle = `hsl(${hue.toFixed(0)} 90% ${light}%)`;
-            g.beginPath();
-            g.arc(x, y, 1.1 + 1.1 * v, 0, Math.PI * 2);
-          } else {
-            g.globalAlpha = edge * 0.22;
-            g.fillStyle = theme.neutral;
-            g.beginPath();
-            g.arc(x, y, 1, 0, Math.PI * 2);
-          }
-          g.fill();
-        }
-      }
+      // 减少动态效果：画一帧已升成云的静止画面
+      const t = still ? RISE_AT_S + RISE_JITTER_S + RISE_S : (now - start) / 1000;
       g.globalAlpha = 1;
-      if (!still) frame = requestAnimationFrame(draw);
+      g.fillStyle = FLOOR_COLOR;
+      g.fillRect(0, 0, rect.width, rect.height);
+
+      if (assembleAt < 0) {
+        // 生成中：同色方点，一条路径一次填充
+        g.fillStyle = `rgb(${INK[0]} ${INK[1]} ${INK[2]})`;
+        g.beginPath();
+        for (const p of parts) {
+          const { x, y } = livePoint(p, t);
+          g.rect(x - 1, y - 1, 2, 2);
+        }
+        g.fill();
+        if (!still) frame = requestAnimationFrame(draw);
+        return;
+      }
+
+      const since = t - assembleAt;
+      for (const p of parts) {
+        const sp = flyProgress(since, p.d2);
+        const x = p.sx + (p.tx - p.sx) * sp;
+        const y = p.sy + (p.ty - p.sy) * sp;
+        const size = 2 + (cell * DOT_FILL - 2) * sp;
+        const [r, gg, b] = p.rgb;
+        g.fillStyle = `rgb(${Math.round(INK[0] + (r - INK[0]) * sp)} ${Math.round(INK[1] + (gg - INK[1]) * sp)} ${Math.round(INK[2] + (b - INK[2]) * sp)})`;
+        g.fillRect(x - size / 2, y - size / 2, size, size);
+      }
+      // 原图淡入盖住方点；完全盖住后交给真图
+      const f = smooth((since - REVEAL_AT_S) / REVEAL_S);
+      if (image && f > 0) {
+        const c = coverRect(
+          image.naturalWidth || rect.width,
+          image.naturalHeight || rect.height,
+          rect.width,
+          rect.height,
+        );
+        g.globalAlpha = f;
+        g.drawImage(image, c.sx, c.sy, c.sw, c.sh, 0, 0, rect.width, rect.height);
+        g.globalAlpha = 1;
+      }
+      if (since >= REVEAL_AT_S + REVEAL_S) {
+        const done = onDone;
+        onDone = null;
+        done?.();
+        return;
+      }
+      frame = requestAnimationFrame(draw);
     };
+
+    assembleRef.current = (img, done) => {
+      if (still || assembleAt >= 0 || !parts.length) return false;
+      const { cols, rows } = particleGrid(rect.width, rect.height);
+      if (cols * rows !== parts.length) return false;
+      // 把图片按框的比例（object-cover）缩到 cols×rows，每格一个像素即该格的平均色
+      const off = document.createElement("canvas");
+      off.width = cols;
+      off.height = rows;
+      const og = off.getContext("2d", { willReadFrequently: true });
+      if (!og) return false;
+      const c = coverRect(img.naturalWidth || cols, img.naturalHeight || rows, cols, rows);
+      let data: Uint8ClampedArray;
+      try {
+        og.imageSmoothingQuality = "high";
+        og.drawImage(img, c.sx, c.sy, c.sw, c.sh, 0, 0, cols, rows);
+        data = og.getImageData(0, 0, cols, rows).data;
+      } catch {
+        return false;
+      }
+      const t = (performance.now() - start) / 1000;
+      parts.forEach((p, i) => {
+        p.rgb = [data[i * 4] ?? 0, data[i * 4 + 1] ?? 0, data[i * 4 + 2] ?? 0];
+        const pos = livePoint(p, t);
+        p.sx = pos.x;
+        p.sy = pos.y;
+      });
+      image = img;
+      assembleAt = t;
+      onDone = done;
+      return true;
+    };
+
     frame = requestAnimationFrame(draw);
     return () => {
       cancelAnimationFrame(frame);
       ro.disconnect();
+      assembleRef.current = () => false;
     };
-  }, [stopped]);
-  return ref;
+  }, [running]);
+  return { ref, assemble: assembleRef };
 }
 
-// ---- 翻页数字倒计时 ----
+// ---- 生成计时 ----
 
-function DigitHalf({ digit, half }: { digit: string; half: "top" | "bottom" }) {
-  return (
-    <span className="block h-2 overflow-hidden bg-track">
-      <span
-        className={cn(
-          "block h-4 text-center leading-4 text-fg tabular-nums",
-          half === "bottom" && "-mt-2",
-        )}
-      >
-        {digit}
-      </span>
-    </span>
-  );
-}
-
-/** 一位翻页数字：数字变化时上半页落下、新数字的下半页翻起 */
-function FlipDigit({ digit }: { digit: string }) {
-  const [state, setState] = useState({ settled: digit, from: digit, key: 0 });
-  if (state.settled !== digit)
-    setState({ settled: digit, from: state.settled, key: state.key + 1 });
-  const changing = state.settled !== digit;
-  const from = changing ? state.settled : state.from;
-  const key = changing ? state.key + 1 : state.key;
-  return (
-    <span
-      aria-hidden="true"
-      className="relative block w-[11px] overflow-hidden rounded-[3px] bg-track [perspective:70px]"
-    >
-      <DigitHalf digit={digit} half="top" />
-      <DigitHalf digit={digit} half="bottom" />
-      {key > 0 && (
-        <span key={key} className="pointer-events-none absolute inset-0">
-          <span className="imggen-flap-fall absolute inset-x-0 top-0">
-            <DigitHalf digit={from} half="top" />
-          </span>
-          <span className="imggen-flap-rise absolute inset-x-0 bottom-0">
-            <DigitHalf digit={digit} half="bottom" />
-          </span>
-        </span>
-      )}
-    </span>
-  );
-}
-
-function Countdown({ seconds }: { seconds: number }) {
-  return (
-    <span className="flex shrink-0 items-center gap-px">
-      {String(seconds)
-        .split("")
-        .map((d, i) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: 按位置翻页，位置就是标识
-          <FlipDigit key={i} digit={d} />
-        ))}
-      <span aria-hidden="true">s</span>
-      <span className="sr-only">{t.remaining.replace("{s}", String(seconds))}</span>
-    </span>
-  );
-}
-
-/** 每秒刷新的倒计时（从卡片出现时算起） */
-function useCountdown(active: boolean, intent: unknown, editing: boolean): number {
+/** 每秒刷新的正向计时（从卡片出现时算起，停止后定格） */
+function useElapsed(active: boolean): number {
   const [start] = useState(() => Date.now());
   const [now, setNow] = useState(start);
   useEffect(() => {
@@ -265,7 +363,7 @@ function useCountdown(active: boolean, intent: unknown, editing: boolean): numbe
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [active]);
-  return remainingSeconds(intent, editing, now - start);
+  return elapsedSeconds(now - start);
 }
 
 // ---- 一张图 ----
@@ -318,9 +416,9 @@ function ImageFrame({
   /** 请求的尺寸（1024x1536 等），生成中据此预留与结果一致的框，避免出图时跳动 */
   size?: string;
   alt: string;
-  /** 生成中左下角的文字 */
+  /** 生成中框下的文字 */
   label: string;
-  /** 倒计时秒数；0 时不显示 */
+  /** 已用秒数（框下的计时） */
   seconds: number;
   /** 生成中出现的卡片：展开进入、揭示动画；历史消息里直接显示 */
   animateIn: boolean;
@@ -334,7 +432,9 @@ function ImageFrame({
   const [notice, setNotice] = useState<Notice>(null);
   const fullRef = useRef<Promise<string> | null>(null);
   const path = image?.path;
-  const canvasRef = useRipple(shown || missing);
+  // 粒子只在生成中出现的卡片里跑；历史消息直接显示图片
+  const particles = useParticles(animateIn && !shown && !missing);
+  const imgRef = useRef<HTMLImageElement>(null);
   // 框按图片自身比例缩放（不裁切、不超过默认大小）：有结果用结果宽高，生成中用请求尺寸预留
   const natural =
     image?.width && image?.height ? { w: image.width, h: image.height } : parseSize(size);
@@ -441,22 +541,12 @@ function ImageFrame({
           className="relative m-0 min-w-0 overflow-hidden rounded-2xl border border-track-strong bg-surface p-0 shadow-[0_1px_3px_0_rgb(0_0_0/0.08)]"
         >
           <canvas
-            ref={canvasRef}
+            ref={particles.ref}
             className={cn(
-              "absolute inset-0 size-full transition-opacity duration-300",
+              "absolute inset-0 size-full transition-opacity duration-500",
               shown ? "opacity-0" : "opacity-100",
             )}
           />
-          <div
-            aria-hidden={!generating || undefined}
-            className={cn(
-              "absolute inset-x-3 bottom-3 flex items-center justify-between gap-3 text-xs font-medium transition-opacity duration-300",
-              generating ? "opacity-100" : "opacity-0",
-            )}
-          >
-            <span className="imggen-shimmer inline-block truncate">{label}</span>
-            {generating && seconds > 0 && <Countdown seconds={seconds} />}
-          </div>
           {missing && (
             <span className="absolute inset-0 grid place-items-center text-xs text-muted">
               <span className="flex items-center gap-1.5">
@@ -481,7 +571,15 @@ function ImageFrame({
                 src={thumb}
                 alt={alt}
                 draggable={false}
-                onLoad={() => requestAnimationFrame(() => setShown(true))}
+                ref={imgRef}
+                onLoad={() =>
+                  requestAnimationFrame(() => {
+                    const img = imgRef.current;
+                    // 粒子拼好再换真图；拼不了（无画布、减少动态效果）就直接显示
+                    if (!img || !particles.assemble.current(img, () => setShown(true)))
+                      setShown(true);
+                  })
+                }
                 className="size-full object-cover"
               />
             </button>
@@ -489,9 +587,10 @@ function ImageFrame({
           {toast}
         </fieldset>
       </div>
-      {image && thumb && (
+      {/* 框下一行：生成中是“正在生成图片 12s”，图片出来后换成操作行（复制、保存、查看大图） */}
+      {image && thumb && (shown || !animateIn) ? (
         // 操作行只在鼠标移到图片（或键盘聚焦到按钮）时显示，位置常驻，不让下方内容跳动
-        <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-150 group-focus-within/frame:opacity-100 group-hover/frame:opacity-100">
+        <div className="flex h-7 items-center gap-1.5 opacity-0 transition-opacity duration-150 group-focus-within/frame:opacity-100 group-hover/frame:opacity-100">
           <ActionButton icon={done("copy") ? "check" : "copy"} label={t.copy} onClick={copy} />
           <ActionButton
             icon={busy ? "loader" : done("save") ? "check" : "download"}
@@ -501,6 +600,16 @@ function ImageFrame({
           />
           <ActionButton icon="maximize" label={t.open} onClick={openLightbox} />
         </div>
+      ) : (
+        (generating || (animateIn && !missing)) && (
+          <p className="flex h-7 items-center gap-1.5 text-xs font-medium">
+            <span className="imggen-shimmer inline-block truncate">{label}</span>
+            <span aria-hidden="true" className="shrink-0 text-muted tabular-nums">
+              {seconds}s
+            </span>
+            <span className="sr-only">{t.elapsed.replace("{s}", String(seconds))}</span>
+          </p>
+        )
       )}
       <ImageLightbox
         src={open ? (fullSrc ?? thumb) : null}
@@ -670,7 +779,7 @@ export function ImageGenCard({
   const editing = Array.isArray(args?.images) && args.images.length > 0;
   const generating = running && !details;
   const doneImages = details?.status === "done" ? details.images : [];
-  const seconds = useCountdown(generating, args?.intent, editing);
+  const seconds = useElapsed(generating);
   const size = details?.size ?? (typeof args?.size === "string" ? args.size : undefined);
 
   if (generating || doneImages.length > 0) {

@@ -10,6 +10,7 @@
 
 pub mod audio;
 pub mod failure;
+pub mod hotwords;
 pub mod models;
 pub mod net;
 pub mod protocols;
