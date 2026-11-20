@@ -18,7 +18,7 @@
   - `web_fetch`：参数 `url`（必填）、`find`（最多 200 字，超长直接报错，不截短）、`offset`、`max_chars`（1000–40000，默认 12000）、`version`（续读时带上上次结果给出的正文版本）。
   - 注解都是 `readOnlyHint: true` / `openWorldHint: true`。
 - **搜索服务**：内置 LangSearch Web Search API（`POST <地址>/web-search`，Bearer 密钥；按官方文档用 `contents.text` 取网页正文代替短片段，每条限 1200 字（`maxCharacters`），`summary` 照旧带上、返回时优先用），
-  不引入 SDK，用 Core 进程的全局 `fetch`（随 Core 的代理设置，ADR 0015）。单次超时 20 秒，响应体上限 4 MB。
+  不引入 SDK。不走 Core 进程的全局 `fetch`（undici），用 `node:https` 发请求并把 TLS 限制在 1.2（`searchFetch`，见 `transport.ts`）：Node 24 默认的 TLS 1.3 握手（含后量子密钥交换，ClientHello 明显变大）在部分网络链路上连 LangSearch 会被中断，约 11 秒后连接重置或超时，而 TLS 1.2 握手立即成功。代理设置与 Core 一致（`HTTP(S)_PROXY` / `NO_PROXY`，ADR 0015）；搜索地址是内置的固定服务，不做内网地址拦截（兼容代理软件的 fake-ip）。单次超时 20 秒，响应体上限 4 MB。
   给模型的结果是编号、标题、链接、日期、摘要（单条 1200 字、全部 14000 字以内），并提示“摘要不完整时用 web_fetch 打开最相关的链接”；
   不要求模型在回答里标注来源（用户在工作过程里看得到来源）。`details` 为 `WebSearchDetails`（只有标题、网址、域名、日期，不含摘要）。
 - **两把内置密钥**：轮流使用；一把遇到网络错误、超时、401 / 403 / 429 / 5xx（含 HTTP 200 但业务码不是 200，或成功响应缺少 `code` / `data`）时换另一把，用户无感；这些状态不读响应体，立即换密钥。
