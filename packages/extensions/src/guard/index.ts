@@ -8,6 +8,7 @@
 // 询问 / 自动编辑模式下，受保护路径（.env*、.git/、~/.ssh、<安装目录>\data）的写入拒绝，读取需要确认；
 // 两处例外（ADR 0016）：Core 已加载技能目录内的读取任何模式都放行（目录取自 before_agent_start）；
 // 用户级 MCP 配置 <agentDir>/mcp.json 的读写按工作区外的文件处理（完全访问放行，其他模式询问）。
+// 联网搜索与读取网页（web_search / web_fetch，ADR 0020）任何模式都放行，由设置里的“联网”开关控制。
 // 强制推送与下载后直接执行的命令在每次询问、自动编辑模式下必定询问，且不能“始终允许”。路径按 Core 的规则解析并跟随符号链接比较。
 // 没有界面（hasUI 为 false）时需要询问的调用一律拒绝；处理出错时 Core 按失败即拦截处理。
 // 当前模式经 setWidget("primus:mode") 告知前端。
@@ -18,7 +19,7 @@ import { lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from "n
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { IMAGEGEN_TOOL } from "@primus/protocol";
+import { IMAGEGEN_TOOL, WEB_TOOLS } from "@primus/protocol";
 import { type PlanGate, planGate } from "../plan/gate.ts";
 import { classifyCommand, shellWords, splitSegments } from "../plan/readonly.ts";
 
@@ -44,6 +45,11 @@ export const CHOICES = {
 const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 /** 修改文件的内置工具 */
 const EDIT_TOOLS = new Set(["write", "edit"]);
+/**
+ * 联网搜索与读取网页（primus-web，ADR 0020）：只读、只访问公网，任何模式（含计划模式）都放行；
+ * 是否允许联网由设置里的“联网”开关决定（关闭时工具不提供给模型）
+ */
+const WEB_TOOL_NAMES = new Set<string>(WEB_TOOLS);
 
 export function isMode(value: unknown): value is PermissionMode {
   return typeof value === "string" && (MODES as readonly string[]).includes(value);
@@ -360,6 +366,7 @@ export function decide(
   // 完全访问：所有操作直接放行，包括受保护路径的读写与始终询问的命令（计划模式另由 decidePlan 判断）
   if (mode === "full") return "allow";
   if (call.toolName === IMAGEGEN_TOOL) return decideImageGen(mode, call, cwd, ge);
+  if (WEB_TOOL_NAMES.has(call.toolName)) return "allow";
   const raw = targetPath(call);
   const abs = raw === undefined ? undefined : resolveToolPath(raw, cwd, ge.platform, ge.home);
   const isRead = READ_TOOLS.has(call.toolName);
@@ -449,6 +456,8 @@ export function decidePlan(
   if (READ_TOOLS.has(call.toolName)) return undefined;
   // 图片生成不改工作区：交给常规规则（参考图按读取判断）
   if (call.toolName === IMAGEGEN_TOOL) return undefined;
+  // 联网搜索与读取网页只读：交给常规规则（放行）
+  if (WEB_TOOL_NAMES.has(call.toolName)) return undefined;
   if (call.toolName === "bash" || call.toolName === "powershell") {
     const command = call.input?.command;
     if (typeof command !== "string") return "ask";

@@ -24,7 +24,7 @@ import type { SessionSummary } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
-import { buildRows, type ListRow, workspaceKey, workspaceName } from "./session-groups";
+import { groupSessions, type ListRow, workspaceKey, workspaceName } from "./session-groups";
 import { PROJECT_NAME_MAX, useSessionListPrefs } from "./session-list-prefs";
 import { findTab, tabsForDeletion, useSessionsStore } from "./sessions-store";
 import { useSessionDefaultWorkspace } from "./use-default-workspace";
@@ -68,6 +68,9 @@ export function relativeTime(ms: number, now: number): string {
 }
 
 export const sessionTitle = (s: SessionSummary) => s.name || s.title || t.untitled;
+
+const sameOrder = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((k, i) => k === b[i]);
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -118,34 +121,46 @@ export function SessionList() {
 
   const searching = search.results !== null;
   const sessions = search.results ?? index.items;
-  const rows: ListRow[] = useMemo(
-    () =>
-      searching
-        ? sessions.map((s) => ({ kind: "session", key: s.path, session: s, nested: false }))
-        : grouping
-          ? buildRows(sessions, {
-              projectsOpen,
-              toggled,
-              activeKey: activeWorkspace ? workspaceKey(activeWorkspace) : null,
-              defaultKey,
-              pinned,
-              names,
-              removed,
-            })
-          : [],
-    [
-      searching,
-      grouping,
-      sessions,
+  // 上次提交显示的项目顺序：已显示的项目保持原位，运行中的会话更新时间时项目不会上下跳动。
+  // 分组计算只读它；提交后再由下面的 effect 写回，渲染期间不改共享状态。
+  const [projectOrder, setProjectOrder] = useState<readonly string[] | undefined>(undefined);
+  const grouped = useMemo(() => {
+    if (searching || !grouping) return null;
+    return groupSessions(sessions, {
       projectsOpen,
       toggled,
-      activeWorkspace,
+      activeKey: activeWorkspace ? workspaceKey(activeWorkspace) : null,
       defaultKey,
       pinned,
       names,
       removed,
-    ],
-  );
+      order: projectOrder,
+    });
+  }, [
+    searching,
+    grouping,
+    sessions,
+    projectsOpen,
+    toggled,
+    activeWorkspace,
+    defaultKey,
+    pinned,
+    names,
+    removed,
+    projectOrder,
+  ]);
+  const rows: ListRow[] = useMemo(() => {
+    if (grouped) return grouped.rows;
+    if (searching)
+      return sessions.map((s) => ({ kind: "session", key: s.path, session: s, nested: false }));
+    return [];
+  }, [grouped, searching, sessions]);
+  // 顺序真的变了才写回（写回后再算一次得到同样的顺序，不会循环；显示的行也不变，不闪动）
+  const nextOrder = grouped?.order;
+  useEffect(() => {
+    if (!nextOrder) return;
+    setProjectOrder((prev) => (prev && sameOrder(prev, nextOrder) ? prev : nextOrder));
+  }, [nextOrder]);
   const listError = searching ? search.error : index.error;
   // 相对时间每分钟刷新一次
   const [now, setNow] = useState(() => Date.now());

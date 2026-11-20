@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { SessionSummary } from "@/lib/platform/types";
-import { buildRows, isProjectWorkspace, workspaceKey, workspaceName } from "./session-groups";
+import {
+  buildRows,
+  groupSessions,
+  isProjectWorkspace,
+  stableProjectOrder,
+  workspaceKey,
+  workspaceName,
+} from "./session-groups";
 
 const s = (n: number, workspace: string): SessionSummary => ({
   path: `/s/${n}.jsonl`,
@@ -96,5 +103,61 @@ describe("会话分组", () => {
     expect(
       buildRows([s(2, "D:\\b")], { projectsOpen: true, toggled: {}, removed: { "d:/b": 98 } }),
     ).toEqual([]);
+  });
+
+  it("项目顺序稳定：已显示的项目保持原位，新项目插到最前", () => {
+    expect(stableProjectOrder(undefined, ["b", "a"])).toEqual(["b", "a"]);
+    expect(stableProjectOrder(["a", "b"], ["b", "a"])).toEqual(["a", "b"]);
+    expect(stableProjectOrder(["a", "b"], ["c", "b"])).toEqual(["c", "b"]);
+  });
+
+  it("加载更旧的历史分页时，首次出现的旧项目接在已有项目之后", () => {
+    const opts = { projectsOpen: true, toggled: {}, defaultKey: KEY };
+    const first = groupSessions([s(1, "D:\\a"), s(2, "D:\\b")], opts);
+    expect(first.order).toEqual(["d:/a", "d:/b"]);
+    // loadMore 追加更旧的一页，其中首次出现项目 c
+    const page = [s(1, "D:\\a"), s(2, "D:\\b"), s(3, "D:\\c"), s(4, "D:\\a")];
+    const paged = groupSessions(page, { ...opts, order: first.order });
+    expect(paged.order).toEqual(["d:/a", "d:/b", "d:/c"]);
+    expect(paged.rows.filter((r) => r.kind === "project").map((r) => r.key)).toEqual([
+      "p:d:/a",
+      "p:d:/b",
+      "p:d:/c",
+    ]);
+    // 之后新建的项目 d 比已有项目都新，仍排在最前
+    const fresh = { ...s(5, "D:\\d"), updatedAt: 300 };
+    const next = groupSessions([fresh, ...page], { ...opts, order: paged.order });
+    expect(next.order).toEqual(["d:/d", "d:/a", "d:/b", "d:/c"]);
+  });
+
+  it("按最后活动时间区分新近项目与历史分页补入的旧项目", () => {
+    const latest = new Map([
+      ["a", 90],
+      ["b", 80],
+      ["new", 95],
+      ["old", 10],
+    ]);
+    expect(stableProjectOrder(["a", "b"], ["new", "a", "b", "old"], latest)).toEqual([
+      "new",
+      "a",
+      "b",
+      "old",
+    ]);
+  });
+
+  it("运行中的会话更新时间后，项目不随最后活动时间上下跳动", () => {
+    const opts = { projectsOpen: true, toggled: {}, defaultKey: KEY };
+    const first = groupSessions([s(1, "D:\\a"), s(2, "D:\\b")], opts);
+    expect(first.order).toEqual(["d:/a", "d:/b"]);
+    // b 的会话刚有新活动，排到了 a 前面
+    const bumped = { ...s(2, "D:\\b"), updatedAt: 200 };
+    const next = groupSessions([bumped, s(1, "D:\\a")], { ...opts, order: first.order });
+    expect(next.order).toEqual(["d:/a", "d:/b"]);
+    expect(next.rows.filter((r) => r.kind === "project").map((r) => r.key)).toEqual([
+      "p:d:/a",
+      "p:d:/b",
+    ]);
+    // 不传上次顺序时仍按最后活动时间排
+    expect(groupSessions([bumped, s(1, "D:\\a")], opts).order).toEqual(["d:/b", "d:/a"]);
   });
 });

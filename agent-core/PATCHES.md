@@ -1,7 +1,7 @@
 # agent-core 补丁清单（PATCHES.md）
 
 `agent-core/` 是上游 earendil-works/pi monorepo 的源码副本（git subtree 方式引入，本仓库不保留 subtree 历史）。
-按仓库 AGENTS.md 第 2.3 节，这里只允许三类改动：**品牌**、**两协议裁剪**、**构建入口**。本文件逐项登记每一处改动：改了什么、为什么、涉及哪些文件。路径均相对 `agent-core/`。
+按仓库 AGENTS.md 第 2.3 节，这里只允许三类改动：**品牌**、**两协议裁剪**、**构建入口**（经用户明确决定的功能补丁例外见 AGENTS.md 第 2.3 节与本文第四节）。本文件逐项登记每一处改动：改了什么、为什么、涉及哪些文件。路径均相对 `agent-core/`。
 
 | 项目 | 值 |
 |---|---|
@@ -102,6 +102,24 @@
 - `scripts/build-coding-agent-bundle.mjs`：去掉 Bedrock 懒加载入口与相关断言，懒加载产物的输出目录改以 OAuth 加载器（`auth/oauth/load.js`）为锚点；懒加载入口只保留 anthropic、openai-chatgpt、image-resize-worker。
 - `packages/coding-agent/src/rpc-entry.ts`：上游自带的 RPC 入口，只做了 1.1 节的品牌改动；桌面端经 `scripts/build-core.mjs` 生成的根目录转发入口启动它。
 - `package.json`（根）：工作区去掉 1.5.2 新增的 `packages/chord/test/examples/61-tutorial`（测试目录不随附，见附录）。
+
+---
+
+## 四、功能补丁（经用户决定的例外）
+
+以下改动不属于上面三类，是用户明确要求、且无法放进第一方扩展（Core 内置 MCP 扩展的配置读取没有扩展钩子）的功能补丁，按 AGENTS.md 第 2.3 节的例外条款登记。升级上游时需要重放。
+
+### 4.1 MCP 配置也从 `.agents/mcp.json` 读取（ADR 0022，2026-11-19）
+- `packages/coding-agent/src/extensions/mcp/config.ts`：
+  - 全局级读 `<agentDir>/mcp.json` 与 `~/.agents/mcp.json`（同级，都允许 `auth`），已信任项目读 `<cwd>/.primus/mcp.json` 与 `<cwd>/.agents/mcp.json`（同级，不允许 `auth`，不往上级找；工作区就是主目录时 `.agents/mcp.json` 只按全局级读）。`loadMcpConfig` 新增可选 `homeDir`（默认 `HOME`，没有时取 `os.homedir()`，与 `package-manager.ts` 的 `getHomeDir` 一致）。
+  - 同级同名（含只差 `-` / `_`）、同级两处覆盖同一服务器、`autoEnableCodemode` 不一致时报 `errors`，取 `.primus` / agentDir 一侧；项目级仍覆盖全局级。
+  - 全局 agentDir 的 `mcp.json` 可以写只含 `enabled` / `exposure` / `toolExposure` 的覆盖项，覆盖 `~/.agents/mcp.json` 的服务器；`.primus/mcp.json` 的覆盖项也可作用于同级 `.agents/mcp.json` 的服务器。
+  - `McpServerEntry.overrideTarget`、`getMcpConfigWriteTarget`：`.agents` 来源的服务器写成覆盖项；`AGENTS_DIR_NAME`、`getAgentsMcpConfigPath`、`isAgentsMcpConfig`、`getMcpHomeDir`、`definesMcpServer` 辅助函数；`editMcpServers` 拒绝写 `.agents/mcp.json`。
+  - 头注释更正（原注释写的是上游的项目目录名）。
+- `packages/coding-agent/src/extensions/mcp/index.ts`：`/mcp` 的保存经 `getMcpConfigWriteTarget`（`.agents` 来源写 `overrideTarget`）；来源显示区分全局 / 项目覆盖项；“在本项目中启用 / 停用”对有全局覆盖项的服务器也提供；空列表提示里的目录名改用 `CONFIG_DIR_NAME`。
+- `packages/coding-agent/src/extensions/mcp/cli.ts`：帮助文本列出 `.agents/mcp.json`；`McpCommandOptions.homeDir`；未信任提示同时列出被忽略的 `.agents/mcp.json`；`add` 在同级 `.agents` 有同名时提示；`remove` 对只在 `.agents` 里的服务器给出“不编辑该文件、请到原处删除或用 /mcp 停用”的提示，删掉覆盖项后 `.agents` 仍有定义时也提示；`list` 的覆盖项行改为 `override:`；空列表提示里的目录名改用 `CONFIG_DIR_NAME`。
+- `packages/coding-agent/src/core/radius-mcp.ts`：任一全局服务器已用同一登录指向 Radius 时不再提议；只复用 `<agentDir>/mcp.json` 里的 Radius 服务器（不改写 `~/.agents` 的），新条目避开所有全局服务器的名字。
+- 测试在仓库根 `scripts/core-mcp-config.test.ts`（本副本不随附测试，见附录）；根 `vitest.config.mts` 的 node 项目沿用本目录 `vitest.base.ts` 的包映射，把 Core 的工作区包指到源码。
 
 ---
 

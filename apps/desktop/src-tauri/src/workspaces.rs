@@ -7,7 +7,8 @@
 //!
 //! 信任：只在首次添加工作区时确认一次（[`WorkspaceInfo::needs_trust`]）。选择“信任”后之后的改动一律沿用信任，
 //! 不再比对内容；每次新会话以 `--approve` 启动（只看 [`Workspaces::approved`]），由 Core 重新加载项目里的
-//! 扩展、技能（`.primus/skills`、各级 `.agents/skills`）与 `.primus/mcp.json`。
+//! 扩展、技能（`.primus/skills`、各级 `.agents/skills`）与 MCP（`.primus/mcp.json`、工作区本级的
+//! `.agents/mcp.json`，ADR 0022）。
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -45,6 +46,9 @@ pub(crate) struct TrustDetails {
     pub(crate) skills: Vec<String>,
     /// `.primus/mcp.json` 中的服务器名；文件存在但无法解析或过大时为 `["mcp.json"]`
     pub(crate) mcp_servers: Vec<String>,
+    /// 工作区本级 `.agents/mcp.json` 中的服务器名（不往上级找，与 Core 一致，ADR 0022）；
+    /// 文件存在但无法解析或过大时为 `["mcp.json"]`
+    pub(crate) agents_mcp_servers: Vec<String>,
     /// 工作区及上级目录（到 Git 仓库根为止）`.agents/skills` 中 Core 会加载的技能，
     /// 带相对工作区的目录前缀（如 `.agents/skills/review`、`../.agents/skills/lint`）
     pub(crate) agents_skills: Vec<String>,
@@ -52,7 +56,7 @@ pub(crate) struct TrustDetails {
 
 /// 信任确认中 `AGENTS.md` 最多展示的字节数。
 pub(crate) const AGENTS_MD_LIMIT: usize = 64 * 1024;
-/// `.primus/mcp.json` 最多读取的字节数，超过时只显示文件名。
+/// `.primus/mcp.json`、`.agents/mcp.json` 最多读取的字节数，超过时只显示文件名。
 const MCP_JSON_LIMIT: u64 = 1024 * 1024;
 /// 扩展目录中 `package.json` 最多读取的字节数，超过时报错。
 const PACKAGE_JSON_LIMIT: usize = 4 * 1024 * 1024;
@@ -357,6 +361,29 @@ fn agents_skill_label(depth: usize) -> String {
     format!("{}.agents/skills", "../".repeat(depth))
 }
 
+/// `mcp.json` 里 `mcpServers` 的服务器名：不存在为空；过大、不是 JSON 或没有 `mcpServers` 对象时只给文件名
+/// `["mcp.json"]`，让信任确认仍能提示有这个文件。
+fn mcp_server_names(file: &Path) -> io::Result<Vec<String>> {
+    let limit = usize::try_from(MCP_JSON_LIMIT).unwrap_or(usize::MAX);
+    let read = match read_prefix(file, limit) {
+        // 上级（如 `.agents`）是文件：Core 同样当作没有
+        Err(e) if e.kind() == io::ErrorKind::NotADirectory => return Ok(Vec::new()),
+        r => r?,
+    };
+    Ok(match read {
+        None => Vec::new(),
+        Some((_, true)) => vec!["mcp.json".to_owned()],
+        Some((bytes, false)) => serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|v| {
+                v.get("mcpServers")
+                    .and_then(|m| m.as_object())
+                    .map(|m| m.keys().cloned().collect())
+            })
+            .unwrap_or_else(|| vec!["mcp.json".to_owned()]),
+    })
+}
+
 /// 读取信任确认要展示的内容；路径必须是已存在的目录。只有“不存在”视为没有，其他读取错误返回失败，
 /// 避免弹窗把读不到的内容显示成“没有”。
 pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
@@ -373,20 +400,10 @@ pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
     };
     let primus = root.join(".primus");
     let mcp_file = primus.join("mcp.json");
-    let mcp_limit = usize::try_from(MCP_JSON_LIMIT).unwrap_or(usize::MAX);
-    let mcp_servers = match read_prefix(&mcp_file, mcp_limit) {
-        Ok(None) => Vec::new(),
-        Ok(Some((_, true))) => vec!["mcp.json".to_owned()],
-        Ok(Some((bytes, false))) => serde_json::from_slice::<serde_json::Value>(&bytes)
-            .ok()
-            .and_then(|v| {
-                v.get("mcpServers")
-                    .and_then(|m| m.as_object())
-                    .map(|m| m.keys().cloned().collect())
-            })
-            .unwrap_or_else(|| vec!["mcp.json".to_owned()]),
-        Err(e) => return Err(WorkspaceError::Read(mcp_file, e)),
-    };
+    let mcp_servers = mcp_server_names(&mcp_file).map_err(|e| WorkspaceError::Read(mcp_file, e))?;
+    let agents_mcp_file = root.join(".agents").join("mcp.json");
+    let agents_mcp_servers =
+        mcp_server_names(&agents_mcp_file).map_err(|e| WorkspaceError::Read(agents_mcp_file, e))?;
     let ext_dir = primus.join("extensions");
     let extensions = list_extensions(&ext_dir).map_err(|e| WorkspaceError::Read(ext_dir, e))?;
     let skill_dir = primus.join("skills");
@@ -421,6 +438,7 @@ pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
         extensions,
         skills,
         mcp_servers,
+        agents_mcp_servers,
         agents_skills,
         path,
     })
@@ -865,6 +883,57 @@ mod tests {
     }
 
     #[test]
+    fn inspect_lists_agents_mcp_servers() {
+        let root = temp_dir("agents-mcp");
+        let proj = root.join("proj");
+        std::fs::create_dir_all(proj.join(".agents")).unwrap();
+        std::fs::create_dir_all(proj.join(".primus")).unwrap();
+        std::fs::write(
+            proj.join(".primus/mcp.json"),
+            r#"{"mcpServers":{"github":{}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            proj.join(".agents/mcp.json"),
+            r#"{"mcpServers":{"docs":{"url":"https://example.com/mcp"},"db":{}}}"#,
+        )
+        .unwrap();
+        // 上级目录的 .agents/mcp.json 不读（Core 只读工作区本级）
+        std::fs::create_dir_all(root.join(".agents")).unwrap();
+        std::fs::write(
+            root.join(".agents/mcp.json"),
+            r#"{"mcpServers":{"parent":{}}}"#,
+        )
+        .unwrap();
+
+        let d = inspect(&proj.to_string_lossy()).unwrap();
+        assert_eq!(d.mcp_servers, vec!["github"]);
+        let mut agents = d.agents_mcp_servers.clone();
+        agents.sort();
+        assert_eq!(agents, vec!["db", "docs"]);
+
+        // 解析失败、过大：只显示文件名
+        let path = proj.to_string_lossy().into_owned();
+        std::fs::write(proj.join(".agents/mcp.json"), "not json").unwrap();
+        let d = inspect(&path).unwrap();
+        assert_eq!(d.agents_mcp_servers, vec!["mcp.json"]);
+        let pad = "a".repeat(usize::try_from(MCP_JSON_LIMIT).unwrap());
+        let big = format!(r#"{{"mcpServers":{{}},"pad":"{pad}"}}"#);
+        std::fs::write(proj.join(".agents/mcp.json"), big).unwrap();
+        let d = inspect(&path).unwrap();
+        assert_eq!(d.agents_mcp_servers, vec!["mcp.json"]);
+
+        // 不存在，或 .agents 是文件：没有
+        std::fs::remove_file(proj.join(".agents/mcp.json")).unwrap();
+        let d = inspect(&path).unwrap();
+        assert!(d.agents_mcp_servers.is_empty());
+        std::fs::remove_dir_all(proj.join(".agents")).unwrap();
+        std::fs::write(proj.join(".agents"), "file").unwrap();
+        let d = inspect(&path).unwrap();
+        assert!(d.agents_mcp_servers.is_empty());
+    }
+
+    #[test]
     fn inspect_lists_project_resources() {
         let root = temp_dir("inspect");
         let proj = root.join("proj");
@@ -901,6 +970,7 @@ mod tests {
         let d = inspect(&empty.to_string_lossy()).unwrap();
         assert_eq!(d.agents_md, None);
         assert!(d.extensions.is_empty() && d.skills.is_empty() && d.mcp_servers.is_empty());
+        assert!(d.agents_mcp_servers.is_empty());
         assert!(inspect("relative/path").is_err());
 
         // AGENTS.md 是断开的符号链接：报错，不显示成“没有”

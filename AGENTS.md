@@ -20,6 +20,7 @@
 
 ### 2.3 Agent Core 少改
 - `agent-core/` 只允许三类改动：**品牌**（名称、目录、环境变量、系统提示）、**两协议裁剪**、**构建入口**。
+- 例外：用户明确决定、且无法用第一方扩展实现的功能补丁（如 Core 内置 MCP 扩展的配置读取，ADR 0022），登记在 `agent-core/PATCHES.md` 第四节，升级上游时重放。
 - 每一处改动都必须登记在 `agent-core/PATCHES.md`（改了什么、为什么、涉及文件）。
 - 其他需求一律用 `packages/extensions/` 中的第一方扩展实现。桌面端只使用 Core 公开的 RPC 协议与扩展 API，不依赖其内部实现。
 - 不要把 Core 编译成单文件 exe；安装包里是 JS 产物 + 官方 `node.exe`。
@@ -33,7 +34,7 @@
 
 ### 2.5 安全（基础版）
 - 密钥绝不明文落盘：走 `vault`（DPAPI）；`models.json` 里只放取密钥的命令（`--secret provider:<渠道 ID>`）。
-- 不要在代码、日志、测试快照、提交中写入任何真实密钥或证书。例外只有两个内置密钥，都只能加密放在 `apps/desktop/src-tauri/src/builtin.rs` 各一处：内置渠道（ioply）的 `BUILTIN_API_KEY`（技术方案第 9.8 节、ADR 0008）与内置图片生成服务的 `BUILTIN_IMAGE_API_KEY`（ADR 0018），不得复制到其他文件、日志、测试快照、提交说明或 PR 描述。
+- 不要在代码、日志、测试快照、提交中写入任何真实密钥或证书。例外只有三组内置密钥，都只能加密放在 `apps/desktop/src-tauri/src/builtin.rs` 各一处：内置渠道（ioply）的 `BUILTIN_API_KEY`（技术方案第 9.8 节、ADR 0008）、内置图片生成服务的 `BUILTIN_IMAGE_API_KEY`（ADR 0018）与内置联网搜索服务的两把 `BUILTIN_SEARCH_API_KEYS`（ADR 0020），不得复制到其他文件、日志、测试快照、提交说明或 PR 描述。
 - 用户模型渠道的密钥只进保险库（`provider:<渠道 ID>`）：不写进 `providers.json`、`models.json`、命令行参数、环境变量与日志，返回给 WebView 的只有 `hasKey` 与末 4 位 `keyHint`。
 - 危险操作必须经过 `primus-guard` 的确认流程；不要为了测试方便绕过它。
 

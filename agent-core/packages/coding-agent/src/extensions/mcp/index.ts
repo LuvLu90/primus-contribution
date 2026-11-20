@@ -22,15 +22,16 @@
  *
  * Problems found at startup (config errors, failed connections, servers that need a sign-in) are
  * reported once. `/mcp` opens a manager to sign in, reconnect, enable or disable servers, and change
- * their exposure; the last two are saved to the `mcp.json` that defines the server, or apply to the
- * current session for registered servers.
+ * their exposure; the last two are saved to the `mcp.json` that defines the server (as an override in
+ * `.primus/mcp.json` or the agent directory's `mcp.json` for servers from an `.agents/mcp.json`, which
+ * is never written), or apply to the current session for registered servers.
  */
 
 import { join, resolve } from "node:path";
 import { createMcpToolName, mcpNamespace } from "@earendil-works/pi-mcp";
 import type { SelectItem } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
-import { getAgentDir } from "../../config.ts";
+import { CONFIG_DIR_NAME, getAgentDir } from "../../config.ts";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -44,6 +45,7 @@ import { openBrowser } from "../../utils/open-browser.ts";
 import { CODEMODE_TOOL_NAME } from "../codemode/tool.ts";
 import { TOOL_SEARCH_TOOL_NAME } from "../tool-search/tool.ts";
 import {
+	getMcpConfigWriteTarget,
 	getMcpToolExposure,
 	type LoadedMcpConfig,
 	loadMcpConfig,
@@ -79,8 +81,9 @@ export interface McpExtensionOptions {
 	/** Opens the OAuth authorization URL. Defaults to the platform browser. */
 	openUrl?: (url: string) => void;
 	/**
-	 * Saves `/mcp` changes to the server's config file: its project `override` when set, else its
-	 * `source`. Defaults to editing that `mcp.json`.
+	 * Saves `/mcp` changes to the server's config file: its `override` when set, else its `source`.
+	 * Servers from an `.agents/mcp.json` always come with an `override` (Primus never writes those
+	 * files). Defaults to editing that `mcp.json`.
 	 */
 	updateConfig?: (entry: McpServerEntry, patch: McpServerConfigPatch) => void;
 	/**
@@ -303,10 +306,10 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		const openUrl = options.openUrl ?? openBrowser;
 		const updateConfig =
 			options.updateConfig ??
-			((entry, patch) =>
-				updateMcpServerConfig(entry.override ?? entry.source, entry.name, patch, {
-					override: entry.override !== undefined,
-				}));
+			((entry, patch) => {
+				const target = getMcpConfigWriteTarget(entry);
+				updateMcpServerConfig(target.path, entry.name, patch, { override: target.override });
+			});
 
 		/**
 		 * Lifetime of the current session: aborted on session_shutdown, and before the first session_start
@@ -658,9 +661,10 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		/**
 		 * Save a config change; returns an error message when the file could not be updated. Changes to
 		 * registered servers only apply to the current session. `inProject` adds a project override.
+		 * Servers from an `.agents/mcp.json` are saved as an override in their `overrideTarget`.
 		 */
 		const saveConfig = (server: McpServer, patch: McpServerConfigPatch, inProject = false): string | undefined => {
-			const override = inProject ? projectConfig : server.entry.override;
+			const override = inProject ? projectConfig : (server.entry.override ?? server.entry.overrideTarget);
 			const entry = override ? { ...server.entry, override } : server.entry;
 			if (entry.scope !== "extension") {
 				try {
@@ -801,9 +805,9 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				.map((server) => ({
 					value: server.entry.name,
 					label: server.entry.name,
-					description: `${describeState(server)} · ${exposureOf(server.entry)} · ${server.entry.override ? "global, project override" : (server.entry.scope ?? server.entry.source)}`,
+					description: `${describeState(server)} · ${exposureOf(server.entry)} · ${describeOrigin(server.entry, projectConfig)}`,
 				})),
-			empty: `No MCP servers configured. Add them to ${resolve(getAgentDir(), "mcp.json")} or .pi/mcp.json.`,
+			empty: `No MCP servers configured. Add them to ${resolve(getAgentDir(), "mcp.json")} or ${CONFIG_DIR_NAME}/mcp.json.`,
 			confirmLabel: "manage",
 			cancelLabel: "close",
 		});
@@ -820,16 +824,18 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				};
 			}
 			const { entry, connection } = server;
-			const saved =
-				entry.scope === "extension"
-					? "for this session"
-					: entry.override
+			const target = entry.scope === "extension" ? undefined : getMcpConfigWriteTarget(entry);
+			const saved = !target
+				? "for this session"
+				: target.override
+					? target.path === projectConfig
 						? "saved to the project mcp.json"
-						: entry.scope
-							? `saved to the ${entry.scope} mcp.json`
-							: "saved to mcp.json";
-			// Global servers without an override can be turned on or off for the trusted project alone.
-			const inProject = entry.scope === "global" && !entry.override && projectConfig !== undefined;
+						: "saved to the global mcp.json"
+					: entry.scope
+						? `saved to the ${entry.scope} mcp.json`
+						: "saved to mcp.json";
+			// Global servers without a project override can be turned on or off for the trusted project alone.
+			const inProject = entry.scope === "global" && projectConfig !== undefined && entry.override !== projectConfig;
 			const inProjectSaved = "saved to the project mcp.json";
 			const items: SelectItem[] = [];
 			if (!isEnabled(server)) {
@@ -859,7 +865,9 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			const details = [
 				describeTransport(entry),
 				`${entry.scope ?? "config"}: ${entry.source}`,
-				...(entry.override ? [`project override: ${entry.override}`] : []),
+				...(entry.override
+					? [`${entry.override === projectConfig ? "project" : "global"} override: ${entry.override}`]
+					: []),
 				`State: ${describeState(server, false)}`,
 			];
 			const error = [server.message, connection?.state === "connected" ? undefined : connection?.error]
@@ -904,7 +912,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				details:
 					server.entry.scope === "extension"
 						? `Applies to this session; the server is registered by ${server.entry.source}.`
-						: `Saved to ${server.entry.override ?? server.entry.source}.`,
+						: `Saved to ${getMcpConfigWriteTarget(server.entry).path}.`,
 				items: (Object.keys(EXPOSURE_DESCRIPTIONS) as (keyof typeof EXPOSURE_DESCRIPTIONS)[]).map((exposure) => ({
 					value: exposure,
 					label: `${exposure === current ? "✓ " : "  "}${exposure}`,
@@ -1017,7 +1025,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 
 		const formatStatus = (): string => {
 			if (servers.length === 0 && configErrors.length === 0 && overridden.length === 0) {
-				return `No MCP servers configured. Add them to ${resolve(getAgentDir(), "mcp.json")} or .pi/mcp.json.`;
+				return `No MCP servers configured. Add them to ${resolve(getAgentDir(), "mcp.json")} or ${CONFIG_DIR_NAME}/mcp.json.`;
 			}
 			const lines = servers.map((server) => {
 				const { name } = server.entry;
@@ -1339,6 +1347,13 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			},
 		});
 	};
+}
+
+/** Where a server comes from, for the `/mcp` list: its scope, and which override applies. */
+function describeOrigin(entry: McpServerEntry, projectConfig: string | undefined): string {
+	if (!entry.scope) return entry.source;
+	if (!entry.override) return entry.scope;
+	return entry.override === projectConfig ? `${entry.scope}, project override` : `${entry.scope}, global override`;
 }
 
 function defaultLoadConfig(ctx: ExtensionContext): LoadedMcpConfig {

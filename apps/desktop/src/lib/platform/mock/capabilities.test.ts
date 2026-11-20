@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MCP_CONFLICT, PlatformError, SKILL_EXISTS } from "../types";
-import { createMockCapabilities } from "./capabilities";
+import { createMockCapabilities, MOCK_AGENTS_MCP_PATH } from "./capabilities";
 import { createMockPlatform } from "./index";
 
 const codeOf = async (p: Promise<unknown>) => {
@@ -85,7 +85,7 @@ describe("mock 能力中心", () => {
   });
 
   it("mcp list：连接状态、需要登录与登录后连上、停用", async () => {
-    const c = createMockCapabilities();
+    const c = createMockCapabilities({ agentsMcp: null });
     const parse = async () => JSON.parse((await c.mcpList()).stdout);
     const before = await c.mcpList();
     expect(before.code).toBe(1);
@@ -107,7 +107,7 @@ describe("mock 能力中心", () => {
   });
 
   it("mcp list：不合格的条目记进 errors，不让整个调用失败", async () => {
-    const c = createMockCapabilities();
+    const c = createMockCapabilities({ agentsMcp: null });
     const { version } = await c.mcpConfigRead();
     await c.mcpConfigWrite(
       JSON.stringify({
@@ -129,5 +129,89 @@ describe("mock 能力中心", () => {
     expect(parsed.errors.join("\n")).toContain(
       'server "badArgs": args must be an array of strings',
     );
+  });
+
+  it("~/.agents/mcp.json：只读附带在 mcpConfigRead 里，mcp list 套用用户级覆盖项、同名报冲突", async () => {
+    const c = createMockCapabilities();
+    const file = await c.mcpConfigRead();
+    expect(file.agents?.path).toBe(MOCK_AGENTS_MCP_PATH);
+    expect(file.agents?.text).toContain("shared-docs");
+    const names = async () => JSON.parse((await c.mcpList()).stdout);
+    expect((await names()).servers.at(-1)).toMatchObject({
+      name: "shared-docs",
+      source: MOCK_AGENTS_MCP_PATH,
+      state: "connected",
+    });
+    const next = JSON.parse(file.text ?? "");
+    next.mcpServers["shared-docs"] = { enabled: false };
+    const v = await c.mcpConfigWrite(JSON.stringify(next), file.version);
+    expect((await names()).servers.at(-1)).toMatchObject({
+      name: "shared-docs",
+      state: "disabled",
+    });
+    expect((await c.mcpConfigRead()).agents?.text).toBe(file.agents?.text);
+    next.mcpServers["shared-docs"] = { command: "own" };
+    await c.mcpConfigWrite(JSON.stringify(next), v);
+    const list = await names();
+    expect(list.errors.join("\n")).toContain('server "shared-docs" is also defined in');
+    expect(list.servers.filter((s: { name: string }) => s.name === "shared-docs")).toHaveLength(1);
+  });
+
+  it("~/.agents/mcp.json 里不合格的条目同样记进 errors，不让整个调用失败", async () => {
+    const c = createMockCapabilities({
+      agentsMcp: JSON.stringify({
+        mcpServers: { broken: { command: "node", args: 123 }, fine: { command: "ok" } },
+      }),
+    });
+    const out = JSON.parse((await c.mcpList()).stdout);
+    expect(out.servers.map((s: { name: string }) => s.name)).toContain("fine");
+    expect(out.servers.map((s: { name: string }) => s.name)).not.toContain("broken");
+    expect(out.errors.join("\n")).toContain('server "broken": args must be an array of strings');
+  });
+
+  it("共享服务器名与原型上的属性同名（constructor）：用户级没写这条时不算冲突，照常列出", async () => {
+    const c = createMockCapabilities({
+      agentsMcp: JSON.stringify({
+        mcpServers: { constructor: { command: "docs" }, toString: { command: "notes" } },
+      }),
+    });
+    const out = JSON.parse((await c.mcpList()).stdout);
+    const names = out.servers.map((s: { name: string }) => s.name);
+    expect(names).toContain("constructor");
+    expect(names).toContain("toString");
+    expect(out.errors.join("\n")).not.toContain("is also defined in");
+    const file = await c.mcpConfigRead();
+    await c.mcpConfigWrite(
+      JSON.stringify({ mcpServers: { constructor: { enabled: false } } }),
+      file.version,
+    );
+    const after = JSON.parse((await c.mcpList()).stdout);
+    expect(after.servers.find((s: { name: string }) => s.name === "constructor")).toMatchObject({
+      enabled: false,
+      state: "disabled",
+    });
+  });
+
+  it("覆盖项含 enabled / exposure / toolExposure 以外的键：报无效覆盖，保留共享定义的启停；合法的 enabled: false 仍生效", async () => {
+    const c = createMockCapabilities({
+      agentsMcp: JSON.stringify({
+        mcpServers: { docs: { command: "docs" }, notes: { command: "notes" } },
+      }),
+    });
+    const file = await c.mcpConfigRead();
+    await c.mcpConfigWrite(
+      JSON.stringify({
+        mcpServers: { docs: { enabled: false, timeout: 30 }, notes: { enabled: false } },
+      }),
+      file.version,
+    );
+    const out = JSON.parse((await c.mcpList()).stdout);
+    const byName = (n: string) => out.servers.find((s: { name: string }) => s.name === n);
+    expect(out.errors.join("\n")).toContain(
+      'server "docs": an override can only set enabled, exposure, toolExposure',
+    );
+    expect(byName("docs")).toMatchObject({ enabled: true, state: "connected" });
+    expect(byName("notes")).toMatchObject({ enabled: false, state: "disabled" });
+    expect(out.errors.join("\n")).not.toContain('"notes"');
   });
 });

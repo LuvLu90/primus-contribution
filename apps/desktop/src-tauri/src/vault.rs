@@ -6,8 +6,8 @@
 //! - 写入先写同目录临时文件再替换，避免中途崩溃留下半个文件。
 //! - `Primus.exe --secret provider:<渠道 ID>`：不打开窗口，确认自己在本 App 的 Core 作业内后把该渠道的密钥写到 stdout 并退出，
 //!   供 `models.json` 的 `"apiKey": "!<Primus.exe> --secret provider:<id>"` 使用；密钥不进命令行参数、环境变量与会话文件。
-//!   只接受 `provider:<id>` 形式的名字与内置图片生成服务的 `builtin:image`（ADR 0018，值来自 builtin.rs，不在保险库里），
-//!   其他名字一律按不存在处理。
+//!   只接受 `provider:<id>` 形式的名字、内置图片生成服务的 `builtin:image`（ADR 0018）与内置联网搜索服务的
+//!   `builtin:search`（ADR 0020，两把密钥每行一把）；内置的值来自 builtin.rs，不在保险库里。其他名字一律按不存在处理。
 //! - macOS / Linux 的 Keychain / Secret Service 见第 20 章，当前非 Windows 平台加解密直接报不支持，
 //!   绝不退回明文落盘。
 
@@ -40,7 +40,11 @@ pub(crate) fn is_valid_id(id: &str) -> bool {
 /// 内置图片生成服务密钥的名字（primus-imagegen 扩展用 `--secret builtin:image` 取）。
 pub(crate) const BUILTIN_IMAGE_SECRET: &str = "builtin:image";
 
-/// `--secret` 模式接受的保险库名字：只有 `provider:<渠道 ID>`（内置的 [`BUILTIN_IMAGE_SECRET`] 另行处理）。
+/// 内置联网搜索服务密钥的名字（primus-web 扩展用 `--secret builtin:search` 取，输出每行一把）。
+pub(crate) const BUILTIN_SEARCH_SECRET: &str = "builtin:search";
+
+/// `--secret` 模式接受的保险库名字：只有 `provider:<渠道 ID>`（内置的 [`BUILTIN_IMAGE_SECRET`]、
+/// [`BUILTIN_SEARCH_SECRET`] 另行处理）。
 pub(crate) fn is_secret_name(name: &str) -> bool {
     name.strip_prefix(crate::providers::SECRET_PREFIX)
         .is_some_and(crate::providers::is_valid_id)
@@ -257,7 +261,8 @@ pub(crate) fn run_secret_mode(id: &str) -> SecretExit {
 
 fn secret_value(id: &str) -> Result<String, SecretExit> {
     let builtin_image = id == BUILTIN_IMAGE_SECRET;
-    if !builtin_image && !is_secret_name(id) {
+    let builtin_search = id == BUILTIN_SEARCH_SECRET;
+    if !builtin_image && !builtin_search && !is_secret_name(id) {
         return Err(SecretExit::NotFound);
     }
     // 内置密钥同样只交给本 App 的 Core 作业内的调用方
@@ -267,6 +272,9 @@ fn secret_value(id: &str) -> Result<String, SecretExit> {
     }
     if builtin_image {
         return Ok(crate::builtin::image_api_key());
+    }
+    if builtin_search {
+        return Ok(crate::builtin::search_api_keys().join("\n"));
     }
     let core_dir = std::env::var_os("PRIMUS_CODING_AGENT_DIR").ok_or(SecretExit::Denied)?;
     let user_id = crate::platform::current_user_id().map_err(|_| SecretExit::Failed)?;
@@ -502,6 +510,11 @@ mod tests {
             secret_value(BUILTIN_IMAGE_SECRET),
             Err(SecretExit::Denied),
             "内置图片密钥同样只给作业内的调用方"
+        );
+        assert_eq!(
+            secret_value(BUILTIN_SEARCH_SECRET),
+            Err(SecretExit::Denied),
+            "内置搜索密钥同样只给作业内的调用方"
         );
         assert_eq!(secret_value("builtin:other"), Err(SecretExit::NotFound));
         assert_eq!(secret_value("BAD ID"), Err(SecretExit::NotFound));

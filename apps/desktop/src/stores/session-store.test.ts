@@ -201,6 +201,49 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     expect(applyChunks(settled, [chunk([getState(true)])]).autoCompaction).toBe(true);
   });
 
+  it("重建时按 get_state 的队列条数校正待插入列表（丢了清空队列的 queue_update 也能恢复）", () => {
+    const getState = (pending: number): CoreRecord =>
+      ({
+        type: "response",
+        id: "g",
+        command: "get_state",
+        success: true,
+        data: {
+          thinkingLevel: "off",
+          isStreaming: true,
+          isCompacting: false,
+          steeringMode: "one-at-a-time",
+          followUpMode: "one-at-a-time",
+          sessionId: "x",
+          autoCompactionEnabled: true,
+          messageCount: 0,
+          pendingMessageCount: pending,
+        },
+      }) as CoreRecord;
+    const queued = applyChunks(initialSessionState, [
+      chunk([{ type: "queue_update", steering: ["插话"], followUp: [] } as CoreRecord]),
+    ]);
+    expect(queued.steering).toEqual(["插话"]);
+    // 队列里还有：保留（正常运行中尚未投递）
+    expect(applyChunks(queued, [chunk([getState(1)], true)]).steering).toEqual(["插话"]);
+    // 空队列快照丢失后重建：Core 队列已空，清掉
+    expect(applyChunks(queued, [chunk([getState(0)], true)]).steering).toEqual([]);
+    // 清空队列成功
+    expect(
+      applyChunks(queued, [
+        chunk([
+          {
+            type: "response",
+            id: "c",
+            command: "clear_queue",
+            success: true,
+            data: { steering: ["插话"], followUp: [] },
+          } as CoreRecord,
+        ]),
+      ]).steering,
+    ).toEqual([]);
+  });
+
   it("失败响应记入 lastError，新一轮开始时清除", () => {
     const s = applyChunks(initialSessionState, [
       chunk([{ type: "response", id: "x", command: "prompt", success: false, error: "忙" }]),

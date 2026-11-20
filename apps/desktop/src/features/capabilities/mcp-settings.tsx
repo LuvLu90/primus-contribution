@@ -28,7 +28,9 @@ import {
   isRecord,
   joinCommandLine,
   listServers,
+  listSharedServers,
   MCP_EXPOSURES,
+  type McpDocument,
   type McpExposure,
   type McpListResult,
   type McpServerView,
@@ -41,6 +43,7 @@ import {
   removeServer,
   setServer,
   setServerEnabled,
+  setSharedServerEnabled,
   splitCommandLine,
   validServerName,
 } from "./mcp-config";
@@ -56,6 +59,7 @@ import {
 // 能力中心·MCP（ADR 0017）：编辑用户级 mcp.json（列出、添加——填写或粘贴 JSON、编辑、删除、启停），
 // 测试连接（Core `mcp list --json`）与 OAuth 登录 / 退出（Core `mcp login` / `logout`，Core 自己打开浏览器）。
 // 每次修改都基于最近读出的原文与版本：文件在别处被改过时薄壳以 `conflict` 拒绝，这里重新读取后请用户再操作一次。
+// `~/.agents/mcp.json`（与其他工具共用，ADR 0022）只读展示：启停写成用户级 mcp.json 里的覆盖项，不改那个文件。
 
 const t = strings.settings.capabilities;
 const tm = t.mcp;
@@ -109,13 +113,28 @@ export function McpSettings() {
 
   let parseError: string | null = null;
   let servers: McpServerView[] = [];
+  let userDoc: McpDocument | null = null;
+  // `~/.agents/mcp.json`：文件不存在时不显示这一节
+  let sharedDoc: McpDocument | null = null;
+  let sharedError: string | null = null;
+  const agents = file?.agents ?? null;
+  if (agents?.error) sharedError = fill(tm.shared.loadFailed, { message: agents.error });
+  else if (agents && agents.text !== null) {
+    try {
+      sharedDoc = parseMcpDocument(agents.text);
+    } catch (e) {
+      sharedError = fill(tm.shared.parseFailed, { message: errorText(e, tm.parseFailed) });
+    }
+  }
   if (file) {
     try {
-      servers = listServers(parseMcpDocument(file.text));
+      userDoc = parseMcpDocument(file.text);
+      servers = listServers(userDoc, sharedDoc);
     } catch (e) {
       parseError = errorText(e, tm.parseFailed);
     }
   }
+  const sharedServers = sharedDoc ? listSharedServers(sharedDoc, userDoc) : [];
 
   /** 基于 `base`（默认最近读出的文件）的原文改写并保存；版本冲突时重新读取并报错 */
   const save = async (mutate: (text: string | null) => string, base?: McpConfigFile) => {
@@ -157,6 +176,37 @@ export function McpSettings() {
 
   const toggle = (s: McpServerView, enabled: boolean) =>
     run(s.name, tm.saveFailed, () => save((text) => setServerEnabled(text, s.name, enabled)));
+
+  // 覆盖项写不写 `enabled: true` 取决于共享定义本身是否停用：保存前重新读取，用户级文件或共享文件在界面读出后
+  // 被改过就按冲突处理（界面换成新读出的内容，请用户再操作一次），保证写入的覆盖项与界面都对应 Core 的生效状态
+  const toggleShared = (s: McpServerView, enabled: boolean) =>
+    run(`shared:${s.name}`, tm.saveFailed, async () => {
+      const shown = fileRef.current;
+      const fresh = await (await getPlatform()).mcpConfigRead();
+      if (
+        !shown ||
+        fresh.version !== shown.version ||
+        (fresh.agents?.text ?? null) !== (shown.agents?.text ?? null) ||
+        (fresh.agents?.error ?? null) !== (shown.agents?.error ?? null)
+      ) {
+        apply(fresh);
+        setReport(null);
+        throw new McpConflictError(tm.conflict);
+      }
+      const doc = parseMcpDocument(fresh.agents?.text ?? null);
+      const servers = isRecord(doc.root.mcpServers) ? doc.root.mcpServers : {};
+      const entry = Object.hasOwn(servers, s.name) ? servers[s.name] : undefined;
+      await save(
+        (text) =>
+          setSharedServerEnabled(
+            text,
+            s.name,
+            enabled,
+            !(isRecord(entry) && entry.enabled === false),
+          ),
+        fresh,
+      );
+    });
 
   const login = (s: McpServerView) =>
     run(s.name, tm.loginFailed, async () => {
@@ -339,6 +389,85 @@ export function McpSettings() {
           </Tooltip>
         </div>
       </div>
+      {agents && (sharedDoc || sharedError) && (
+        <div className={cardClass}>
+          <div className="px-4 pt-3">
+            <p className="text-sm font-medium">{tm.shared.title}</p>
+            <p className="mt-0.5 truncate text-xs text-muted">
+              {fill(tm.shared.file, { path: agents.path })}
+            </p>
+            <p className="mt-0.5 text-xs text-muted">{tm.shared.hint}</p>
+            {sharedError && <p className="mt-1 text-xs text-danger">{sharedError}</p>}
+          </div>
+          {sharedDoc && sharedServers.length === 0 && (
+            <p className="px-4 py-3 text-xs text-muted">{tm.shared.empty}</p>
+          )}
+          {sharedServers.length > 0 && (
+            <ul aria-label={tm.shared.title} className="divide-y divide-border">
+              {sharedServers.map((s) => {
+                const r = reports.get(s.name);
+                return (
+                  <li key={s.name} className="flex items-start gap-3 px-4 py-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
+                        <span className="truncate font-medium">{s.name}</span>
+                        {s.transport && <Badge>{tm.transports[s.transport]}</Badge>}
+                        <Tooltip content={ownValue(tm.exposureHints, s.exposure) ?? s.exposure}>
+                          <span>
+                            <Badge>{ownValue(tm.exposures, s.exposure) ?? s.exposure}</Badge>
+                          </span>
+                        </Tooltip>
+                      </p>
+                      <Tooltip content={s.target}>
+                        <p className="mt-0.5 truncate text-xs text-muted">{s.target}</p>
+                      </Tooltip>
+                      {s.description && (
+                        <p className="mt-0.5 line-clamp-2 text-xs text-muted">{s.description}</p>
+                      )}
+                      {(s.error || s.overrideError) && (
+                        <p className="mt-0.5 text-xs text-danger">
+                          {tm.invalid}：{s.error ?? s.overrideError}
+                        </p>
+                      )}
+                      {r && !s.error && (
+                        <ServerState state={r.state} tools={r.tools.length} error={r.error} />
+                      )}
+                      {s.transport === "http" && !s.error && (
+                        <div className="mt-1 flex gap-3 text-xs">
+                          <button
+                            type="button"
+                            aria-label={fill(tm.loginLabel, { name: s.name })}
+                            disabled={busy !== null}
+                            onClick={() => void login(s)}
+                            className="text-accent hover:underline disabled:opacity-50"
+                          >
+                            {tm.login}
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={fill(tm.logoutLabel, { name: s.name })}
+                            disabled={busy !== null}
+                            onClick={() => void logout(s)}
+                            className="text-muted hover:underline disabled:opacity-50"
+                          >
+                            {tm.logout}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    <Switch
+                      ariaLabel={fill(tm.enable, { name: s.name })}
+                      checked={s.enabled}
+                      disabled={busy !== null || !editable || s.error !== null || !!s.overrideError}
+                      onCheckedChange={(enabled) => void toggleShared(s, enabled)}
+                    />
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
       <p className="px-1 text-xs text-muted">{t.newSessionHint}</p>
 
       {editing !== null && (

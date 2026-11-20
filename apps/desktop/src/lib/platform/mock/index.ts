@@ -5,8 +5,10 @@ import {
   type AssistantMessage,
   CONTEXT_STATS_COMMAND,
   CONTEXT_STATS_WIDGET,
+  CONTINUE_COMMAND,
   type ContextStatsData,
   type CoreRecord,
+  type ImageContent,
   PLAN_COMMAND,
   PLAN_WIDGET,
   type PlanData,
@@ -39,6 +41,7 @@ import {
 } from "../types";
 import { createMockCapabilities } from "./capabilities";
 import {
+  continueScenario,
   errorScenario,
   MOCK_ASK,
   MOCK_NETWORK_DOWN,
@@ -49,6 +52,7 @@ import {
   planScenario,
   promptScenario,
   type ScenarioStep,
+  steerRecords,
 } from "./scenario";
 
 // 浏览器预览用的 mock 平台（第 16.1.1 节）：不依赖 Tauri 与 Rust，
@@ -251,13 +255,16 @@ export const MOCK_CONTEXT_STATS: ContextStatsData = {
 const MOCK_CONTEXT_BASE = 26_000;
 
 /** mock 内核注册的扩展命令（get_commands） */
-const MOCK_COMMANDS: RpcSlashCommand[] = ["primus-mode", CONTEXT_STATS_COMMAND, PLAN_COMMAND].map(
-  (name) => ({
-    name,
-    source: "extension",
-    sourceInfo: { path: "primus-bundle.js", source: "local", scope: "user", origin: "top-level" },
-  }),
-);
+const MOCK_COMMANDS: RpcSlashCommand[] = [
+  "primus-mode",
+  CONTEXT_STATS_COMMAND,
+  PLAN_COMMAND,
+  CONTINUE_COMMAND,
+].map((name) => ({
+  name,
+  source: "extension",
+  sourceInfo: { path: "primus-bundle.js", source: "local", scope: "user", origin: "top-level" },
+}));
 
 /** 队列项：记录本身，或推送时才生成的记录（get_messages 的响应在推送那一刻取历史快照） */
 type Queued = CoreRecord | (() => CoreRecord);
@@ -271,6 +278,8 @@ interface MockSession {
   seq: number;
   messages: AgentMessage[];
   queue: Queued[];
+  /** 立即推送的记录（插话入队、清空队列的快照），按提交顺序先于 queue 投递 */
+  urgent: Queued[];
   timer: ReturnType<typeof setTimeout> | undefined;
   streaming: boolean;
   closed: boolean;
@@ -297,6 +306,11 @@ interface MockSession {
   askPrompt?: string;
   /** 当前计划（按提问的回答调整过的演示计划） */
   plan?: PlanDoc;
+  /** 运行中收到的插话（prompt + streamingBehavior: "steer"）：推送到本轮 agent_end 前时写进对话 */
+  /** 待写入的插话（含图片），queue_update 只报文字 */
+  steering: { text: string; images?: ImageContent[] }[];
+  /** 本轮 agent_end 已推送、尚未 agent_settled：此时插话已无法在本轮写入，不再受理 */
+  ending: boolean;
 }
 
 const MOCK_WORKSPACE = "C:\\Users\\mock\\示例工作区";
@@ -429,6 +443,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
   // 会话索引（模拟薄壳的 session_index）：会话文件路径 → 摘要与已定稿的消息
   const sessionIndex: SessionSummary[] = [];
   const history = new Map<string, AgentMessage[]>();
+  /** 联网设置（浏览器预览只存在内存里） */
+  const webSettings = { enabled: true };
   let indexListener: ((e: SessionIndexEvent) => void) | undefined;
   let indexSeq = 0;
   const notifyIndex = () => {
@@ -558,7 +574,9 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       s.messages.push(r.message);
       touchIndex(s);
     }
+    if (r.type === "agent_end") s.ending = true;
     if (r.type === "agent_settled") {
+      s.ending = false;
       s.streaming = false;
       s.aborting = false;
       s.delivered = [];
@@ -567,13 +585,34 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
 
   const flush = (s: MockSession) => {
     s.timer = undefined;
-    if (s.closed || s.queue.length === 0) return;
-    const records = s.queue.splice(0, batchSize).map((item) => {
+    if (s.closed || (s.queue.length === 0 && s.urgent.length === 0)) return;
+    const records: CoreRecord[] = [];
+    while (records.length < batchSize && s.urgent.length > 0) {
+      const item = s.urgent.shift() as Queued;
+      const r = typeof item === "function" ? item() : item;
+      deliver(s, r);
+      records.push(r);
+    }
+    while (records.length < batchSize && s.queue.length > 0) {
+      const head = s.queue[0];
+      // 本轮快结束时逐条投递插话（与 one-at-a-time 一致）：插在 agent_end 前，与 Core 在同一轮内继续一致
+      if (typeof head !== "function" && head?.type === "agent_end" && s.steering.length > 0) {
+        const next = s.steering.splice(0, 1);
+        s.queue.unshift(
+          ...steerRecords(
+            next,
+            now(),
+            s.steering.map((x) => x.text),
+          ),
+        );
+        continue;
+      }
+      const item = s.queue.shift() as Queued;
       // 按顺序推送：生成型记录在它之前的记录都已计入历史后才生成
       const r = typeof item === "function" ? item() : item;
       deliver(s, r);
-      return r;
-    });
+      records.push(r);
+    }
     s.seq += 1;
     if (!options.dropBatch?.(s.seq, records))
       s.onBatch({ sessionKey: s.key, seq: s.seq, records, dropped: 0 });
@@ -581,12 +620,17 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
   };
 
   const schedule = (s: MockSession) => {
-    if (s.timer === undefined && s.queue.length > 0)
+    if (s.timer === undefined && (s.queue.length > 0 || s.urgent.length > 0))
       s.timer = setTimeout(() => flush(s), intervalMs);
   };
 
   const emit = (s: MockSession, ...records: Queued[]) => {
     s.queue.push(...records);
+    schedule(s);
+  };
+  /** 先于普通记录立即推送（运行中也马上回应的命令，如插话入队、清空队列），多次调用之间保持提交顺序 */
+  const emitNow = (s: MockSession, ...records: Queued[]) => {
+    s.urgent.push(...records);
     schedule(s);
   };
 
@@ -764,6 +808,17 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           emit(s, respond(cmd, { disposition: "handled" }));
           return;
         }
+        if (message.trim() === `/${CONTINUE_COMMAND}`) {
+          if (s.streaming) {
+            emit(s, respond(cmd, { disposition: "handled" }));
+            return;
+          }
+          // 继续：先回 handled（与 Core 命令执行完才回响应一致），再开始一轮不带用户消息的回复
+          s.streaming = true;
+          s.compacted = false;
+          emit(s, respond(cmd, { disposition: "handled" }), ...continueScenario(now()).records);
+          return;
+        }
         if (message.startsWith("/primus-")) {
           // primus-context-stats：先推清单数据（setWidget），再回 handled，与 Core 中命令执行完才回响应一致；不写历史
           if (message.trim() === `/${CONTEXT_STATS_COMMAND}`)
@@ -780,7 +835,16 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           return;
         }
         if (s.streaming) {
-          // 真实 Core 会按 streamingBehavior 排队；mock 只做最简单的拒绝
+          // 运行中：插话排进队列，推送到本轮 agent_end 前写进对话；mock 不支持 followUp
+          if (cmd.streamingBehavior === "steer" && !s.aborting && !s.pendingStep && !s.ending) {
+            s.steering.push({ text: message, images: cmd.images });
+            emitNow(
+              s,
+              { type: "queue_update", steering: s.steering.map((x) => x.text), followUp: [] },
+              respond(cmd, { disposition: "queued" }),
+            );
+            return;
+          }
           emit(s, respond(cmd, undefined, "mock：正在运行中，请先停止或等待结束"));
           return;
         }
@@ -841,6 +905,15 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         }
         const scenario = promptScenario(message, now());
         emit(s, respond(cmd, { disposition: "started" }), ...scenario.records);
+        return;
+      }
+      case "clear_queue": {
+        const steering = s.steering.splice(0).map((x) => x.text);
+        emitNow(
+          s,
+          { type: "queue_update", steering: [], followUp: [] },
+          respond(cmd, { steering, followUp: [] }),
+        );
         return;
       }
       case "abort_retry": {
@@ -1024,6 +1097,11 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       const name = absolute.split(/[\\/]/).pop() ?? "image.png";
       return `C:\\Users\\demo\\Downloads\\${name}`;
     },
+    webSettingsGet: async () => ({ ...webSettings }),
+    webSettingsSet: async (enabled) => {
+      webSettings.enabled = enabled;
+      return { ...webSettings };
+    },
     workspaceTrust: async (path, trusted) => {
       const ws = workspaces.get(path);
       if (ws) Object.assign(ws, { trusted, needsTrust: false });
@@ -1035,6 +1113,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       extensions: ["guard.ts"],
       skills: ["review"],
       mcpServers: ["github"],
+      agentsMcpServers: ["docs"],
       agentsSkills: [".agents/skills/lint"],
     }),
 
@@ -1093,6 +1172,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         seq: 0,
         messages: history.get(path)?.slice() ?? [],
         queue: [],
+        urgent: [],
         timer: undefined,
         streaming: false,
         closed: false,
@@ -1102,6 +1182,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         thinkingLevel: "medium",
         autoCompaction: true,
         compacted: false,
+        steering: [],
+        ending: false,
       });
       return { sessionKey: key, sessionId: sessionPath ? null : key };
     },
@@ -1124,6 +1206,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       if (s.timer !== undefined) clearTimeout(s.timer);
       if (s.pendingStep) clearTimeout(s.pendingStep.timer);
       s.queue = [];
+      s.urgent = [];
       sessions.delete(sessionKey);
     },
     sessionDelete: async (path) => {
@@ -1135,6 +1218,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         if (s.pendingStep) clearTimeout(s.pendingStep.timer);
         if (s.pendingStep) clearTimeout(s.pendingStep.timer);
         s.queue = [];
+        s.urgent = [];
         sessions.delete(key);
       }
       const i = sessionIndex.findIndex((x) => x.path === path);
@@ -1160,6 +1244,9 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       if (s.pendingStep) clearTimeout(s.pendingStep.timer);
       s.pendingStep = undefined;
       s.queue = [];
+      s.urgent = [];
+      s.steering = [];
+      s.ending = false;
       s.streaming = false;
       s.aborting = false;
       s.delivered = [];

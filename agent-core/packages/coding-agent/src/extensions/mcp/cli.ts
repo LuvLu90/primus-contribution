@@ -6,7 +6,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import chalk from "chalk";
 import { APP_NAME, CONFIG_DIR_NAME } from "../../config.ts";
 import { validateMcpServerConfig } from "../../core/mcp-servers.ts";
@@ -15,7 +15,11 @@ import { ProjectTrustStore } from "../../core/trust-manager.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { questionTerminal } from "../../utils/terminal-question.ts";
 import {
+	AGENTS_DIR_NAME,
 	addMcpServerConfig,
+	definesMcpServer,
+	getAgentsMcpConfigPath,
+	getMcpHomeDir,
 	getMcpToolExposure,
 	type LoadedMcpConfig,
 	loadMcpConfig,
@@ -40,7 +44,8 @@ const HELP = `${chalk.bold("Usage:")}
   ${APP_NAME} mcp logout <server> [-l]
 
 Configure and check MCP servers and sign in to OAuth servers without starting a session.
-Reads ~/${CONFIG_DIR_NAME}/agent/mcp.json and, in trusted projects, ${CONFIG_DIR_NAME}/mcp.json.
+Reads ~/${CONFIG_DIR_NAME}/agent/mcp.json and ~/${AGENTS_DIR_NAME}/mcp.json and, in trusted projects,
+${CONFIG_DIR_NAME}/mcp.json and ${AGENTS_DIR_NAME}/mcp.json. Files in ${AGENTS_DIR_NAME}/ are read but never edited.
 
 Commands:
   add <server>            Add or replace a server in mcp.json
@@ -91,13 +96,15 @@ export interface McpCommandOptions {
 	/** Defaults to console output. */
 	log?: (line: string) => void;
 	error?: (line: string) => void;
+	/** Where `~/.agents/mcp.json` is read from. Defaults to the user's home directory. */
+	homeDir?: string;
 }
 
 interface ServerReport {
 	name: string;
 	scope: string;
 	source: string;
-	/** Project `mcp.json` that overrides `enabled`, `exposure`, or `toolExposure` of this global server. */
+	/** `mcp.json` that overrides `enabled`, `exposure`, or `toolExposure` of this server. */
 	override?: string;
 	enabled: boolean;
 	exposure: string;
@@ -238,10 +245,16 @@ export async function runMcpCommand(args: string[], options: McpCommandOptions):
 			: remove(rest, projectConfig, options, log, error);
 	}
 	const projectTrusted = new ProjectTrustStore(options.agentDir).get(options.cwd) === true;
-	const loaded = loadMcpConfig({ agentDir: options.agentDir, cwd: options.cwd, projectTrusted });
+	const loaded = loadMcpConfig({
+		agentDir: options.agentDir,
+		cwd: options.cwd,
+		projectTrusted,
+		homeDir: options.homeDir,
+	});
+	const ignored = projectTrusted ? [] : projectConfigFiles(projectConfig, options).filter((path) => existsSync(path));
 	const untrustedNote =
-		!projectTrusted && existsSync(projectConfig)
-			? `${projectConfig} is ignored because the project is not trusted. Start ${APP_NAME} in the project to trust it.`
+		ignored.length > 0
+			? `${ignored.join(" and ")} ${ignored.length === 1 ? "is" : "are"} ignored because the project is not trusted. Start ${APP_NAME} in the project to trust it.`
 			: undefined;
 	const credentials = options.credentials ?? new McpOAuthCredentialStore();
 	const providerToken = options.providerToken ?? createProviderTokenReader(options.agentDir);
@@ -315,6 +328,13 @@ export async function runMcpCommand(args: string[], options: McpCommandOptions):
 			error(`Unknown mcp command "${command}".\n${HELP_HINT}`);
 			return 1;
 	}
+}
+
+/** The project's config files: `.primus/mcp.json` and, unless it is the global one, `.agents/mcp.json`. */
+function projectConfigFiles(projectConfig: string, options: McpCommandOptions): string[] {
+	const agents = getAgentsMcpConfigPath(options.cwd);
+	const globalAgents = getAgentsMcpConfigPath(options.homeDir ?? getMcpHomeDir());
+	return resolvePath(agents) === resolvePath(globalAgents) ? [projectConfig] : [projectConfig, agents];
 }
 
 /** Levenshtein distance, to suggest a configured server name for a mistyped one. */
@@ -456,6 +476,10 @@ function add(
 		return 1;
 	}
 	log(`${replaced ? "Replaced" : "Added"} ${scope} MCP server "${name}" in ${path}.`);
+	const shadowed = getAgentsMcpConfigPath(project ? options.cwd : (options.homeDir ?? getMcpHomeDir()));
+	if (definesMcpServer(shadowed, name)) {
+		log(`${shadowed} also defines "${name}"; ${path} takes precedence and ${shadowed} is not changed.`);
+	}
 	if (project && new ProjectTrustStore(options.agentDir).get(options.cwd) !== true) {
 		log(`The project is not trusted, so ${path} is ignored until you start ${APP_NAME} in the project and trust it.`);
 	}
@@ -494,13 +518,23 @@ function remove(
 		error(`Could not update ${path}: ${errorMessage(removeError)}`);
 		return 1;
 	}
+	const shared = getAgentsMcpConfigPath(project ? options.cwd : (options.homeDir ?? getMcpHomeDir()));
+	const sharedNote = `${APP_NAME} does not edit ${shared}; remove the server there, or disable it with /mcp (saved as an override in ${path}).`;
 	if (removed) {
 		log(`Removed ${scope} MCP server "${name}" from ${path}.`);
+		if (definesMcpServer(shared, name)) log(`"${name}" is still defined in ${shared}. ${sharedNote}`);
 		return 0;
 	}
-	const other = loadMcpConfig({ agentDir: options.agentDir, cwd: options.cwd, projectTrusted: true }).servers.find(
-		(server) => server.name === name && server.scope !== scope,
-	);
+	if (definesMcpServer(shared, name)) {
+		error(`MCP server "${name}" is defined in ${shared}, not in ${path}. ${sharedNote}`);
+		return 1;
+	}
+	const other = loadMcpConfig({
+		agentDir: options.agentDir,
+		cwd: options.cwd,
+		projectTrusted: true,
+		homeDir: options.homeDir,
+	}).servers.find((server) => server.name === name && server.scope !== scope);
 	error(
 		`No ${scope} MCP server named "${name}" in ${path}.${other ? ` It is defined in ${other.source}${other.scope === "project" ? "; use --local" : "; omit --local"}.` : ""}`,
 	);
@@ -564,7 +598,9 @@ async function list(
 		return failed ? 1 : 0;
 	}
 	if (reports.length === 0 && loaded.errors.length === 0) {
-		log(`No MCP servers configured. Add them to ${join(options.agentDir, "mcp.json")} or .pi/mcp.json.`);
+		log(
+			`No MCP servers configured. Add them to ${join(options.agentDir, "mcp.json")} or ${CONFIG_DIR_NAME}/mcp.json.`,
+		);
 	}
 	for (const report of reports) {
 		const state =
@@ -575,7 +611,7 @@ async function list(
 					: report.state;
 		log(`${report.name}: ${state} (${report.exposure}, ${report.scope})`);
 		log(`  ${report.transport}`);
-		if (report.override) log(`  project override: ${report.override}`);
+		if (report.override) log(`  override: ${report.override}`);
 		if (report.state === "needs-auth") {
 			log(
 				report.authProvider

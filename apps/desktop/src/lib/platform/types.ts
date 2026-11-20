@@ -1,4 +1,4 @@
-import type { CoreBatch, RpcCommand } from "@primus/protocol";
+import type { CoreBatch, RpcCommand, WebSettings } from "@primus/protocol";
 
 // 平台接口（附录 B 薄壳命令）。前端只依赖这里的类型，不直接依赖 Tauri。
 // 返回值中细节尚未定稿的字段先用宽松类型，随对应模块落地再收紧。
@@ -29,7 +29,13 @@ export interface TrustDetails {
   agentsMdTruncated: boolean;
   extensions: string[];
   skills: string[];
+  /** `.primus/mcp.json` 中的服务器名；文件无法解析或过大时为 `["mcp.json"]` */
   mcpServers: string[];
+  /**
+   * 工作区本级 `.agents/mcp.json` 中的服务器名（不往上级找，与 Core 一致，ADR 0022）；
+   * 文件无法解析或过大时为 `["mcp.json"]`
+   */
+  agentsMcpServers: string[];
   /**
    * 工作区及上级目录（到 Git 仓库根为止）`.agents/skills` 中信任后 Core 会加载的技能，
    * 带相对工作区的目录前缀（如 `.agents/skills/review`、`../.agents/skills/lint`）
@@ -259,6 +265,11 @@ export interface Platform {
    */
   imageSave(path: string): Promise<string | null>;
 
+  /** 联网设置（ADR 0020）：是否允许 AI 联网搜索与读取网页；没有设置时为默认（开启） */
+  webSettingsGet(): Promise<WebSettings>;
+  /** 修改联网设置；下一轮对话开始时生效，不需要重启内核 */
+  webSettingsSet(enabled: boolean): Promise<WebSettings>;
+
   /**
    * 会话列表：最后活动时间倒序、每页 50 条、不含已归档。`workspace` 为 null 时列出全部工作区，
    * 空串为未选工作区的默认目录；`cursor` 为上一页的 `nextCursor`
@@ -474,6 +485,17 @@ export interface McpConfigFile {
   text: string | null;
   /** 版本，写入时原样带回 */
   version: string;
+  /** `~/.agents/mcp.json`（与其他工具共用，只读，ADR 0022）；主目录未知时为 null */
+  agents?: SharedMcpFile | null;
+}
+
+/** 只读展示的 `~/.agents/mcp.json` */
+export interface SharedMcpFile {
+  path: string;
+  /** 原文；文件不存在或读不出时为 null */
+  text: string | null;
+  /** 读不出的原因 */
+  error: string | null;
 }
 
 /** 一次 Core 命令行调用的结果（`mcp list` / `login` / `logout`） */
@@ -561,6 +583,8 @@ export const COMMANDS = {
   dialogPickFolder: "dialog_pick_folder",
   dialogPickFiles: "dialog_pick_files",
   imageSave: "image_save",
+  webSettingsGet: "web_settings_get",
+  webSettingsSet: "web_settings_set",
   sessionDefaultWorkspace: "session_default_workspace",
   sessionList: "session_list",
   sessionSearch: "session_search",

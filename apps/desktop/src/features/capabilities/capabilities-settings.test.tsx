@@ -227,6 +227,86 @@ describe("设置·能力中心·MCP", () => {
     );
   });
 
+  it("~/.agents/mcp.json 只读展示：启停写成用户级 mcp.json 的覆盖项，不能编辑或删除", async () => {
+    const platform = setup();
+    const write = vi.spyOn(platform, "mcpConfigWrite");
+    openMcp();
+    const shared = await row(tm.shared.title, "shared-docs");
+    expect(screen.getByText(tm.shared.hint)).toBeTruthy();
+    expect(within(shared).queryByRole("button", { name: "编辑 shared-docs" })).toBeNull();
+    expect(within(shared).queryByRole("button", { name: "删除 shared-docs" })).toBeNull();
+    const before = (await platform.mcpConfigRead()).agents?.text;
+    fireEvent.click(within(shared).getByRole("switch", { name: "启用 shared-docs" }));
+    await waitFor(() => expect(write).toHaveBeenCalled());
+    const file = await platform.mcpConfigRead();
+    expect(JSON.parse(file.text ?? "").mcpServers["shared-docs"]).toEqual({ enabled: false });
+    expect(file.agents?.text).toBe(before);
+    // 覆盖项不在用户级列表里单独出现
+    const own = await screen.findByRole("list", { name: tm.title });
+    expect(within(own).queryByText("shared-docs")).toBeNull();
+    await waitFor(async () =>
+      expect(
+        within(await row(tm.shared.title, "shared-docs"))
+          .getByRole("switch", { name: "启用 shared-docs" })
+          .getAttribute("aria-checked"),
+      ).toBe("false"),
+    );
+  });
+
+  it("覆盖项的值不合法：共享服务器按原定义显示并标出覆盖项错误，开关不可用", async () => {
+    const platform = createMockPlatform();
+    const f = await platform.mcpConfigRead();
+    const servers = JSON.parse(f.text ?? "{}").mcpServers ?? {};
+    await platform.mcpConfigWrite(
+      JSON.stringify({ mcpServers: { ...servers, "shared-docs": { exposure: "nope" } } }),
+      f.version,
+    );
+    setPlatformForTesting(platform);
+    render(<CapabilitiesSettings />);
+    openMcp();
+    const shared = await row(tm.shared.title, "shared-docs");
+    expect(shared.textContent).toContain(tm.invalid);
+    expect(shared.textContent).toContain("exposure");
+    expect(shared.textContent).toContain(tm.exposures.codemode);
+    const sw = within(shared).getByRole("switch", { name: "启用 shared-docs" });
+    expect(sw.getAttribute("aria-checked")).toBe("true");
+    expect(sw.hasAttribute("disabled") || sw.getAttribute("data-disabled") !== null).toBe(true);
+  });
+
+  it("共享定义在页面打开后被改成停用：启停按冲突重新读取，再启用时写 enabled: true", async () => {
+    const platform = setup();
+    const read = platform.mcpConfigRead.bind(platform);
+    const write = vi.spyOn(platform, "mcpConfigWrite");
+    openMcp();
+    const before = await row(tm.shared.title, "shared-docs");
+    expect(
+      within(before).getByRole("switch", { name: "启用 shared-docs" }).getAttribute("aria-checked"),
+    ).toBe("true");
+    // 之后的读取：~/.agents/mcp.json 已在别处把 shared-docs 停用
+    vi.spyOn(platform, "mcpConfigRead").mockImplementation(async () => {
+      const f = await read();
+      return {
+        ...f,
+        agents: {
+          path: f.agents?.path ?? "",
+          error: null,
+          text: JSON.stringify({ mcpServers: { "shared-docs": { command: "d", enabled: false } } }),
+        },
+      };
+    });
+    fireEvent.click(within(before).getByRole("switch", { name: "启用 shared-docs" }));
+    expect(await screen.findByText(tm.conflict)).toBeTruthy();
+    expect(write).not.toHaveBeenCalled();
+    const after = await row(tm.shared.title, "shared-docs");
+    const sw = within(after).getByRole("switch", { name: "启用 shared-docs" });
+    expect(sw.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(sw);
+    await waitFor(() => expect(write).toHaveBeenCalled());
+    expect(
+      JSON.parse((await platform.mcpConfigRead()).text ?? "").mcpServers["shared-docs"],
+    ).toEqual({ enabled: true });
+  });
+
   it("测试连接显示状态；需要登录的服务器登录后连上", async () => {
     const platform = setup();
     const login = vi.spyOn(platform, "mcpLogin");
@@ -528,5 +608,63 @@ describe("entryFromForm", () => {
       tm.dialog.commandRequired,
     );
     expect(() => entryFromForm({ ...form, url: " " }, undefined)).toThrow(tm.dialog.urlRequired);
+  });
+});
+
+describe("设置·能力中心·联网（ADR 0020）", () => {
+  afterEach(() => setPlatformForTesting(undefined));
+  const tw = t.web;
+
+  it("默认开启；关闭后写入设置", async () => {
+    const platform = setup();
+    const set = vi.spyOn(platform, "webSettingsSet");
+    const toggle = await screen.findByRole("switch", { name: tw.enabled });
+    await waitFor(() => expect((toggle as HTMLInputElement).disabled).toBe(false));
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(set).toHaveBeenCalledWith(false));
+    await waitFor(() => expect((toggle as HTMLInputElement).checked).toBe(false));
+  });
+
+  it("保存失败时恢复原值并显示原因", async () => {
+    setup({ webSettingsSet: async () => Promise.reject(new Error("磁盘已满")) });
+    const toggle = await screen.findByRole("switch", { name: tw.enabled });
+    await waitFor(() => expect((toggle as HTMLInputElement).disabled).toBe(false));
+    fireEvent.click(toggle);
+    expect(await screen.findByText("磁盘已满")).toBeTruthy();
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("读取失败时不显示为已关闭，支持显式关闭联网", async () => {
+    const set = vi.fn(async (enabled: boolean) => ({ enabled }));
+    setup({
+      webSettingsGet: async () => Promise.reject(new Error("文件被占用")),
+      webSettingsSet: set,
+    });
+    expect(await screen.findByText("文件被占用")).toBeTruthy();
+    // 未知状态：不显示误导性的关闭开关
+    expect(screen.queryByRole("switch", { name: tw.enabled })).toBeNull();
+    // 显式关闭联网会直接提交 false
+    fireEvent.click(screen.getByRole("button", { name: tw.disable }));
+    await waitFor(() => expect(set).toHaveBeenCalledWith(false));
+    const toggle = await screen.findByRole("switch", { name: tw.enabled });
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("读取失败后点击重试可恢复显示当前设置", async () => {
+    let failRead = true;
+    setup({
+      webSettingsGet: async () => {
+        if (failRead) throw new Error("权限不足");
+        return { enabled: true };
+      },
+    });
+    expect(await screen.findByText("权限不足")).toBeTruthy();
+    expect(screen.queryByRole("switch", { name: tw.enabled })).toBeNull();
+    failRead = false;
+    fireEvent.click(screen.getByRole("button", { name: tw.retry }));
+    const toggle = await screen.findByRole("switch", { name: tw.enabled });
+    await waitFor(() => expect((toggle as HTMLInputElement).disabled).toBe(false));
+    expect((toggle as HTMLInputElement).checked).toBe(true);
   });
 });

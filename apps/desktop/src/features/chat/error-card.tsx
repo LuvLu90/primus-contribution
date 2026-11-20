@@ -42,8 +42,8 @@ const fill = (template: string, values: Record<string, string | number>) =>
   template.replace(/\{(\w+)\}/g, (_, k: string) => String(values[k] ?? ""));
 
 export interface ErrorActions {
-  /** 重新发送上一条消息（只在最后一轮、空闲时提供） */
-  onRetry?: () => void;
+  /** 继续：让 Agent 从当前上下文接着做，不重发上一句（只在最后一轮、空闲时提供） */
+  onContinue?: () => void;
   /** 打开设置的模型渠道 */
   onOpenSettings?: () => void;
 }
@@ -155,10 +155,10 @@ export function ErrorCard({
           </span>
         )}
         {retried && <span className="min-w-0 truncate text-2xs text-muted">{retried}</span>}
-        {actions?.onRetry && (
-          <button type="button" className={primaryButton} onClick={actions.onRetry}>
-            <Icon name="retry" size="sm" />
-            {t.retry}
+        {actions?.onContinue && (
+          <button type="button" className={primaryButton} onClick={actions.onContinue}>
+            <Icon name="chevron-right" size="sm" />
+            {strings.chat.continue}
           </button>
         )}
         {settingsHelps && actions?.onOpenSettings && (

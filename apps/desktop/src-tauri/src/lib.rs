@@ -33,6 +33,7 @@ mod supervisor;
 mod tray;
 mod updater;
 mod vault;
+mod web_settings;
 mod window_placement;
 mod workspaces;
 
@@ -296,6 +297,8 @@ pub fn run() {
             commands::dialog_pick_folder,
             commands::dialog_pick_files,
             commands::image_save,
+            commands::web_settings_get,
+            commands::web_settings_set,
             commands::session_default_workspace,
             commands::session_list,
             commands::session_search,

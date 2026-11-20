@@ -1254,6 +1254,135 @@ describe("对话区（mock 事件流）", () => {
     });
   });
 
+  it("运行中发送直接插话：先显示待插入，Core 写入后换成正式气泡并在同一轮里继续", async () => {
+    const base = createMockPlatform({ intervalMs: 30, batchSize: 2 });
+    const coreSend = vi.fn(base.coreSend);
+    setPlatformForTesting({ ...base, coreSend });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "长任务" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("button", { name: t.stop });
+    // 欢迎页离场结束、回复开始显示后再插话
+    await screen.findByRole("article", { name: t.assistant });
+    // 有内容时停止按钮换成发送（插话）
+    fireEvent.change(input, { target: { value: "顺便用中文注释" } });
+    expect(screen.getByRole("button", { name: t.steerSend })).toBeTruthy();
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(
+        coreSend.mock.calls.some(
+          ([, r]) =>
+            r.type === "prompt" &&
+            (r as { streamingBehavior?: string }).streamingBehavior === "steer" &&
+            (r as { message?: string }).message === "顺便用中文注释",
+        ),
+      ).toBe(true),
+    );
+    expect(await screen.findByTestId("pending-steer")).toBeTruthy();
+    expect(screen.getByText(t.steerPending)).toBeTruthy();
+    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(""));
+    // 写入后：待插入气泡消失，正式气泡与对插话的回答出现，没有排队
+    expect(
+      await screen.findByText(/收到补充：「顺便用中文注释」/, {}, { timeout: 5000 }),
+    ).toBeTruthy();
+    expect(screen.queryByTestId("pending-steer")).toBeNull();
+    expect(screen.getAllByText("顺便用中文注释")).toHaveLength(1);
+    expect(coreSend.mock.calls.some(([, r]) => r.type === "follow_up")).toBe(false);
+  });
+
+  it("停止时还没写入的插话取回并在停止后立即作为新消息发出", async () => {
+    const base = createMockPlatform({ intervalMs: 150, batchSize: 1 });
+    const coreSend = vi.fn(base.coreSend);
+    setPlatformForTesting({ ...base, coreSend });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "长任务" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("article", { name: t.assistant }, { timeout: 5000 });
+    fireEvent.change(input, { target: { value: "改成先写测试" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByTestId("pending-steer", {}, { timeout: 3000 });
+    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(""));
+    fireEvent.click(screen.getByRole("button", { name: t.stop }));
+    await waitFor(() => expect(coreSend.mock.calls.some(([, r]) => r.type === "abort")).toBe(true));
+    const order = coreSend.mock.calls.map(([, r]) => r.type);
+    expect(order.indexOf("clear_queue")).toBeLessThan(order.indexOf("abort"));
+    // 停止后作为普通消息发出
+    expect(
+      await screen.findByText(/你刚才说：「改成先写测试」/, {}, { timeout: 8000 }),
+    ).toBeTruthy();
+    expect(screen.getByText(t.stopped)).toBeTruthy();
+  }, 20000);
+
+  it("停止时 Core 已清空插话队列、响应丢失：插话放回输入框，不自动重发，空闲后再清一次队列", async () => {
+    const base = createMockPlatform({ intervalMs: 150, batchSize: 1 });
+    let lose = true;
+    // 第一次 clear_queue 交给 mock 执行（Core 已清空），但调用方拿不到结果
+    const coreSend = vi.fn(async (key: string, record: Parameters<typeof base.coreSend>[1]) => {
+      if (record.type === "clear_queue" && lose) {
+        lose = false;
+        await base.coreSend(key, record);
+        throw new Error("响应丢失");
+      }
+      return base.coreSend(key, record);
+    });
+    setPlatformForTesting({ ...base, coreSend });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "长任务" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("article", { name: t.assistant }, { timeout: 5000 });
+    fireEvent.change(input, { target: { value: "改成先写测试" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByTestId("pending-steer", {}, { timeout: 3000 });
+    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(""));
+    fireEvent.click(screen.getByRole("button", { name: t.stop }));
+    // 插话回到输入框，待插入气泡撤下；仍然发出停止
+    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe("改成先写测试"));
+    expect(screen.queryByTestId("pending-steer")).toBeNull();
+    await waitFor(() => expect(coreSend.mock.calls.some(([, r]) => r.type === "abort")).toBe(true));
+    // 本轮结束后再清一次队列；插话没有被自动发出
+    await waitFor(() => expect(screen.getByText(t.stopped)).toBeTruthy(), { timeout: 8000 });
+    await waitFor(() =>
+      expect(coreSend.mock.calls.filter(([, r]) => r.type === "clear_queue")).toHaveLength(2),
+    );
+    const prompts = coreSend.mock.calls.filter(
+      ([, r]) =>
+        r.type === "prompt" &&
+        (r as { message?: string }).message === "改成先写测试" &&
+        (r as { streamingBehavior?: string }).streamingBehavior !== "steer",
+    );
+    expect(prompts).toHaveLength(0);
+    expect(screen.queryByText(/你刚才说：「改成先写测试」/)).toBeNull();
+    expect((input as HTMLTextAreaElement).value).toBe("改成先写测试");
+  }, 20000);
+
+  it("已停止的回复显示“继续”：发 /primus-continue，不新增用户气泡", async () => {
+    const base = createMockPlatform({ intervalMs: 60, batchSize: 2 });
+    const coreSend = vi.fn(base.coreSend);
+    setPlatformForTesting({ ...base, coreSend });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "长任务" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("article", { name: t.assistant });
+    fireEvent.click(await screen.findByRole("button", { name: t.stop }));
+    const cont = await screen.findByRole("button", { name: t.continue }, { timeout: 3000 });
+    fireEvent.click(cont);
+    await waitFor(() =>
+      expect(
+        coreSend.mock.calls.some(
+          ([, r]) =>
+            r.type === "prompt" && (r as { message?: string }).message === "/primus-continue",
+        ),
+      ).toBe(true),
+    );
+    expect(await screen.findByText(/你刚才说：「继续」/, {}, { timeout: 5000 })).toBeTruthy();
+    expect(screen.getAllByText("长任务")).toHaveLength(1);
+    await waitFor(() => expect(screen.queryByRole("button", { name: t.continue })).toBeNull());
+  }, 15000);
+
   it("输入框里按 Esc 不停止；停止进行中按钮禁用，不重复发 abort", async () => {
     const base = createMockPlatform({ intervalMs: 20, batchSize: 2 });
     const coreSend = vi.fn(base.coreSend);
@@ -1384,14 +1513,16 @@ describe("对话区（mock 事件流）", () => {
     await waitFor(() => expect(document.activeElement).toBe(opener));
   });
 
-  it("回复出错显示错误卡片，重试重新发送上一条消息；可去设置检查渠道", async () => {
+  it("回复出错显示错误卡片，可去设置检查渠道；“继续”发 /primus-continue 接着做，不重发上一句", async () => {
     const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
     setPlatformForTesting(platform);
     const prompts: string[] = [];
+    const commands: string[] = [];
     const coreSend = platform.coreSend.bind(platform);
     vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
-      if (isUserPrompt(record as { type: string; message?: unknown }))
-        prompts.push(String((record as { message: string }).message));
+      const r = record as { type: string; message?: unknown };
+      if (isUserPrompt(r)) prompts.push(String(r.message));
+      else if (r.type === "prompt") commands.push(String(r.message));
       return coreSend(key, record);
     });
     render(<ChatPanel />);
@@ -1403,20 +1534,16 @@ describe("对话区（mock 事件流）", () => {
     });
     fireEvent.click(within(card).getByRole("button", { name: t.replyError.details }));
     expect(card.textContent).toContain("401");
-    const retry = await screen.findByRole("button", { name: t.replyError.retry });
-    fireEvent.click(retry);
-    await waitFor(() => expect(prompts).toEqual(["你好 #错误:认证", "你好 #错误:认证"]));
-    // 第二次同样失败：两张卡片，只有最后一张能重试
-    await waitFor(() =>
-      expect(screen.getAllByRole("region", { name: /回复出错/ })).toHaveLength(2),
-    );
-    await waitFor(() =>
-      expect(screen.getAllByRole("button", { name: t.replyError.retry })).toHaveLength(1),
-    );
-    fireEvent.click(
-      screen.getAllByRole("button", { name: t.replyError.openSettings })[0] as HTMLElement,
-    );
+    expect(within(card).queryByRole("button", { name: t.replyError.retry })).toBeNull();
+    fireEvent.click(within(card).getByRole("button", { name: t.replyError.openSettings }));
     expect(useRouter().push).toHaveBeenCalledWith("/settings/?group=models");
+    fireEvent.click(within(card).getByRole("button", { name: t.continue }));
+    await waitFor(() => expect(commands).toContain("/primus-continue"));
+    // 不重发上一句；继续的回复接在同一轮里，没有新的用户气泡
+    expect(prompts).toEqual(["你好 #错误:认证"]);
+    expect(await screen.findByText(/你刚才说：「继续」/)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("region", { name: /回复出错/ })).toBeNull());
+    expect(screen.getAllByText("你好 #错误:认证")).toHaveLength(1);
   });
 
   it("自动重试时显示倒计时与停止重试；停止后显示错误卡片并注明已停止", async () => {

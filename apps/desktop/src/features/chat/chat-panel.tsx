@@ -33,7 +33,7 @@ import { strings } from "@/lib/strings";
 import { useModelsInfo, useProviderNames } from "@/lib/use-models";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
-import { AgentProgress } from "./agent-progress";
+import { LipProgress } from "./agent-progress";
 import { AgentTurn } from "./agent-turn";
 import { ApprovalCard } from "./approval-card";
 import { AskCard } from "./ask-card";
@@ -81,6 +81,12 @@ function imagesOf(content: unknown): ImageContent[] {
   return Array.isArray(content)
     ? content.filter((c): c is ImageContent => (c as { type?: string })?.type === "image")
     : [];
+}
+
+/** 把要回填输入框的图片（base64）还原成附件可接收的 Blob */
+function imageToBlob(image: ImageContent, i: number): Blob & { name?: string } {
+  const bytes = Uint8Array.from(atob(image.data), (c) => c.charCodeAt(0));
+  return Object.assign(new Blob([bytes], { type: image.mimeType }), { name: `image-${i + 1}` });
 }
 
 function textOf(content: unknown): string {
@@ -183,6 +189,8 @@ function Welcome({ onPick, leaving }: { onPick: (text: string) => void; leaving:
 const WELCOME_EXIT_MS = 620;
 /** 发送成功后等待 Core 回显用户消息的最长时间 */
 const PENDING_ECHO_TIMEOUT_MS = 3000;
+/** 点“继续”后等本轮开始的上限；超时仍未开始就解锁按钮 */
+const CONTINUE_START_TIMEOUT_MS = 15000;
 /** 距底部小于该值视为"停在底部" */
 const STICK_THRESHOLD_PX = 48;
 /** 输入框行高与行数范围 */
@@ -248,6 +256,9 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     send,
     abort,
     abortRetry,
+    steer,
+    clearQueue,
+    continueTurn,
     restarting,
     restart,
     respondUi,
@@ -593,12 +604,17 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
       (imageOn && !text) ||
       attachments.pending ||
       voice.recording ||
-      state.running ||
+      (state.running && stopping) ||
       unresponsive ||
       modelConfig.unavailable ||
       submittingRef.current
     )
       return;
+    // 运行中发送：直接插话（与 Codex 的 steer 一致），不排队等这一轮结束
+    if (state.running) {
+      submitSteer(text);
+      return;
+    }
     submittingRef.current = true;
     setSubmitting(true);
     stickToBottom.current = true;
@@ -625,47 +641,140 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
       });
   };
 
-  // 错误卡片的“重试”：重新发送上一条用户消息（Core 没有“重新生成”命令；出错的回复不进入模型上下文，
-  // 见 ai/src/api/transform-messages.ts）。附件按空标签重发，文本文件由 primus-attach 重新读取；图片随 images 重发
-  const resendLast = () => {
-    if (busy || modelConfig.unavailable || submittingRef.current) return;
-    const lastUser = state.messages.findLast((m) => m.role === "user");
-    if (lastUser?.role !== "user") return;
-    const images = imagesOf(lastUser.content);
-    const { message: body, files } = splitFileTags(textOf(lastUser.content), {
-      imageHints: images.length > 0,
-    });
-    const message = withAttachments(
-      body,
-      files.map((f) => f.path),
-    );
+  // 运行中插话：消息先以“待插入”气泡显示在对话末尾，Core 在当前工具调用结束、下一次模型请求前把它写进对话，
+  // 写入后（多出一条用户消息）待插入气泡换成正式气泡。`users` 记下发出时已有的用户消息条数，用来判断是否已写入。
+  const [steers, setSteers] = useState<
+    { id: number; text: string; images?: ImageContent[]; users: number }[]
+  >([]);
+  const steerSeq = useRef(0);
+  const steeringRef = useRef(false);
+  const userCount = useMemo(
+    () => state.messages.filter((m) => m.role === "user").length,
+    [state.messages],
+  );
+  // 插话按发出顺序写入，每条一条用户消息：多出几条就有几条已写入
+  const delivered = steers.length > 0 ? Math.max(0, userCount - (steers[0]?.users ?? 0)) : 0;
+  const pendingSteers = steers.slice(delivered);
+  useEffect(() => {
+    if (delivered > 0) setSteers((l) => l.slice(delivered));
+  }, [delivered]);
+  const pendingSteersRef = useRef(pendingSteers);
+  pendingSteersRef.current = pendingSteers;
+
+  const submitSteer = (text: string) => {
+    if (steeringRef.current) return;
+    steeringRef.current = true;
+    // 与普通发送一样锁住输入与附件，确认前不让改草稿（确认后清空的就是这一次的内容）
     submittingRef.current = true;
     setSubmitting(true);
     stickToBottom.current = true;
-    setPendingUser({ text: message, index: state.messages.length, images });
-    void send(message, images.length > 0 ? images : undefined)
+    const { images, paths } = attachments.build();
+    const message = withAttachments(withCapabilities(text, pickedCaps, { image: imageOn }), paths);
+    steerSeq.current += 1;
+    const id = steerSeq.current;
+    setSteers((l) => [...l, { id, text: message, images, users: userCount + l.length }]);
+    void steer(message, images)
+      .then((disposition) => {
+        if (disposition === undefined) {
+          // 失败：撤下气泡，保留草稿以便再发
+          setSteers((l) => l.filter((x) => x.id !== id));
+          return;
+        }
+        // handled（扩展命令）不产生消息；started（Core 刚好已空闲）按普通消息回显，待插入气泡随回显换掉
+        if (disposition === "handled") setSteers((l) => l.filter((x) => x.id !== id));
+        setDraft("");
+        attachments.clear();
+        setPickedCaps([]);
+        setImageOn(false);
+        setExpanded(false);
+      })
+      .finally(() => {
+        steeringRef.current = false;
+        submittingRef.current = false;
+        setSubmitting(false);
+      });
+  };
+
+  // 停止时还没写进对话的插话：停止后立即作为新消息发出（与 Codex 中断时提交待插入内容一致）
+  const resumeAfterStop = useRef<{ text: string; images?: ImageContent[] } | null>(null);
+  const runningRef = useRef(state.running);
+  runningRef.current = state.running;
+  const messagesRef = useRef(state.messages);
+  messagesRef.current = state.messages;
+  // 发出停止时取回的插话；成功后才清掉，失败时把文字和图片放回输入框，可直接再发
+  const sendResume = () => {
+    const resume = resumeAfterStop.current;
+    if (!resume || submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    stickToBottom.current = true;
+    setPendingUser({ text: resume.text, index: messagesRef.current.length, images: resume.images });
+    void send(resume.text, resume.images)
       .then((sent) => {
-        if (!sent) setPendingUser(null);
+        if (resumeAfterStop.current === resume) resumeAfterStop.current = null;
+        if (sent) return;
+        setPendingUser(null);
+        setDraft((d) => (d.trim() ? `${resume.text}\n\n${d}` : resume.text));
+        if (resume.images) attachments.addBlobs(resume.images.map(imageToBlob));
       })
       .finally(() => {
         submittingRef.current = false;
         setSubmitting(false);
       });
   };
-  const resendRef = useRef(resendLast);
-  resendRef.current = resendLast;
+
+  // “继续”：被停止或出错中断后，让 Agent 从当前上下文接着做（/primus-continue），不重发上一句用户消息。
+  // 出错 / 被中止的半截回复不进入模型上下文（ai/src/api/transform-messages.ts），继续提示里已说明
+  // prompt 确认可能早于 agent_start：确认成功后保持锁定直到本轮开始（或兜底超时），免得重复点“继续”
+  // 新一轮也可能先于确认开始（甚至已经结束）：发请求前就记下“等待本轮开始”，看到开始即解锁，确认回来时不再重新上锁
+  const continueHold = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const continueWaiting = useRef(false);
+  const releaseContinue = () => {
+    continueWaiting.current = false;
+    if (continueHold.current) clearTimeout(continueHold.current);
+    continueHold.current = null;
+    submittingRef.current = false;
+    setSubmitting(false);
+  };
+  const continueLast = () => {
+    if (busy || modelConfig.unavailable || submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    stickToBottom.current = true;
+    continueWaiting.current = true;
+    void continueTurn().then((ok) => {
+      if (!ok) {
+        if (continueWaiting.current) releaseContinue();
+        return;
+      }
+      // 本轮已经开始过（已解锁）时不再计时
+      if (continueWaiting.current)
+        continueHold.current = setTimeout(releaseContinue, CONTINUE_START_TIMEOUT_MS);
+    });
+  };
+  useEffect(() => {
+    if (state.running && continueWaiting.current) releaseContinue();
+  });
+  useEffect(
+    () => () => {
+      if (continueHold.current) clearTimeout(continueHold.current);
+    },
+    [],
+  );
+  const continueRef = useRef(continueLast);
+  continueRef.current = continueLast;
   const openSettingsRef = useRef(openModelSettings);
   openSettingsRef.current = openModelSettings;
-  const canRetry = !busy && !modelConfig.unavailable;
+  const canContinue = !busy && !modelConfig.unavailable;
   // 稳定的引用：历史轮次的 memo 不因每次渲染新建的回调而重渲
   const errorActions = useMemo<ErrorActions>(
     () => ({
-      onRetry: canRetry ? () => resendRef.current() : undefined,
+      onContinue: canContinue ? () => continueRef.current() : undefined,
       onOpenSettings: () => openSettingsRef.current(),
     }),
-    [canRetry],
+    [canContinue],
   );
-  // 历史轮次只能去设置里检查渠道（重试只针对最后一轮）
+  // 历史轮次只能去设置里检查渠道（继续只针对最后一轮）
   const settingsOnly = useMemo<ErrorActions>(
     () => ({ onOpenSettings: () => openSettingsRef.current() }),
     [],
@@ -676,22 +785,86 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   // 每次停止一个令牌：旧的 abort 迟到失败时不清除新一轮的停止状态
   const [stopping, setStopping] = useState(false);
   const stopToken = useRef<symbol | null>(null);
+  // 停止时清队列结果不确定：本轮结束后再清一次 Core 队列（插话已放回输入框）
+  const clearQueueWhenIdle = useRef(false);
+  // 把请求前记下、此刻仍未写入对话的插话放回输入框（文字接在草稿前，图片放回附件），并撤下待插入气泡
+  const restoreSteersToComposer = (saved: typeof pendingSteers) => {
+    const pendingIds = new Set(pendingSteersRef.current.map((x) => x.id));
+    const items = saved.filter((x) => pendingIds.has(x.id));
+    if (items.length === 0) return;
+    const ids = new Set(items.map((x) => x.id));
+    setSteers((l) => l.filter((x) => !ids.has(x.id)));
+    const text = items.map((x) => x.text).join("\n\n");
+    setDraft((d) => (d.trim() ? `${text}\n\n${d}` : text));
+    const images = items.flatMap((x) => x.images ?? []);
+    if (images.length > 0) attachments.addBlobs(images.map(imageToBlob));
+  };
   const stop = () => {
     if (!state.running || stopToken.current) return;
     const token = Symbol("stop");
     stopToken.current = token;
     setStopping(true);
-    void abort().then((ok) => {
+    void (async () => {
+      // 先取回还没写进对话的插话，停止后作为一条新消息立即发出
+      if (pendingSteersRef.current.length > 0) {
+        // 请求前先记下插话（文字与图片）：响应丢失时 Core 可能已经清空了队列，仍要能找回
+        const saved = pendingSteersRef.current.slice();
+        const taken = await clearQueue();
+        if (taken === undefined) {
+          // 结果不确定（超时、写入失败或失败响应）：Core 可能已清空队列、也可能还留着。
+          // 不自动重发（可能与 Core 的投递重复），把仍未写入的插话放回输入框由用户决定是否再发，
+          // 并在本轮结束后再清一次队列，免得用户重发时 Core 里残留的副本也被投递
+          restoreSteersToComposer(saved);
+          clearQueueWhenIdle.current = true;
+        } else if (taken.length > 0) {
+          const items = pendingSteersRef.current.slice(-taken.length);
+          setSteers([]);
+          const images = items.flatMap((x) => x.images ?? []);
+          resumeAfterStop.current = {
+            text: items.map((x) => x.text).join("\n\n"),
+            images: images.length > 0 ? images : undefined,
+          };
+        }
+        // 取回期间本轮已自行结束（空闲副作用已错过），或这次停止已失效（又开了新一轮）：
+        // 不拿旧的停止去中止新一轮；取回的插话在空闲时发出
+        if (!runningRef.current || stopToken.current !== token) {
+          if (stopToken.current === token) {
+            stopToken.current = null;
+            setStopping(false);
+          }
+          if (!runningRef.current) {
+            if (clearQueueWhenIdle.current) {
+              clearQueueWhenIdle.current = false;
+              void clearQueue();
+            }
+            sendResume();
+          }
+          return;
+        }
+      }
+      const ok = await abort();
       if (ok || stopToken.current !== token) return;
       stopToken.current = null;
       setStopping(false);
-    });
+    })();
   };
+  // 只响应运行状态变化（一轮结束）；消息条数与发送函数在触发时读取当前值即可
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 只在 running 变化时执行
   useEffect(() => {
     if (state.running) return;
     stopToken.current = null;
     setStopping(false);
+    if (clearQueueWhenIdle.current) {
+      clearQueueWhenIdle.current = false;
+      void clearQueue();
+    }
+    sendResume();
   }, [state.running]);
+  // 取回插话时输入正被另一条发送占用（提交锁）：锁释放后、仍空闲时再发出取回的插话
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 只在提交锁释放时执行
+  useEffect(() => {
+    if (!submitting && !runningRef.current) sendResume();
+  }, [submitting]);
 
   // 一轮结束（运行中 → 空闲）：把 Agent 这一轮最后写出的文件在右栏打开预览。
   // 在后台标签结束的轮次先记下，切回该标签时再预览；新一轮开始时作废。
@@ -837,6 +1010,18 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   </Fragment>
                 );
               })}
+            {/* 待插入的插话：Core 写进对话前显示在末尾，写入后换成正式气泡 */}
+            {!welcomeLeaving &&
+              pendingSteers.map((x, i) => (
+                <div
+                  key={`steer-${x.id}`}
+                  data-testid="pending-steer"
+                  className="flex flex-col items-end gap-1 opacity-70"
+                >
+                  <UserBubble index={state.messages.length + i} text={x.text} images={x.images} />
+                  <span className="text-pulse pe-1 text-2xs text-muted">{t.steerPending}</span>
+                </div>
+              ))}
             {!welcomeLeaving && pendingUser && state.messages.length <= pendingUser.index && (
               // 与回显后那一轮同样的 key：回显时原地替换，不重播进场动画
               <Fragment key={pendingUser.index + 1}>
@@ -852,9 +1037,9 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
             {!welcomeLeaving &&
               (submitting || state.running || pendingUser !== null) &&
               !unresponsive &&
-              (state.messages.length === 0 || state.messages.at(-1)?.role === "user") && (
-                <ThinkingIndicator />
-              )}
+              (state.messages.length === 0 ||
+                state.messages.at(-1)?.role === "user" ||
+                state.messages.at(-1)?.role === "custom") && <ThinkingIndicator />}
             {unresponsive && (
               <div
                 role="alert"
@@ -943,26 +1128,27 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                 onRevise={(feedback) => void revisePlan(awaitingPlan.id as string, feedback)}
               />
             )}
-            {/* 计划进度卡片：有待办时显示在输入框上方，默认收起成一行；有确认 / 提问 / 计划审批时让位 */}
-            {state.todos.length > 0 && (
-              <AgentProgress
-                key={tabId}
-                items={state.todos}
-                hidden={Boolean(pendingUi || state.ask || awaitingPlan?.id)}
-                className="mb-2"
-              />
-            )}
-            {/* 唇条：输入框上沿后面的灰色小舌，显示 Git 分支与工作区（选择工作区也在这里） */}
-            {canUseWorkspaces && (
+            {/* 唇条：输入框上沿后面的灰色小舌，左侧 Git 分支与工作区（选择工作区也在这里），
+                正中计划进度（悬停弹出全部步骤；有确认 / 提问 / 计划审批时让位） */}
+            {(canUseWorkspaces || state.todos.length > 0) && (
               <ComposerLip
-                workspace={shownWorkspace}
-                locked={workspaceLocked}
+                workspace={canUseWorkspaces ? shownWorkspace : null}
+                locked={canUseWorkspaces ? workspaceLocked : true}
                 onPicked={setWorkspace}
                 onClear={() => {
                   setPickError(null);
                   setWorkspace(null);
                 }}
                 onError={setPickError}
+                progress={
+                  state.todos.length > 0 ? (
+                    <LipProgress
+                      key={tabId}
+                      items={state.todos}
+                      hidden={Boolean(pendingUi || state.ask || awaitingPlan?.id)}
+                    />
+                  ) : undefined
+                }
               />
             )}
             {/* 中央已是玻璃，输入框保持实色白底（深色为实色面），保证输入区清晰 */}
@@ -1167,7 +1353,10 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                       onStop={voice.stop}
                     />
                   )}
-                  {state.running ? (
+                  {/* 运行中：输入框为空时是停止按钮，有内容时是发送（插话）按钮 */}
+                  {state.running &&
+                  (stopping ||
+                    (!draft.trim() && !attachments.hasContent && pickedCaps.length === 0)) ? (
                     <Tooltip content={stopping ? t.stopping : t.stop} wrap>
                       <button
                         type="button"
@@ -1187,7 +1376,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     >
                       <button
                         type="submit"
-                        aria-label={t.send}
+                        aria-label={state.running ? t.steerSend : t.send}
                         disabled={
                           submitting ||
                           unresponsive ||

@@ -2,8 +2,8 @@
 
 // 输入框上沿后面的“唇条”：一条灰色小舌，显示当前 Git 分支与工作区（工作区选择从底栏移到这里，功能不变）。
 // 不是 Git 仓库时不显示分支；会话开始后工作区锁定，只显示名称。
-// 计划进度已移到输入框上方的进度卡片（agent-progress.tsx，ADR 0019）。
-import { useEffect, useState } from "react";
+// 计划进度在唇条正中（agent-progress.tsx 的 LipProgress），悬停时向上弹出全部步骤。
+import { type ReactNode, useEffect, useState } from "react";
 import { Icon } from "@/components/icons";
 import { Tooltip } from "@/components/ui/tooltip";
 import { getPlatform } from "@/lib/platform";
@@ -36,7 +36,10 @@ export function ComposerLip({
   onPicked,
   onClear,
   onError,
+  progress,
 }: {
+  /** 正中的计划进度（没有待办时为空） */
+  progress?: ReactNode;
   workspace: WorkspaceInfo | null;
   /** 会话已开始：工作区不能再切换 */
   locked: boolean;
@@ -45,12 +48,14 @@ export function ComposerLip({
   onError: (message: string | null) => void;
 }) {
   const branch = useGitBranch(workspace?.path ?? null);
-  if (!workspace && locked) return null;
+  // 不能选工作区（未授权或已锁定且没有工作区）时只在有计划进度时显示
+  const showWorkspace = !(!workspace && locked);
+  if (!showWorkspace && !progress) return null;
   const item = "lip-item-in flex min-w-0 items-center gap-1.5";
   return (
-    <div className="composer-lip relative mx-3.5 -mb-3 flex h-11 items-center rounded-t-2xl bg-lip px-3.5 pb-3 text-xs text-muted shadow-[inset_0_0_0_1px_var(--color-border)]">
-      <div className="flex min-w-0 shrink-0 items-center gap-4">
-        {branch && (
+    <div className="composer-lip relative mx-3.5 -mb-3 grid h-11 grid-cols-[minmax(0,1fr)_minmax(0,auto)_minmax(0,1fr)] items-center gap-4 rounded-t-2xl bg-lip px-3.5 pb-3 text-xs text-muted shadow-[inset_0_0_0_1px_var(--color-border)]">
+      <div className="flex min-w-0 items-center gap-4">
+        {showWorkspace && branch && (
           <Tooltip
             key={`${workspace?.path}:${branch.name}`}
             content={`${t.lip.branch}：${branch.name}${branch.detached ? `（${t.lip.detached}）` : ""}`}
@@ -61,7 +66,7 @@ export function ComposerLip({
             </span>
           </Tooltip>
         )}
-        {!workspace ? (
+        {!showWorkspace ? null : !workspace ? (
           <WorkspacePicker current={null} onPicked={onPicked} onError={onError}>
             <button
               type="button"
@@ -111,6 +116,8 @@ export function ComposerLip({
           </span>
         )}
       </div>
+      {/* 计划进度在唇条正中 */}
+      <div className="flex min-w-0 justify-center">{progress}</div>
     </div>
   );
 }

@@ -27,14 +27,14 @@ afterEach(() => setPlatformForTesting(undefined));
 
 describe("错误卡片", () => {
   it("连接错误：一行标题与操作，建议在悬停提示里，元信息收在详细信息中", async () => {
-    const onRetry = vi.fn();
+    const onContinue = vi.fn();
     const onOpenSettings = vi.fn();
     render(
       <ErrorCard
         message={failed("Connection error.")}
         providerName="ioply 网关"
         retryResult={{ attempt: 3, success: false, finalError: "Connection error." }}
-        actions={{ onRetry, onOpenSettings }}
+        actions={{ onContinue, onOpenSettings }}
       />,
     );
     expect(
@@ -65,9 +65,9 @@ describe("错误卡片", () => {
     expect(screen.getByText("14:02:11")).toBeTruthy();
     // 没有状态码时不显示 HTTP 状态
     expect(screen.queryByText(t.status)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: t.retry }));
+    fireEvent.click(screen.getByRole("button", { name: strings.chat.continue }));
     fireEvent.click(screen.getByRole("button", { name: t.openSettings }));
-    expect(onRetry).toHaveBeenCalledOnce();
+    expect(onContinue).toHaveBeenCalledOnce();
     expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 
@@ -96,8 +96,8 @@ describe("错误卡片", () => {
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: t.openSettings })).toBeNull();
     expect(screen.queryByRole("button", { name: t.probe })).toBeNull();
-    // 没有重试回调（历史轮次或运行中）时不显示重试
-    expect(screen.queryByRole("button", { name: t.retry })).toBeNull();
+    // 没有继续回调（历史轮次或运行中）时不显示继续
+    expect(screen.queryByRole("button", { name: strings.chat.continue })).toBeNull();
     // 详细信息里保留按类别区分的处理建议
     fireEvent.click(screen.getByRole("button", { name: t.details }));
     expect(

@@ -245,6 +245,28 @@ pub(crate) fn image_save(
     Ok(Some(dest.to_string_lossy().into_owned()))
 }
 
+/// 联网设置（ADR 0020）：是否允许 AI 联网搜索与读取网页。文件不存在或无效时为默认（开启），读取失败时报错。
+#[tauri::command]
+pub(crate) fn web_settings_get(
+    paths: State<'_, DataPaths>,
+) -> Result<crate::web_settings::WebSettings, String> {
+    crate::web_settings::WebSettings::load(&crate::web_settings::settings_file(&paths))
+        .map_err(|e| format!("读取联网设置失败：{e}"))
+}
+
+/// 修改联网设置并保存；Core 的 primus-web 在下一轮对话开始前读取，不需要重启 Core。
+#[tauri::command]
+pub(crate) fn web_settings_set(
+    paths: State<'_, DataPaths>,
+    enabled: bool,
+) -> Result<crate::web_settings::WebSettings, String> {
+    let settings = crate::web_settings::WebSettings { enabled };
+    settings
+        .save(&crate::web_settings::settings_file(&paths))
+        .map_err(|e| format!("保存联网设置失败：{e}"))?;
+    Ok(settings)
+}
+
 /// `session_open` 的返回值。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1299,12 +1321,15 @@ pub(crate) fn skill_set_enabled(
     Ok(())
 }
 
-/// 读取用户级 `mcp.json`（原文与版本）。
+/// 读取用户级 `mcp.json`（原文与版本），并附带只读的 `~/.agents/mcp.json`（ADR 0022）。
 #[tauri::command(async)]
 pub(crate) fn mcp_config_read(
     paths: State<'_, DataPaths>,
 ) -> Result<crate::mcp_config::McpConfigFile, CapabilityError> {
-    Ok(crate::mcp_config::read(&paths.core_dir())?)
+    Ok(crate::mcp_config::read(
+        &paths.core_dir(),
+        crate::skills::home_dir().as_deref(),
+    )?)
 }
 
 /// 写入用户级 `mcp.json`：`version` 须是读出时的版本，文件已被别处修改时以 code `conflict` 拒绝；返回新版本。

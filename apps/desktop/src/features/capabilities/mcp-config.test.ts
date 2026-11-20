@@ -3,6 +3,7 @@ import {
   formatPairs,
   joinCommandLine,
   listServers,
+  listSharedServers,
   nameConflict,
   ownValue,
   parseMcpDocument,
@@ -12,6 +13,7 @@ import {
   removeServer,
   setServer,
   setServerEnabled,
+  setSharedServerEnabled,
   splitCommandLine,
   validateServer,
 } from "./mcp-config";
@@ -352,5 +354,142 @@ describe("表单辅助", () => {
     expect(() => splitCommandLine('a "b')).toThrow("引号");
     const parts = ["C:\\Program Files\\node.exe", 'say "hi"', "", "-y", `console.log("it's")`];
     expect(splitCommandLine(joinCommandLine(parts))).toEqual(parts);
+  });
+});
+
+describe(".agents/mcp.json（与其他工具共用，只读，ADR 0022）", () => {
+  const doc = (servers: Record<string, unknown>) =>
+    parseMcpDocument(JSON.stringify({ mcpServers: servers }));
+
+  it("套用主文件的覆盖项；主文件完整定义同名（含只差 - 与 _）时记为冲突", () => {
+    const shared = doc({
+      docs: { url: "https://d.example.com/mcp" },
+      "my-tools": { command: "t" },
+      off: { command: "o" },
+    });
+    const primary = doc({
+      my_tools: { command: "mine" },
+      off: { enabled: false, exposure: "direct" },
+    });
+    const views = listSharedServers(shared, primary);
+    expect(
+      views.map((v) => [v.name, v.enabled, v.exposure, v.overridden, v.error !== null]),
+    ).toEqual([
+      ["docs", true, "codemode", false, false],
+      ["my-tools", true, "codemode", false, true],
+      ["off", false, "direct", true, false],
+    ]);
+    expect(views[1]?.error).toContain("my_tools");
+  });
+
+  it("项目级不允许 auth，全局级允许", () => {
+    const shared = doc({ k: { url: "https://k.example.com/mcp", auth: { provider: "p" } } });
+    expect(listSharedServers(shared, null)[0]?.error).toBeNull();
+    expect(listSharedServers(shared, null, { global: false })[0]?.error).toContain("auth");
+  });
+
+  it("主文件列表不单独列出覆盖 .agents 服务器的条目", () => {
+    const primary = doc({
+      a: { command: "a" },
+      off: { enabled: false },
+      ghost: { enabled: false },
+    });
+    const shared = doc({ off: { command: "o" } });
+    expect(listServers(primary, shared).map((v) => v.name)).toEqual(["a", "ghost"]);
+  });
+
+  it("启停只改主文件里的覆盖项：启用删掉 enabled，覆盖项变空时整条删除", () => {
+    const text = `${JSON.stringify({ mcpServers: { a: { command: "a" } } }, null, 4)}\n`;
+    const off = setSharedServerEnabled(text, "docs", false);
+    expect(JSON.parse(off).mcpServers).toEqual({ a: { command: "a" }, docs: { enabled: false } });
+    expect(off).toContain('\n    "mcpServers"');
+    const kept = setSharedServerEnabled(
+      JSON.stringify({ mcpServers: { docs: { enabled: false, exposure: "direct" }, a: {} } }),
+      "docs",
+      true,
+    );
+    expect(Object.keys(JSON.parse(kept).mcpServers)).toEqual(["docs", "a"]);
+    expect(JSON.parse(kept).mcpServers.docs).toEqual({ exposure: "direct" });
+    expect(JSON.parse(setSharedServerEnabled(off, "docs", true)).mcpServers).toEqual({
+      a: { command: "a" },
+    });
+    expect(JSON.parse(setSharedServerEnabled(null, "docs", false))).toEqual({
+      mcpServers: { docs: { enabled: false } },
+    });
+    expect(() => setSharedServerEnabled(text, "a", false)).toThrow("a");
+  });
+
+  it("共享定义本身停用时，启用写 enabled: true，往返后为启用", () => {
+    const shared = doc({ docs: { command: "d", enabled: false } });
+    expect(listSharedServers(shared, null)[0]?.enabled).toBe(false);
+    const on = setSharedServerEnabled(null, "docs", true, false);
+    expect(JSON.parse(on).mcpServers.docs).toEqual({ enabled: true });
+    expect(listSharedServers(shared, parseMcpDocument(on))[0]?.enabled).toBe(true);
+    const off = setSharedServerEnabled(on, "docs", false, false);
+    expect(listSharedServers(shared, parseMcpDocument(off))[0]?.enabled).toBe(false);
+  });
+
+  it("含其他键、Core 套用不了的覆盖项留在主列表并标出错误", () => {
+    const primary = doc({ docs: { enabled: false, timeout: 30 } });
+    const shared = doc({ docs: { command: "d" } });
+    const own = listServers(primary, shared);
+    expect(own.map((v) => v.name)).toEqual(["docs"]);
+    expect(own[0]?.error).not.toBeNull();
+    expect(listSharedServers(shared, primary)[0]).toMatchObject({
+      enabled: true,
+      overridden: false,
+    });
+    const extra = JSON.stringify({ mcpServers: { docs: { enabled: true, timeout: 30 } } });
+    expect(() => setSharedServerEnabled(extra, "docs", false)).toThrow(
+      "enabled、exposure、toolExposure",
+    );
+  });
+
+  it("覆盖项的值不合法时报错，按原定义显示（记在 overrideError，error 为空：Core 仍加载原定义）", () => {
+    const shared = doc({ docs: { command: "d" } });
+    const view = listSharedServers(shared, doc({ docs: { enabled: "false" } }))[0];
+    expect(view).toMatchObject({ enabled: true, overridden: false, error: null });
+    expect(view?.overrideError).toContain("enabled");
+    const bad = listSharedServers(shared, doc({ docs: { exposure: "nope" } }))[0];
+    expect(bad).toMatchObject({ error: null, exposure: "codemode" });
+    expect(bad?.overrideError).toContain("exposure");
+    expect(listSharedServers(shared, doc({ docs: { enabled: false } }))[0]).toMatchObject({
+      enabled: false,
+      error: null,
+      overrideError: null,
+    });
+  });
+
+  it("共享定义本身无效时记在 error，不设 overrideError", () => {
+    const shared = doc({ docs: { command: 1 } });
+    const view = listSharedServers(shared, doc({ docs: { enabled: "x" } }))[0];
+    expect(view?.error).not.toBeNull();
+    expect(view?.overrideError).toBeNull();
+  });
+
+  it("同一共享文件内与 Core 一致：无效条目不占命名空间，后面只差 - 与 _ 的有效条目照常加载", () => {
+    // Core readConfigLevel：claim 对同一文件的条目不报冲突；合并时只与已加载（通过校验）的服务器比较命名空间
+    const views = listSharedServers(
+      doc({ "my-tools": { command: 123 }, my_tools: { command: "ok" } }),
+      null,
+    );
+    expect(views[0]?.error).toContain("my-tools");
+    expect(views[1]).toMatchObject({ name: "my_tools", error: null });
+    // 两条都有效时后一条冲突
+    const both = listSharedServers(doc({ "a-b": { command: "x" }, a_b: { command: "y" } }), null);
+    expect(both[0]?.error).toBeNull();
+    expect(both[1]?.error).toContain("a-b");
+  });
+
+  it("原型上的名字（constructor、toString）只按自有键匹配主文件", () => {
+    const shared = doc({ constructor: { command: "docs" }, toString: { command: "t" } });
+    const views = listSharedServers(shared, doc({}));
+    expect(views.map((v) => [v.name, v.error, v.overridden])).toEqual([
+      ["constructor", null, false],
+      ["toString", null, false],
+    ]);
+    const off = listSharedServers(shared, doc({ constructor: { enabled: false } }));
+    expect(off[0]).toMatchObject({ enabled: false, overridden: true, error: null });
+    expect(listServers(doc({ constructor: { enabled: false } }), shared)).toEqual([]);
   });
 });

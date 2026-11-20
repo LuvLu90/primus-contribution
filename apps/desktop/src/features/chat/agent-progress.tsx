@@ -1,13 +1,11 @@
 "use client";
 
-// 计划进度卡片（照 BoardUI「智能体任务进度」，ADR 0019）：输入框上方一块可折叠的卡片，默认收起成一行
-// “进度环 还剩 N 步 → 当前步骤”，点开列出全部步骤。不引入动画库，全部用 CSS 过渡与 keyframes：
-// - 卡片高度在收起（44px）与展开（45 + 38·N，超过 8 步时封顶、列表内部滚动）之间过渡；两层内容交叉淡入、模糊。
-// - 总进度环按真实完成比例推进（模板按总时长线性走；真实步骤没有固定时长）；当前步骤的小环是旋转的弧线。
-// - 当前步骤一行变成胶囊（细边框随当前步骤平滑移动），文字流光；完成的打勾并从左划出删除线；跳过的打斜杠。
-// - 全部完成后显示“全部步骤已完成”，停 1.8 秒后淡出；之后出现新的未完成步骤时重新显示。
+// 计划进度（唇条版，ADR 0019 修订）：收起时是唇条正中的一行“进度环 还剩 N 步 → 当前步骤”，
+// 鼠标悬停（或键盘聚焦）时在唇条上方弹出全部步骤列表，移开即收起；不占输入框上方的空间。
+// 不引入动画库：进度环、当前步骤的旋转弧线、完成打勾与删除线、文字流光都用 CSS 过渡与 keyframes。
+// 全部完成后显示“全部步骤已完成”，停 1.8 秒后淡出；之后出现新的未完成步骤时重新显示。
 import { currentTodo, type TodoItem } from "@primus/protocol";
-import { type CSSProperties, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 
@@ -16,17 +14,13 @@ const t = strings.chat.progress;
 const ROW = 32;
 const GAP = 6;
 const PITCH = ROW + GAP;
-/** 展开时最多直接显示的步数，再多列表内部滚动 */
+/** 弹出列表最多直接显示的步数，再多列表内部滚动 */
 const MAX_ROWS = 8;
-const COLLAPSED_H = 44;
 /** 全部完成后停留多久再淡出 */
 export const COMPLETION_DELAY_MS = 1800;
 const LEAVE_MS = 320;
 
 const finished = (s: TodoItem["status"]) => s === "completed" || s === "skipped";
-
-/** 展开高度：头部 41 + 列表 + 底部 10（与模板 45 + 38·N 一致） */
-export const expandedHeight = (n: number) => 45 + PITCH * Math.min(Math.max(n, 1), MAX_ROWS);
 
 function ProgressRing({ ratio, size = 16 }: { ratio: number; size?: number }) {
   return (
@@ -167,28 +161,18 @@ function useLifecycle(items: readonly TodoItem[], allDone: boolean) {
   return phase;
 }
 
-export function AgentProgress({
+export function LipProgress({
   items,
-  defaultExpanded = false,
   hidden = false,
   className,
 }: {
   items: readonly TodoItem[];
-  /** 暂时让位（工具确认、提问、计划审批）：不显示，但保留展开与完成状态 */
+  /** 暂时让位（工具确认、提问、计划审批）：不显示，但保留完成状态 */
   hidden?: boolean;
-  /** 初始是否展开（默认收起成一行） */
-  defaultExpanded?: boolean;
   className?: string;
 }) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
-  /** 每次展开加一：步骤行重新做依次淡入 */
-  const [openCount, setOpenCount] = useState(0);
   const listId = useId();
   const listRef = useRef<HTMLOListElement>(null);
-  const expandRef = useRef<HTMLButtonElement>(null);
-  const collapseRef = useRef<HTMLButtonElement>(null);
-  /** 切换后要把焦点交给另一层的按钮（键盘操作时原按钮变成 inert） */
-  const moveFocus = useRef(false);
   const current = currentTodo(items);
   const doneCount = items.filter((i) => finished(i.status)).length;
   const allDone = items.length > 0 && current === undefined;
@@ -197,189 +181,176 @@ export function AgentProgress({
   const left = items.length - doneCount;
   const label = allDone ? t.allDone : t.left.replace("{n}", String(left));
 
-  // 当前步骤换了：滚进可见范围（步数超过 8 时）
+  // 当前步骤换了，或让位结束重新显示：列表里滚到它（步数超过 8 时；弹出列表未展开时也保持在位置上）
+  // biome-ignore lint/correctness/useExhaustiveDependencies: hidden / phase 变化时列表重新挂载，需要重新定位
   useLayoutEffect(() => {
     const list = listRef.current;
-    if (!expanded || !list || activeIndex < 0) return;
+    if (!list || activeIndex < 0) return;
     const top = activeIndex * PITCH;
     if (top < list.scrollTop || top + ROW > list.scrollTop + list.clientHeight)
-      list.scrollTo?.({
-        top: Math.max(0, top - PITCH),
-        behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
-          ? "auto"
-          : "smooth",
-      });
-  }, [activeIndex, expanded]);
+      list.scrollTo?.({ top: Math.max(0, top - PITCH) });
+  }, [activeIndex, hidden, phase]);
 
-  useEffect(() => {
-    if (!moveFocus.current) return;
-    moveFocus.current = false;
-    (expanded ? collapseRef : expandRef).current?.focus();
-  }, [expanded]);
-
-  const toggle = (next: boolean) => {
-    const holder = next ? expandRef.current : collapseRef.current;
-    moveFocus.current = holder !== null && document.activeElement === holder;
-    if (next) setOpenCount((c) => c + 1);
-    setExpanded(next);
+  // Escape 收起弹出列表（不必移开焦点或指针，WCAG 1.4.13）；指针与焦点都离开整块后恢复，下次悬停 / 聚焦再展开
+  const [dismissed, setDismissed] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const hoveredRef = useRef(false);
+  const visible = !(hidden || items.length === 0 || phase === "gone");
+  const isHovered = () => {
+    const root = rootRef.current;
+    return Boolean(hoveredRef.current || root?.matches(":hover"));
+  };
+  const restore = () => {
+    const root = rootRef.current;
+    if (root && (isHovered() || root.contains(document.activeElement))) return;
+    setDismissed(false);
   };
 
-  if (hidden || items.length === 0 || phase === "gone") return null;
+  // 焦点留在输入框等处、指针悬停进度摘要时，Escape 不会冒泡到根节点，需在全局监听
+  useEffect(() => {
+    if (!visible) {
+      // 暂时隐藏时离开 / 失焦事件不会触发：同时重置 Escape 的收起状态，恢复显示后首次悬停或聚焦能正常展开
+      hoveredRef.current = false;
+      setDismissed(false);
+      return;
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const root = rootRef.current;
+      if (!root) return;
+      if (hoveredRef.current || root.matches(":hover") || root.contains(document.activeElement)) {
+        setDismissed(true);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [visible]);
 
-  const height = expanded ? expandedHeight(items.length) : COLLAPSED_H;
+  if (!visible) return null;
+
   const ratio = items.length ? doneCount / items.length : 0;
-  const ring = !allDone && (
-    <span className="flex h-4 w-6 shrink-0 items-center">
-      <ProgressRing ratio={ratio} />
-    </span>
-  );
 
   return (
-    <section
-      aria-label={t.label}
-      aria-live="polite"
-      data-testid="agent-progress"
-      data-expanded={expanded || undefined}
-      style={{ height } as CSSProperties}
+    // 悬停 / 聚焦在整块（触发行 + 弹出列表）上都保持展开：鼠标从触发行移到列表上不会收起。纯 CSS（group-hover / focus-within）
+    // biome-ignore lint/a11y/noStaticElementInteractions: 只接住内部按钮冒泡的 Escape，不是独立的交互元素
+    <div
+      ref={rootRef}
+      data-testid="lip-progress"
+      data-dismissed={dismissed || undefined}
+      onKeyDown={(e) => {
+        if (e.key !== "Escape" || dismissed) return;
+        e.stopPropagation();
+        setDismissed(true);
+      }}
+      onMouseEnter={() => {
+        hoveredRef.current = true;
+      }}
+      onMouseLeave={() => {
+        hoveredRef.current = false;
+        setTimeout(restore);
+      }}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setTimeout(restore);
+      }}
       className={cn(
-        "agentp-in relative w-[341px] max-w-full overflow-hidden rounded-2xl border border-track-strong bg-surface shadow-[0_1px_2px_0_rgb(0_0_0/0.05)]",
-        "transition-[height,opacity,filter] motion-reduce:transition-none ease-[cubic-bezier(0.22,1,0.36,1)]",
-        expanded ? "duration-[650ms]" : "duration-[420ms]",
-        phase === "leaving" && "opacity-0 blur-[3px]",
+        "group/lp lip-item-in relative flex min-w-0 items-center transition-[opacity,filter] duration-300",
+        phase === "leaving" && "opacity-0 blur-[2px]",
         className,
       )}
     >
-      {/* 收起：一行，整行是展开按钮 */}
       <button
         type="button"
-        aria-label={`${t.expand}：${label}${current ? `，${current.text}` : ""}`}
-        aria-expanded={false}
-        aria-controls={listId}
-        ref={expandRef}
-        onClick={() => toggle(true)}
-        inert={expanded || undefined}
-        className={cn(
-          "group/min absolute inset-0 flex cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left text-sm font-medium outline-none transition-[opacity,filter] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] focus-visible:ring-2 focus-visible:ring-accent/40",
-          expanded ? "pointer-events-none opacity-0 blur-[3px]" : "opacity-100 blur-0 delay-100",
-        )}
+        aria-describedby={listId}
+        aria-label={`${t.label}：${label}${current ? `，${current.text}` : ""}`}
+        className="flex min-w-0 cursor-default items-center gap-1.5 rounded-md outline-none transition-colors group-hover/lp:text-fg focus-visible:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
       >
-        <span className="flex min-w-0 shrink-0 items-center ps-1">
-          {ring}
-          <SwapLabel text={label} className="text-muted" />
+        {!allDone && <ProgressRing ratio={ratio} size={13} />}
+        <span aria-live="polite" className="shrink-0">
+          <SwapLabel text={label} />
         </span>
         {current && (
-          <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden py-1.5 pe-6 transition-[mask-image] duration-300 group-hover/min:[mask-image:linear-gradient(to_right,#000_0%,#000_68%,transparent_94%)] group-focus-visible/min:[mask-image:linear-gradient(to_right,#000_0%,#000_68%,transparent_94%)]">
-            <svg aria-hidden viewBox="0 0 14 14" className="size-3.5 shrink-0 fill-muted">
+          <>
+            <svg aria-hidden viewBox="0 0 14 14" className="size-3 shrink-0 fill-current">
               <path d="M7.47 2.47a.75.75 0 0 1 1.06 0l4.177 4.176a.5.5 0 0 1 0 .708L8.53 11.53a.75.75 0 0 1-1.06-1.06l2.72-2.72H2a.75.75 0 0 1 0-1.5h8.19L7.47 3.53a.75.75 0 0 1 0-1.06Z" />
             </svg>
-            <span className="agentp-shimmer block min-w-0 flex-1 truncate">{current.text}</span>
-          </span>
+            <span className="agentp-shimmer min-w-0 max-w-64 truncate">{current.text}</span>
+          </>
         )}
-        <span className="absolute top-1/2 right-2.5 size-5 -translate-y-1/2 opacity-0 transition-opacity duration-200 group-hover/min:opacity-100 group-focus-visible/min:opacity-100">
-          <svg aria-hidden viewBox="0 0 20 20" className="size-5">
-            <rect
-              x="1"
-              y="1"
-              width="18"
-              height="18"
-              rx="4"
-              className="fill-black/[0.06] dark:fill-white/[0.1]"
-            />
-            <path
-              d="M7.553 6.109a.75.75 0 0 1 .75-.75h5.907a.5.5 0 0 1 .5.5v5.906a.75.75 0 0 1-1.5 0V7.919l-5.79 5.791a.75.75 0 1 1-1.061-1.06l5.79-5.791H8.303a.75.75 0 0 1-.75-.75Z"
-              className="fill-muted"
-            />
-          </svg>
-        </span>
       </button>
 
-      {/* 展开：头部 + 全部步骤 */}
+      {/* 弹出的全部步骤：贴着唇条上沿向上展开，底部留 8px 透明桥接，鼠标移上去不会断开悬停 */}
       <div
-        inert={!expanded || undefined}
-        aria-hidden={!expanded || undefined}
+        data-lip-popover
         className={cn(
-          "absolute inset-x-0 top-0 px-2.5 pt-3 pb-2.5 transition-[opacity,filter,translate] ease-[cubic-bezier(0.22,1,0.36,1)]",
-          expanded
-            ? "opacity-100 blur-0 duration-[220ms]"
-            : "pointer-events-none -translate-y-1 opacity-0 blur-[3px] duration-[160ms]",
+          "pointer-events-none absolute bottom-full left-1/2 z-30 -translate-x-1/2 translate-y-1 pb-2 opacity-0 blur-[2px] transition-[opacity,translate,filter] duration-[160ms] motion-reduce:transition-none ease-[cubic-bezier(0.22,1,0.36,1)]",
+          !dismissed &&
+            "group-hover/lp:pointer-events-auto group-hover/lp:translate-y-0 group-hover/lp:opacity-100 group-hover/lp:blur-0 group-hover/lp:duration-[220ms]",
+          !dismissed &&
+            "group-focus-within/lp:pointer-events-auto group-focus-within/lp:translate-y-0 group-focus-within/lp:opacity-100 group-focus-within/lp:blur-0",
         )}
       >
-        <div className="flex h-5 w-full items-center ps-1 text-sm font-medium">
-          {ring}
-          <SwapLabel text={label} className="flex-1 text-muted" />
-          <button
-            type="button"
-            aria-label={t.collapse}
-            aria-expanded
-            aria-controls={listId}
-            ref={collapseRef}
-            onClick={() => toggle(false)}
-            className="size-5 shrink-0 cursor-pointer rounded-sm outline-none transition-opacity duration-200 hover:opacity-80 focus-visible:ring-2 focus-visible:ring-accent/40"
+        <div className="w-[320px] max-w-[calc(100vw-3rem)] rounded-2xl border border-track-strong bg-surface px-2.5 pt-3 pb-2.5 shadow-[0_12px_32px_-12px_rgb(0_0_0/0.3)]">
+          <div className="flex h-5 items-center gap-2 ps-1 text-sm font-medium text-muted">
+            {!allDone && <ProgressRing ratio={ratio} />}
+            <span>{label}</span>
+          </div>
+          <ol
+            id={listId}
+            ref={listRef}
+            className="scroll-none relative mt-[9px] flex flex-col overflow-y-auto overscroll-contain"
+            style={{ gap: GAP, maxHeight: PITCH * MAX_ROWS - GAP }}
           >
-            <span aria-hidden className="relative block size-5">
-              <span className="absolute top-px left-px size-[18px] rounded-sm bg-black/[0.06] dark:bg-white/[0.1]" />
-              <span className="absolute top-[13px] left-1 h-0.5 w-3 rounded-[3px] bg-muted" />
-            </span>
-          </button>
-        </div>
-        <ol
-          id={listId}
-          ref={listRef}
-          key={openCount}
-          className="scroll-none relative mt-[9px] flex flex-col overflow-y-auto overscroll-contain"
-          style={{ gap: GAP, maxHeight: PITCH * MAX_ROWS - GAP }}
-        >
-          {/* 当前步骤的胶囊边框：一个元素随当前步骤上下移动（代替模板的 layoutId 共享布局动画） */}
-          {activeIndex >= 0 && (
-            <span
-              aria-hidden
-              data-active-border
-              className="pointer-events-none absolute inset-x-0 top-0 rounded-full border border-track-strong transition-[translate] motion-reduce:transition-none duration-[450ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
-              style={{ height: ROW, translate: `0 ${activeIndex * PITCH}px` }}
-            />
-          )}
-          {items.map((item, i) => {
-            const active = item.status === "in_progress";
-            const done = finished(item.status);
-            return (
-              <li
-                key={item.id}
-                aria-current={active ? "step" : undefined}
-                className="agentp-step-in relative shrink-0"
-                style={{ height: ROW, animationDelay: `${i * 35}ms` }}
-              >
-                <span
-                  className={cn(
-                    "flex h-full w-full items-center gap-2 transition-[padding] motion-reduce:transition-none duration-[360ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
-                    active ? "ps-[9px] pe-[13px]" : "px-1",
-                  )}
+            {activeIndex >= 0 && (
+              <span
+                aria-hidden
+                data-active-border
+                className="pointer-events-none absolute inset-x-0 top-0 rounded-full border border-track-strong transition-[translate] motion-reduce:transition-none duration-[450ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
+                style={{ height: ROW, translate: `0 ${activeIndex * PITCH}px` }}
+              />
+            )}
+            {items.map((item, i) => {
+              const active = item.status === "in_progress";
+              const done = finished(item.status);
+              return (
+                <li
+                  key={item.id}
+                  aria-current={active ? "step" : undefined}
+                  className="agentp-step-in relative shrink-0"
+                  style={{ height: ROW, animationDelay: `${i * 35}ms` }}
                 >
-                  <span className="flex size-3.5 shrink-0 items-center justify-center">
-                    <StepMark key={item.status} status={item.status} />
-                  </span>
                   <span
                     className={cn(
-                      "relative block min-w-0 max-w-full truncate text-sm font-medium transition-colors duration-300",
-                      active ? "agentp-shimmer text-fg" : "text-muted",
+                      "flex h-full w-full items-center gap-2",
+                      active ? "ps-[9px] pe-[13px]" : "px-1",
                     )}
                   >
-                    <span className="sr-only">{`${strings.chat.todoStatus[item.status]}：`}</span>
-                    {item.text}
+                    <span className="flex size-3.5 shrink-0 items-center justify-center">
+                      <StepMark key={item.status} status={item.status} />
+                    </span>
                     <span
-                      aria-hidden
-                      data-strike
                       className={cn(
-                        "absolute inset-x-0 top-1/2 h-px origin-left bg-current transition-[scale,opacity] motion-reduce:transition-none duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
-                        done ? "scale-x-100 opacity-80" : "scale-x-0 opacity-0",
+                        "relative block min-w-0 max-w-full truncate text-sm font-medium transition-colors duration-300",
+                        active ? "agentp-shimmer text-fg" : "text-muted",
                       )}
-                    />
+                    >
+                      <span className="sr-only">{`${strings.chat.todoStatus[item.status]}：`}</span>
+                      {item.text}
+                      <span
+                        aria-hidden
+                        data-strike
+                        className={cn(
+                          "absolute inset-x-0 top-1/2 h-px origin-left bg-current transition-[scale,opacity] motion-reduce:transition-none duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+                          done ? "scale-x-100 opacity-80" : "scale-x-0 opacity-0",
+                        )}
+                      />
+                    </span>
                   </span>
-                </span>
-              </li>
-            );
-          })}
-        </ol>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
       </div>
-    </section>
+    </div>
   );
 }

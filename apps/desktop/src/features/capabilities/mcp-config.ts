@@ -210,8 +210,15 @@ export interface McpServerView {
   enabled: boolean;
   exposure: string;
   description: string | null;
-  /** Core 会拒绝这个条目的原因 */
+  /** Core 会拒绝这个条目的原因（定义本身无效、名字冲突、被主文件遮蔽）：Core 不加载它 */
   error: string | null;
+  /**
+   * `.agents/mcp.json` 的服务器：主文件里的覆盖项与原定义合并后校验不通过的原因。Core 报错、不套用覆盖项，
+   * 仍按原定义加载（ADR 0022），所以与 {@link error} 分开
+   */
+  overrideError?: string | null;
+  /** `.agents/mcp.json` 的服务器：启停来自同级主文件里的覆盖项（ADR 0022） */
+  overridden?: boolean;
 }
 
 /** 解析 mcp.json 原文（null 表示文件不存在）；格式不对时抛出中文错误 */
@@ -245,10 +252,30 @@ function describeTarget(entry: unknown): string {
   return "";
 }
 
-/** 列出文件里的服务器，按文件中的顺序；名字冲突与 Core 一样记在后出现的那个上 */
-export function listServers(doc: McpDocument): McpServerView[] {
+/** 覆盖项能改的键（与 Core 的 OVERRIDE_KEYS 一致） */
+const OVERRIDE_KEYS = ["enabled", "exposure", "toolExposure"];
+
+/** Core 会套用的覆盖项：没有 command / url / type，且只含 enabled / exposure / toolExposure */
+export function isApplicableOverride(entry: unknown): entry is Obj {
+  return (
+    isRecord(entry) &&
+    isOverrideEntry(entry) &&
+    Object.keys(entry).every((k) => OVERRIDE_KEYS.includes(k))
+  );
+}
+
+/**
+ * 列出文件里的服务器，按文件中的顺序；名字冲突与 Core 一样记在后出现的那个上。
+ * 给出 `shared`（同级的 `.agents/mcp.json`）时，Core 会套用到其中服务器的覆盖项不单独列出（由 {@link listSharedServers}
+ * 显示）；套用不了的（含其他键）照常列出并标出错误
+ */
+export function listServers(doc: McpDocument, shared?: McpDocument | null): McpServerView[] {
   const seen = new Map<string, string>();
-  return Object.entries(serversOf(doc)).map(([name, entry]) => {
+  const sharedServers = shared ? serversOf(shared) : {};
+  const entries = Object.entries(serversOf(doc)).filter(
+    ([name, entry]) => !(isApplicableOverride(entry) && Object.hasOwn(sharedServers, name)),
+  );
+  return entries.map(([name, entry]) => {
     const result = validateServer(name, entry);
     let error = "error" in result ? result.error : null;
     if (!error) {
@@ -268,6 +295,101 @@ export function listServers(doc: McpDocument): McpServerView[] {
       error,
     };
   });
+}
+
+/**
+ * 列出 `.agents/mcp.json`（与其他工具共用，乾元只读，ADR 0022）里的服务器，套用同级主文件 `primary`（用户级
+ * `mcp.json` 或项目 `.primus/mcp.json`）里只含 enabled / exposure / toolExposure 的覆盖项。`primary` 已完整定义
+ * 同名（或只差 - 与 _）的服务器时与 Core 一样记为冲突：Core 使用 `primary` 那一条。“完整定义”指不是覆盖项的条目
+ * （有 command / url / type，或根本不是对象），**不论能否通过校验**：Core 的 `readConfigLevel` 先登记命名空间再校验，
+ * 主文件里无效的同名定义同样让 `.agents` 那一条被跳过（两条都不加载，主文件那条的错误由 {@link listServers} 显示）。
+ * 同一个文件内则不同：Core 的 `claim` 对同一路径的条目不报冲突，只在合并时与**已加载**的服务器比较命名空间，
+ * 所以 `"my-tools": {"command": 123}` 之后的 `"my_tools": {"command": "ok"}` 照常加载；这里同样只登记通过校验的名字。
+ * 覆盖项与原定义合并后校验不通过时记在 `overrideError`（不是 `error`），按原定义显示。
+ * `global` 为 false 时（项目级）不允许 `auth`。
+ */
+export function listSharedServers(
+  shared: McpDocument,
+  primary: McpDocument | null,
+  opts: { global?: boolean; primaryFile?: string } = {},
+): McpServerView[] {
+  const primaryServers = primary ? serversOf(primary) : {};
+  const defined = new Map<string, string>();
+  for (const [name, entry] of Object.entries(primaryServers))
+    if (!(isRecord(entry) && isOverrideEntry(entry))) defined.set(serverNamespace(name), name);
+  const seen = new Map<string, string>();
+  return Object.entries(serversOf(shared)).map(([name, entry]) => {
+    const result = validateServer(name, entry, opts.global ?? true);
+    let error = "error" in result ? result.error : null;
+    const other = defined.get(serverNamespace(name));
+    if (!error && other !== undefined)
+      error = fill(msg.shadowed, { file: opts.primaryFile ?? "mcp.json", other });
+    if (!error) {
+      const clash = seen.get(serverNamespace(name));
+      if (clash) error = fill(msg.clash, { name, other: clash });
+      else seen.set(serverNamespace(name), name);
+    }
+    const override = Object.hasOwn(primaryServers, name) ? primaryServers[name] : undefined;
+    let applied: Obj | null = isApplicableOverride(override) ? override : null;
+    let overrideError: string | null = null;
+    // 与 Core 一样校验合并后的条目：覆盖项的值不合法时报错，并按原定义（不套用覆盖项）显示
+    if (applied && !error && isRecord(entry)) {
+      const merged = validateServer(name, { ...entry, ...applied }, opts.global ?? true);
+      if ("error" in merged) {
+        overrideError = merged.error;
+        applied = null;
+      }
+    }
+    const overridden = applied !== null;
+    const rec = { ...(isRecord(entry) ? entry : {}), ...(applied ?? {}) };
+    return {
+      name,
+      entry,
+      transport: "transport" in result ? result.transport : null,
+      target: describeTarget(entry),
+      enabled: rec.enabled !== false,
+      exposure: typeof rec.exposure === "string" ? exposureName(rec.exposure) : DEFAULT_EXPOSURE,
+      description: typeof rec.description === "string" ? rec.description : null,
+      error,
+      overrideError,
+      overridden,
+    };
+  });
+}
+
+/**
+ * 启用或停用 `.agents/mcp.json` 里的服务器：只改主文件 `text` 里的覆盖项，从不改 `.agents/mcp.json`。停用写
+ * `enabled: false`；启用时，共享定义本身停用（`sharedEnabled` 为 false）就写 `enabled: true`，否则删掉 `enabled`，
+ * 覆盖项变空时整条删掉。主文件已完整定义同名服务器，或已有 Core 套用不了的覆盖项时抛出错误
+ */
+export function setSharedServerEnabled(
+  text: string | null,
+  name: string,
+  enabled: boolean,
+  sharedEnabled = true,
+): string {
+  const doc = parseMcpDocument(text);
+  const servers = serversOf(doc);
+  const current = Object.hasOwn(servers, name) ? servers[name] : undefined;
+  if (current !== undefined && !(isRecord(current) && isOverrideEntry(current)))
+    throw new Error(fill(msg.sharedDefined, { name }));
+  // 含其他键的覆盖项 Core 整条不套用：改了启停也不生效，先让用户修正
+  if (current !== undefined && !isApplicableOverride(current))
+    throw new Error(fill(msg.sharedOverrideInvalid, { name }));
+  const entry: Obj = isRecord(current) ? current : {};
+  if (!enabled) entry.enabled = false;
+  else if (sharedEnabled) delete entry.enabled;
+  else entry.enabled = true;
+  const keep = Object.keys(entry).length > 0;
+  // 无原型对象：名为 `__proto__` 的服务器也作为普通键保留
+  const next: Obj = Object.create(null);
+  for (const [key, value] of Object.entries(servers)) {
+    if (key !== name) next[key] = value;
+    else if (keep) next[key] = entry;
+  }
+  if (keep && current === undefined) next[name] = entry;
+  doc.root.mcpServers = next;
+  return serializeMcpDocument(doc);
 }
 
 /** 与其他服务器的名字冲突（相同或只差 - 与 _）；`except` 是正在编辑的原名 */

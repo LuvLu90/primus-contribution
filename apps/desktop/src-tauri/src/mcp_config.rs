@@ -5,6 +5,9 @@
 //! 提交临界区里紧挨着完成），大小不超过 1 MiB、
 //! 是带 `mcpServers` 对象（可省略）的 JSON 对象，原子替换。服务器条目的校验、合并与格式保留在前端（与 Core 的
 //! 校验规则一致）；连接测试、登录、登出经 Core 命令行（[`crate::supervisor::Supervisor::run_cli`]）。
+//!
+//! `~/.agents/mcp.json`（与其他 Agent 工具共用，Core 同样按全局级读取，ADR 0022）只读出给界面展示，
+//! 从不写入：界面对其中服务器的启停写成用户级 `mcp.json` 里的覆盖项。
 
 use std::fmt;
 use std::io;
@@ -57,6 +60,54 @@ pub(crate) struct McpConfigFile {
     pub(crate) text: Option<String>,
     /// 版本：内容的 SHA-256（十六进制），文件不存在时为空串；写入时原样带回
     pub(crate) version: String,
+    /// `~/.agents/mcp.json`（只读）；主目录未知时为 None
+    pub(crate) agents: Option<SharedMcpFile>,
+}
+
+/// 只读展示的 `~/.agents/mcp.json`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SharedMcpFile {
+    pub(crate) path: String,
+    /// 原文；文件不存在或读不出时为 None
+    pub(crate) text: Option<String>,
+    /// 读不出的原因（过大、不是 UTF-8、不是普通文件、读取失败）
+    pub(crate) error: Option<String>,
+}
+
+/// `~/.agents/mcp.json` 的路径。
+pub(crate) fn shared_path(home: &Path) -> PathBuf {
+    home.join(".agents").join("mcp.json")
+}
+
+/// 读出 `~/.agents/mcp.json`：读不出不算失败，原因放在 `error` 里（用户级 `mcp.json` 照常可编辑）。
+pub(crate) fn read_shared(home: &Path) -> SharedMcpFile {
+    let file = shared_path(home);
+    let path = file.to_string_lossy().into_owned();
+    let result = match std::fs::metadata(&file) {
+        // 不存在，或 `.agents` 是文件：Core 同样当作没有
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        _ => read_text(&file),
+    };
+    match result {
+        Ok(text) => SharedMcpFile {
+            path,
+            text,
+            error: None,
+        },
+        Err(e) => SharedMcpFile {
+            path,
+            text: None,
+            error: Some(e.to_string()),
+        },
+    }
 }
 
 pub(crate) fn config_path(core_dir: &Path) -> PathBuf {
@@ -89,22 +140,30 @@ fn read_bytes(file: &Path) -> Result<Option<Vec<u8>>, McpConfigError> {
     Ok(Some(std::fs::read(file)?))
 }
 
-/// 读出 `mcp.json`。
-pub(crate) fn read(core_dir: &Path) -> Result<McpConfigFile, McpConfigError> {
-    let file = config_path(core_dir);
-    let bytes = read_bytes(&file)?;
-    let text = bytes
-        .as_deref()
+fn decode(bytes: Option<&[u8]>) -> Result<Option<String>, McpConfigError> {
+    bytes
         .map(|b| {
             std::str::from_utf8(b)
                 .map(|t| t.strip_prefix('\u{feff}').unwrap_or(t).to_owned())
                 .map_err(|_| McpConfigError::Invalid("不是 UTF-8 文本".into()))
         })
-        .transpose()?;
+        .transpose()
+}
+
+fn read_text(file: &Path) -> Result<Option<String>, McpConfigError> {
+    decode(read_bytes(file)?.as_deref())
+}
+
+/// 读出 `mcp.json`；`home` 给出时一并读出只读的 `~/.agents/mcp.json`。
+pub(crate) fn read(core_dir: &Path, home: Option<&Path>) -> Result<McpConfigFile, McpConfigError> {
+    let file = config_path(core_dir);
+    let bytes = read_bytes(&file)?;
+    let text = decode(bytes.as_deref())?;
     Ok(McpConfigFile {
         path: file.to_string_lossy().into_owned(),
         text,
         version: version_of(bytes.as_deref()),
+        agents: home.map(read_shared),
     })
 }
 
@@ -203,18 +262,18 @@ mod tests {
     #[test]
     fn read_write_with_conflict_detection() {
         let dir = temp();
-        let first = read(&dir).unwrap();
+        let first = read(&dir, None).unwrap();
         assert_eq!(first.text, None);
         assert_eq!(first.version, "");
         let text = "{\n  \"mcpServers\": {}\n}\n";
         let v1 = write(&dir, text, &first.version).unwrap();
-        let again = read(&dir).unwrap();
+        let again = read(&dir, None).unwrap();
         assert_eq!(again.text.as_deref(), Some(text));
         assert_eq!(again.version, v1);
         // 用旧版本写：冲突，不写
         let err = write(&dir, "{}", "").unwrap_err();
         assert_eq!(err.code(), Some("conflict"));
-        assert_eq!(read(&dir).unwrap().text.as_deref(), Some(text));
+        assert_eq!(read(&dir, None).unwrap().text.as_deref(), Some(text));
         // 别处改了文件
         std::fs::write(config_path(&dir), "{\"mcpServers\":{\"x\":{}}}").unwrap();
         assert_eq!(write(&dir, "{}", &v1).unwrap_err().code(), Some("conflict"));
@@ -224,7 +283,7 @@ mod tests {
     #[test]
     fn write_between_check_and_replace_is_a_conflict() {
         let dir = temp();
-        let v0 = read(&dir).unwrap().version;
+        let v0 = read(&dir, None).unwrap().version;
         // 另一笔写入发生在初次比较之后、替换之前：复核发现，返回冲突，保留对方写入的内容
         let other = "{\"mcpServers\":{\"other\":{\"command\":\"x\"}}}";
         let err = write_with(&dir, "{}", &v0, || {
@@ -232,7 +291,7 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(err.code(), Some("conflict"));
-        assert_eq!(read(&dir).unwrap().text.as_deref(), Some(other));
+        assert_eq!(read(&dir, None).unwrap().text.as_deref(), Some(other));
         // 没有留下临时文件
         let leftovers: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
@@ -246,7 +305,7 @@ mod tests {
     #[test]
     fn concurrent_saves_from_the_same_version_only_one_wins() {
         let dir = temp();
-        let v0 = read(&dir).unwrap().version;
+        let v0 = read(&dir, None).unwrap().version;
         let results: Vec<_> = std::thread::scope(|s| {
             let handles: Vec<_> = (0..8)
                 .map(|i| {
@@ -264,7 +323,45 @@ mod tests {
                 .filter_map(|r| r.as_ref().err())
                 .all(|e| e.code() == Some("conflict"))
         );
-        assert_eq!(&read(&dir).unwrap().version, ok[0]);
+        assert_eq!(&read(&dir, None).unwrap().version, ok[0]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reads_shared_agents_file_read_only() {
+        let dir = temp();
+        let home = dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        // 不存在
+        let f = read(&dir, Some(&home)).unwrap();
+        let shared = f.agents.unwrap();
+        assert_eq!(shared.path, shared_path(&home).to_string_lossy());
+        assert_eq!((shared.text, shared.error), (None, None));
+        // 存在：原文（去掉 BOM）
+        std::fs::create_dir_all(home.join(".agents")).unwrap();
+        let text = "{\"mcpServers\":{\"docs\":{\"url\":\"https://example.com/mcp\"}}}";
+        std::fs::write(shared_path(&home), format!("\u{feff}{text}")).unwrap();
+        let shared = read(&dir, Some(&home)).unwrap().agents.unwrap();
+        assert_eq!(shared.text.as_deref(), Some(text));
+        assert_eq!(shared.error, None);
+        // 过大：给出原因，用户级文件照常读出
+        let big = format!("{{\"x\":\"{}\"}}", "a".repeat(MCP_JSON_LIMIT as usize));
+        std::fs::write(shared_path(&home), big).unwrap();
+        let f = read(&dir, Some(&home)).unwrap();
+        assert_eq!(f.text, None);
+        let shared = f.agents.unwrap();
+        assert_eq!(shared.text, None);
+        assert!(shared.error.is_some());
+        // 写用户级文件不碰 ~/.agents/mcp.json
+        let before = std::fs::read(shared_path(&home)).unwrap();
+        let off = "{\"mcpServers\":{\"docs\":{\"enabled\":false}}}";
+        write(&dir, off, "").unwrap();
+        assert_eq!(std::fs::read(shared_path(&home)).unwrap(), before);
+        // .agents 是文件：当作没有
+        std::fs::remove_dir_all(home.join(".agents")).unwrap();
+        std::fs::write(home.join(".agents"), "file").unwrap();
+        let shared = read(&dir, Some(&home)).unwrap().agents.unwrap();
+        assert_eq!((shared.text, shared.error), (None, None));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -279,7 +376,7 @@ mod tests {
         assert!(validate(&big).is_err());
         let dir = temp();
         std::fs::write(config_path(&dir), "\u{feff}{}").unwrap();
-        assert_eq!(read(&dir).unwrap().text.as_deref(), Some("{}"));
+        assert_eq!(read(&dir, None).unwrap().text.as_deref(), Some("{}"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

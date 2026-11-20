@@ -134,7 +134,13 @@ export const strings = {
     stop: "停止",
     stopping: "正在停止",
     stopped: "已停止",
-    replyTruncated: "输出达到模型长度上限，回复被截断。可以发“继续”接着写，或换输出更长的模型。",
+    /** 运行中发送按钮：插话进当前对话 */
+    steerSend: "发送（插入当前对话）",
+    /** 待插入的插话气泡下方 */
+    steerPending: "将在当前步骤完成后插入",
+    /** 被停止 / 出错 / 截断后接着做（不重发上一句） */
+    continue: "继续",
+    replyTruncated: "输出达到模型长度上限，回复被截断。可以点“继续”接着写，或换输出更长的模型。",
     replyFailed: "回复出错",
     replyError: {
       categories: {
@@ -256,6 +262,8 @@ export const strings = {
         skill: { done: "已使用技能", running: "正在使用技能" },
         mcp: { done: "已调用 MCP", running: "正在调用 MCP" },
         image: { done: "已生成图片", running: "正在生成图片" },
+        web: { done: "已搜索", running: "正在搜索" },
+        fetch: { done: "已阅读", running: "正在阅读" },
         other: { done: "已调用", running: "正在调用" },
       },
       groups: {
@@ -267,7 +275,24 @@ export const strings = {
         skill: { done: "使用了技能", running: "正在使用技能" },
         mcp: { done: "调用了 MCP", running: "正在调用 MCP" },
         image: { done: "生成了图片", running: "正在生成图片" },
+        web: { done: "搜索了网页", running: "正在搜索网页" },
+        fetch: { done: "阅读了网页", running: "正在阅读网页" },
         other: { done: "调用了工具", running: "正在调用工具" },
+      },
+      // 联网搜索与读取网页（ADR 0020）
+      web: {
+        results: "{n} 个结果",
+        noResults: "没有找到结果",
+        sources: "来源",
+        source: "{title}\n{site}",
+        showSources: "展开来源",
+        hideSources: "收起来源",
+        linkDescription: "这个链接来自联网搜索结果，请确认地址可信后再打开。",
+        range: "第 {start}–{end} 字，共 {total} 字",
+        matches: "“{find}”：{n} 处",
+        open: "打开网页",
+        failed: "失败",
+        cancelled: "已停止",
       },
     },
     tool: "工具",
@@ -289,11 +314,15 @@ export const strings = {
     modeSyncFailed: "权限模式未能同步到内核，已暂停发送",
     permissionMode: "权限模式",
     permissions: {
-      ask: { label: "每次询问", short: "询问", hint: "修改文件、运行命令和联网前都先征求你的同意" },
+      ask: {
+        label: "每次询问",
+        short: "询问",
+        hint: "修改文件、运行命令前先征求你的同意；联网搜索与网页读取由“联网”开关控制",
+      },
       edit: {
         label: "自动编辑",
         short: "自动编辑",
-        hint: "工作区内的编辑直接执行，命令和联网仍会询问",
+        hint: "工作区内的编辑直接执行，运行命令仍会询问；联网搜索与网页读取由“联网”开关控制",
       },
       full: {
         label: "完全访问",
@@ -356,6 +385,7 @@ export const strings = {
     trustSkills: "技能",
     trustMcp: "MCP 服务器",
     trustAgentsSkills: ".agents 技能",
+    trustAgentsMcp: ".agents MCP 服务器",
     trustNothing: "项目内没有扩展、技能、MCP 配置或 AGENTS.md。",
     trustAccept: "信任",
     trustReject: "不信任",
@@ -676,6 +706,15 @@ export const strings = {
     capabilities: {
       tabs: { skills: "技能", mcp: "MCP" },
       tabsLabel: "能力类型",
+      web: {
+        title: "联网",
+        enabled: "允许联网搜索与读取网页",
+        hint: "开启后，AI 会在需要最新信息时自己搜索网页、打开链接阅读。关闭后从下一条消息起生效。",
+        loadFailed: "读取联网设置失败",
+        saveFailed: "保存联网设置失败",
+        retry: "重试",
+        disable: "关闭联网",
+      },
       newSessionHint: "改动在新建的会话中生效，已打开的会话不受影响。",
       cancel: "取消",
       delete: "删除",
@@ -790,6 +829,15 @@ export const strings = {
         logoutDone: "已退出“{name}”的登录",
         logoutFailed: "退出登录失败",
         invalid: "Core 不会加载这个服务器",
+        // `~/.agents/mcp.json`：与其他工具共用，乾元只读（ADR 0022）
+        shared: {
+          title: "与其他工具共用的 MCP 服务器",
+          file: "配置文件：{path}（只读）",
+          hint: "乾元不修改这个文件；在这里启用或停用会写成用户级 mcp.json 里的覆盖项。",
+          loadFailed: "读取失败：{message}",
+          parseFailed: "无法解析：{message}",
+          empty: "这个文件里没有服务器。",
+        },
         dialog: {
           addTitle: "添加 MCP 服务器",
           editTitle: "编辑 MCP 服务器",
@@ -892,6 +940,11 @@ export const strings = {
       exists: "已有名为“{name}”的服务器",
       clashExisting: "与已有的服务器“{other}”冲突（名字只差 - 与 _）",
       missing: "mcp.json 中没有服务器“{name}”",
+      // `.agents/mcp.json`（与其他工具共用，ADR 0022）
+      shadowed: "{file} 中已定义“{other}”，Core 使用那一条",
+      sharedDefined: "mcp.json 中已完整定义“{name}”，不能只改它的启停",
+      sharedOverrideInvalid:
+        "mcp.json 中“{name}”的覆盖项只能包含 enabled、exposure、toolExposure，请先修正",
       dropped: "“{name}”去掉了 Core 不支持的字段：{keys}",
       // biome-ignore lint/suspicious/noTemplateCurlyInString: 展示给用户的配置变量写法
       vscodeInput: "“{name}”用到了 VS Code 的 ${input:…} 变量，请改成实际的值或 ${环境变量}",
