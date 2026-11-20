@@ -82,8 +82,7 @@ pub fn vocabulary() -> Value {
 /// 百炼文档里支持即时热词的只有 Qwen-Audio-ASR 系列；Fun-ASR-Realtime、Paraformer、Fun-ASR 8k
 /// 只认预先建好的 `vocabulary_id`，不带，免得未知参数被当成“模型用不了”而停用一天。
 pub fn takes_vocabulary(model_id: &str) -> bool {
-    model_id.starts_with("qwen-audio-")
-        || model_id.starts_with("fun-asr-flash-2")
+    model_id.starts_with("qwen-audio-") || model_id.starts_with("fun-asr-flash-2")
 }
 
 /// 上下文文本：先用一句话交代产品名，再列词表。只列词表时千问会把“小元”认成“小袁”。
