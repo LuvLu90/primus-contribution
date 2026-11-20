@@ -30,7 +30,13 @@ import {
   normalizeSearch,
   parseResults,
 } from "./search.ts";
-import { createDirectFetch, type Lookup, proxiedOptions, proxyFor } from "./transport.ts";
+import {
+  createDirectFetch,
+  type Lookup,
+  proxiedOptions,
+  proxyFor,
+  searchFetch,
+} from "./transport.ts";
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -701,6 +707,45 @@ describe("审查补充", () => {
       const res = await createDirectFetch(() => false, {})(`http://localhost:${port}/`);
       expect(res.status).toBe(200);
       expect(await res.text()).toBe("你好");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("searchFetch：发送字符串请求体（带 Content-Length），不拦截内网地址", async () => {
+    let got: { method?: string; length?: string; body: string } = { body: "" };
+    const server = createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (c: string) => {
+        body += c;
+      });
+      req.on("end", () => {
+        got = { method: req.method, length: req.headers["content-length"], body };
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end('{"code":200,"data":{}}');
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const payload = JSON.stringify({ query: "中文" });
+      const res = await searchFetch({})(`http://localhost:${port}/web-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ code: 200, data: {} });
+      expect(got.method).toBe("POST");
+      expect(got.body).toBe(payload);
+      expect(got.length).toBe(String(Buffer.byteLength(payload)));
+      await expect(
+        searchFetch({})(`http://localhost:${port}/`, {
+          method: "POST",
+          body: new Uint8Array([1]),
+        }),
+      ).rejects.toThrow("字符串请求体");
     } finally {
       server.close();
     }
