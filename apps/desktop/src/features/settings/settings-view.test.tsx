@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useRouter } from "next/navigation";
 import { afterEach, describe, expect, it } from "vitest";
 import { strings } from "@/lib/strings";
@@ -49,12 +49,19 @@ describe("设置页", () => {
     );
   });
 
-  it("启动与通知开关在接入 settings.toml 前禁用；未实现的“恢复工作区”不显示", () => {
+  it("启动开关在接入 settings.toml 前禁用；未实现的“恢复工作区”不显示", () => {
     render(<SettingsView />);
     expect(screen.queryByRole("switch", { name: /工作区/ })).toBeNull();
-    for (const name of [t.minimizeToTray, t.notifyEnabled]) {
-      expect((screen.getByRole("switch", { name }) as HTMLInputElement).disabled).toBe(true);
-    }
+    expect(
+      (screen.getByRole("switch", { name: t.minimizeToTray }) as HTMLInputElement).disabled,
+    ).toBe(true);
+  });
+
+  it("通用里有通知与提示音设置", async () => {
+    render(<SettingsView />);
+    expect(screen.getByText(t.notifications)).toBeTruthy();
+    const sound = (await screen.findByRole("switch", { name: t.notify.sound })) as HTMLInputElement;
+    await waitFor(() => expect(sound.disabled).toBe(false));
   });
 
   it("主题选项写入外观设置", () => {

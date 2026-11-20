@@ -25,6 +25,7 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { usePreviewRequest } from "@/features/files/preview-request";
 import { showPreview } from "@/features/files/preview-store";
 import { lastWrittenFile } from "@/features/files/written-file";
+import { useAttentionAlerts } from "@/features/notifications/use-attention-alerts";
 import { type ChatTab, useSessionsStore } from "@/features/sessions/sessions-store";
 import { useSessionDefaultWorkspace } from "@/features/sessions/use-default-workspace";
 import { getFileDrop, getPlatform, isTauriRuntime } from "@/lib/platform";
@@ -886,6 +887,9 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     const path = written && resolveFileRefPath(written, fileRefBase);
     if (path) showPreview(path);
   }, [state.running, activeTabId]);
+
+  // 任务完成、需要确认或回答时的系统通知与提示音（ADR 0023）
+  useAttentionAlerts(state, tabId);
 
   // Agent 用预览工具请求在右栏打开的文件 / 文件夹：只在本标签是当前标签时打开，后台标签切回时再打开
   usePreviewRequest(state.previewRequest, tabId);

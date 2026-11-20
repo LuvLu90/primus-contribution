@@ -71,8 +71,9 @@ windows-sys = { version = "=0.61.2", features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
-# WebView2 COM 接口用到的 windows::core（platform/webview_permissions.rs），与 Tauri 依赖树中的版本一致
-windows = "=0.62.2"
+# WebView2 COM 接口用到的 windows::core（platform/webview_permissions.rs），与 Tauri 依赖树中的版本一致；
+# 系统通知（platform/toast.rs，ADR 0023）用 WinRT Toast：只开启同一版本的特性，不引入新依赖
+windows = { version = "=0.62.2", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications"] }
 # 麦克风自动授权（platform/webview_permissions.rs）：WebView2 的 PermissionRequested 与 Profile 权限，与 Tauri 依赖树中的版本一致
 webview2-com = "=0.39.1"
 

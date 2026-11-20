@@ -16,6 +16,7 @@ mod images;
 mod job;
 mod mcp_config;
 mod model_catalog;
+mod notifications;
 mod open_path;
 mod paths;
 mod platform;
@@ -67,6 +68,8 @@ pub fn run() {
         std::process::exit(1);
     };
     platform::configure_webview_data_dir(&data_paths.webview_dir());
+    // 系统通知与任务栏归属本应用（ADR 0023）：不是从开始菜单快捷方式启动时也一样
+    platform::toast::set_app_user_model_id();
 
     // 模型配置状态；写入（refresh）放到 setup 中，等单实例插件放行本进程之后再做，
     // 避免被转发后退出的第二个实例改写主实例正在使用的保险库与 models.json
@@ -270,6 +273,7 @@ pub fn run() {
         .manage(model_config)
         .manage(updater)
         .manage(speech)
+        .manage(Arc::new(notifications::NotificationHub::default()))
         .invoke_handler(tauri::generate_handler![
             commands::window_set_bounds,
             commands::open_external,
@@ -299,6 +303,10 @@ pub fn run() {
             commands::image_save,
             commands::web_settings_get,
             commands::web_settings_set,
+            commands::notification_settings_get,
+            commands::notification_settings_set,
+            commands::notification_show,
+            commands::notification_watch,
             commands::session_default_workspace,
             commands::session_list,
             commands::session_search,

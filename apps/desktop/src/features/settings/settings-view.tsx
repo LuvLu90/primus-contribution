@@ -20,6 +20,7 @@ import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { type ThemeMode, useAppearanceStore } from "@/stores/appearance-store";
 import { CapabilitiesSettings } from "../capabilities/capabilities-settings";
+import { NotificationSettingsSection } from "../notifications/notification-settings";
 import { AccountSettings, ModelSettings } from "./account-models";
 import { ProviderSettings } from "./providers-settings";
 import { Row, Section } from "./settings-section";
@@ -29,15 +30,16 @@ const t = strings.settings;
 export type SettingsGroup = keyof typeof t.groups;
 const GROUPS = Object.keys(t.groups) as SettingsGroup[];
 
-/** 启动与通知开关的默认值（第 18 章），settings.toml 接入前只读 */
-const PENDING_DEFAULTS = { tray: false, notify: true } as const;
+/** 启动开关的默认值（第 18 章），settings.toml 接入前只读 */
+const PENDING_DEFAULTS = { tray: false } as const;
 
 function GeneralSettings() {
   const theme = useAppearanceStore((s) => s.theme);
   const setTheme = useAppearanceStore((s) => s.setTheme);
   const glassTint = useAppearanceStore((s) => s.glassTint);
   const setGlassTint = useAppearanceStore((s) => s.setGlassTint);
-  // 启动与通知开关要写入 settings.toml（薄壳 settings_get/settings_set），接入前显示默认值并禁用
+  // 启动开关要写入 settings.toml（薄壳 settings_get/settings_set），接入前显示默认值并禁用；
+  // 通知与提示音已接入（notifications.json，ADR 0023）
   const pending = PENDING_DEFAULTS;
   const themeLabel = useId();
 
@@ -77,11 +79,7 @@ function GeneralSettings() {
           <Switch ariaLabel={t.minimizeToTray} checked={pending.tray} disabled />
         </Row>
       </Section>
-      <Section title={t.notifications}>
-        <Row label={t.notifyEnabled}>
-          <Switch ariaLabel={t.notifyEnabled} checked={pending.notify} disabled />
-        </Row>
-      </Section>
+      <NotificationSettingsSection />
     </div>
   );
 }
@@ -104,7 +102,7 @@ function Placeholder({
 const NAV_WIDTH = 232;
 
 // 设置（第 18 章）：与主界面同样的吸附样式——左侧导航与右侧内容是贴合的两块液态玻璃，
-// 接缝处直角 + 平滑凹口、无缝隙。已实现"通用"中的外观、启动与通知，"账号"（未开放时的说明）、"模型"（模型渠道与默认模型）、
+// 接缝处直角 + 平滑凹口、无缝隙。已实现"通用"中的外观、通知与提示音，"账号"（未开放时的说明）、"模型"（模型渠道与默认模型）、
 // "能力中心"（技能与 MCP，ADR 0017）与"更新"，
 // 其余分组列出将提供的设置项。
 /** 地址中的 `?group=<分组>`（如侧栏菜单的“用量”打开 `/settings/?group=usage`）；无效值返回 null */

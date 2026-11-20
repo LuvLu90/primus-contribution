@@ -2,6 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import { useNotificationActivation } from "@/features/notifications/use-attention-alerts";
 import { AppShell } from "./app-shell";
 
 /**
@@ -29,6 +30,7 @@ function useNoNativeContextMenu() {
 
 export function KeepAliveShell() {
   useNoNativeContextMenu();
+  useNotificationActivation();
   const pathname = usePathname();
   const home = pathname === "/" || pathname === "";
   const [visited, setVisited] = useState(home);

@@ -4,8 +4,8 @@ use std::io;
 use std::path::{Component, Path};
 use std::sync::Arc;
 
-use tauri::State;
 use tauri::ipc::Channel;
+use tauri::{Manager, State};
 
 use crate::account::{AuthError, AuthStatus};
 use crate::core_config::{
@@ -265,6 +265,61 @@ pub(crate) fn web_settings_set(
         .save(&crate::web_settings::settings_file(&paths))
         .map_err(|e| format!("保存联网设置失败：{e}"))?;
     Ok(settings)
+}
+
+/// 通知与提示音设置（ADR 0023）。文件不存在或无效时为默认值，读取失败时报错。
+#[tauri::command]
+pub(crate) fn notification_settings_get(
+    paths: State<'_, DataPaths>,
+) -> Result<crate::notifications::NotificationSettings, String> {
+    crate::notifications::NotificationSettings::load(&crate::notifications::settings_file(&paths))
+        .map_err(|e| format!("读取通知设置失败：{e}"))
+}
+
+/// 保存通知与提示音设置（整份）。
+#[tauri::command]
+pub(crate) fn notification_settings_set(
+    paths: State<'_, DataPaths>,
+    settings: crate::notifications::NotificationSettings,
+) -> Result<crate::notifications::NotificationSettings, String> {
+    settings
+        .save(&crate::notifications::settings_file(&paths))
+        .map_err(|e| format!("保存通知设置失败：{e}"))?;
+    Ok(settings)
+}
+
+/// 显示一条系统通知（是否该提醒由前端判断）。点击通知时把主窗口拉到前台，并把 `tag` 交给
+/// `notification_watch` 的订阅者；`attention` 为 true 且窗口不在前台时同时闪烁任务栏按钮。
+#[tauri::command(async)]
+pub(crate) fn notification_show(
+    app: tauri::AppHandle,
+    request: crate::notifications::NotificationRequest,
+) -> Result<(), String> {
+    let request = request.clamp();
+    if request.attention
+        && let Some(window) = app.get_webview_window("main")
+        && !window.is_focused().unwrap_or(false)
+    {
+        let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+    }
+    let tag = request.tag.clone();
+    crate::platform::toast::show(&request.title, &request.body, &request.tag, move || {
+        crate::tray::show_main_window(&app);
+        if let Some(hub) = app.try_state::<Arc<crate::notifications::NotificationHub>>() {
+            hub.activate(tag.clone());
+        }
+    })
+}
+
+/// 订阅通知点击：每次点击经 `on_event` 推送通知的 `tag`。再次调用替换旧的订阅。
+#[tauri::command]
+pub(crate) fn notification_watch(
+    hub: State<'_, Arc<crate::notifications::NotificationHub>>,
+    on_event: Channel<String>,
+) {
+    hub.set_listener(move |tag| {
+        let _ = on_event.send(tag);
+    });
 }
 
 /// `session_open` 的返回值。
@@ -1373,7 +1428,6 @@ async fn run_cli_blocking(
     timeout: std::time::Duration,
 ) -> Result<crate::supervisor::CliOutput, CapabilityError> {
     tauri::async_runtime::spawn_blocking(move || {
-        use tauri::Manager;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         app.state::<Supervisor>()
             .run_cli(&args, timeout)

@@ -85,6 +85,13 @@ export interface SessionState {
   streamBroken: boolean;
   /** agent_start 到 agent_settled 之间为 true，期间锁定输入 */
   running: boolean;
+  /**
+   * 已结束的轮数（每个 agent_settled 加一）。一批记录里可能同时有 agent_start 与 agent_settled，
+   * 提交前后 running 都是 false；通知（ADR 0023）据此识别两次观察之间结束的一轮
+   */
+  settledTurns: number;
+  /** 最近一轮是否被用户停止（agent_settled 的 aborted）；停止的那轮不发完成提醒 */
+  lastTurnAborted: boolean;
   toolRuns: Record<string, ToolRun>;
   /** 最近一次失败的命令响应 */
   lastError?: string;
@@ -150,6 +157,8 @@ export const initialSessionState: SessionState = {
   liveBlocks: [],
   streamBroken: false,
   running: false,
+  settledTurns: 0,
+  lastTurnAborted: false,
   toolRuns: {},
   uiRequests: [],
   todos: [],
@@ -435,6 +444,8 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
       return;
     case "agent_settled":
       draft.running = false;
+      draft.settledTurns += 1;
+      draft.lastTurnAborted = record.aborted === true;
       // 自动重试一定在一轮结束前结束（auto_retry_end）；缺号时可能错过了它
       draft.retry = undefined;
       endStream(draft);
