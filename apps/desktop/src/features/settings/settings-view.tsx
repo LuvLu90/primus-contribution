@@ -2,13 +2,12 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useState } from "react";
-import { Icon } from "@/components/icons";
+import { Icon, type IconName } from "@/components/icons";
 import { GlassPanel } from "@/components/layout/glass-panel";
 import {
   centerSeamStyle,
   OUTER_RADIUS,
   SEAM_BLEED,
-  seamBleedStyle,
   sidePanelSeamStyle,
   sideShellClass,
 } from "@/components/layout/seam";
@@ -19,15 +18,28 @@ import { Switch } from "@/components/ui/switch";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { type ThemeMode, useAppearanceStore } from "@/stores/appearance-store";
-import { CapabilitiesSettings } from "../capabilities/capabilities-settings";
-import { AccountSettings, ModelSettings } from "./account-models";
-import { ProviderSettings } from "./providers-settings";
+import { AboutSettings } from "./about-settings";
+import { AccountSettings } from "./account-models";
+import { AdvancedSettings } from "./advanced-settings";
+import { AgentSettings } from "./agent-settings";
+import { ArchivedSettings } from "./archived-settings";
+import { CapabilitySettings } from "./capability-settings";
 import { Row, Section } from "./settings-section";
-import { UpdateSettings } from "./update-settings";
+import { UsageSettings } from "./usage-settings";
 
 const t = strings.settings;
 export type SettingsGroup = keyof typeof t.groups;
 const GROUPS = Object.keys(t.groups) as SettingsGroup[];
+const GROUP_ICONS = {
+  general: "settings",
+  account: "user",
+  usage: "chart",
+  agent: "thinking",
+  archived: "archive",
+  capabilities: "puzzle",
+  advanced: "tuning",
+  about: "file-text",
+} satisfies Record<SettingsGroup, IconName>;
 
 /** 启动与通知开关的默认值（第 18 章），settings.toml 接入前只读 */
 const PENDING_DEFAULTS = { tray: false, notify: true } as const;
@@ -86,35 +98,17 @@ function GeneralSettings() {
   );
 }
 
-function Placeholder({
-  group,
-}: {
-  group: Exclude<SettingsGroup, "general" | "account" | "update" | "capabilities">;
-}) {
-  return (
-    <Section title={t.groups[group]}>
-      <div className="px-4 py-4 text-sm">
-        <p className="text-muted">{t.comingSoon}</p>
-        <p className="mt-1">{t.groupItems[group]}</p>
-      </div>
-    </Section>
-  );
-}
-
-const NAV_WIDTH = 232;
-
-// 设置（第 18 章）：与主界面同样的吸附样式——左侧导航与右侧内容是贴合的两块液态玻璃，
-// 接缝处直角 + 平滑凹口、无缝隙。已实现"通用"中的外观、启动与通知，"账号"（未开放时的说明）、"模型"（模型渠道与默认模型）、
-// "能力中心"（技能与 MCP，ADR 0017）与"更新"，
-// 其余分组列出将提供的设置项。
 /** 地址中的 `?group=<分组>`（如侧栏菜单的“用量”打开 `/settings/?group=usage`）；无效值返回 null */
 export function groupFromSearch(search: string): SettingsGroup | null {
   const g = new URLSearchParams(search).get("group");
+  if (g === "models") return "agent";
+  if (g === "update") return "about";
   return g && (GROUPS as string[]).includes(g) ? (g as SettingsGroup) : null;
 }
 
 export function SettingsView() {
   const router = useRouter();
+  const [advancedEnabled, setAdvancedEnabled] = useState(false);
   const [group, setGroup] = useState<SettingsGroup>("general");
   // 静态导出没有服务端：在客户端读查询参数选中分组（不用 useSearchParams，免去 Suspense 边界）
   useEffect(() => {
@@ -126,22 +120,31 @@ export function SettingsView() {
     <div className="flex h-screen w-screen flex-col overflow-hidden px-2 pb-2 text-fg">
       {/* 主窗口没有系统标题栏：顶部细条可拖动窗口，窗口按钮贴在右上角（浏览器预览中只留上边距） */}
       <WindowTitleBar className="-mx-2 mb-1" />
-      <div className="flex min-h-0 flex-1">
-        <div className={sideShellClass} style={{ width: NAV_WIDTH, ...sidePanelSeamStyle("left") }}>
-          <GlassPanel className="shrink-0 shadow-none" style={seamBleedStyle("left", NAV_WIDTH)}>
-            <nav aria-label={t.title} className="flex h-full flex-col gap-3 p-3">
-              <div className="flex items-center gap-1.5">
+      <div className="flex min-h-0 flex-1 flex-col gap-2 sm:flex-row sm:gap-0">
+        <div
+          className={cn(sideShellClass, "min-w-0 max-sm:[--nr:0px]! max-sm:rounded-2xl! sm:w-52")}
+          style={sidePanelSeamStyle("left")}
+        >
+          <GlassPanel
+            className="w-full shrink-0 shadow-none sm:w-[calc(13rem+var(--settings-seam-bleed))] sm:rounded-r-none! sm:pr-(--settings-seam-bleed)"
+            style={{ "--settings-seam-bleed": `${SEAM_BLEED}px` } as React.CSSProperties}
+          >
+            <nav
+              aria-label={t.title}
+              className="flex h-full min-h-0 flex-col gap-2 p-3 sm:gap-5 sm:pt-5"
+            >
+              <div className="flex items-center gap-2 px-1">
                 <button
                   type="button"
                   aria-label={t.back}
                   onClick={() => router.push("/")}
-                  className="inline-flex size-8 items-center justify-center rounded-full text-muted transition-colors hover:bg-hover hover:text-fg"
+                  className="inline-flex size-8 items-center justify-center rounded-lg border border-border bg-surface text-muted hover:bg-bubble hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
                 >
                   <Icon name="chevron-left" size="lg" />
                 </button>
-                <h1 className="text-sm font-semibold">{t.title}</h1>
+                <h1 className="text-lg font-semibold tracking-tight">{t.title}</h1>
               </div>
-              <ul className="scroll-thin flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
+              <ul className="scroll-thin flex min-h-0 gap-1 overflow-x-auto sm:flex-1 sm:flex-col sm:overflow-x-hidden sm:overflow-y-auto">
                 {GROUPS.map((g) => (
                   <li key={g}>
                     <button
@@ -149,11 +152,12 @@ export function SettingsView() {
                       aria-current={g === group ? "page" : undefined}
                       onClick={() => setGroup(g)}
                       className={cn(
-                        "w-full rounded-xl px-3 py-[7px] text-left text-sm transition-colors hover:bg-hover",
+                        "relative flex min-h-9 w-full items-center gap-2.5 whitespace-nowrap rounded-lg px-3 text-left text-sm text-muted hover:bg-hover hover:text-fg focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
                         g === group &&
-                          "bg-white/75 font-medium shadow-[0_0.5px_1px_rgb(0_0_0/0.06)] ring-1 ring-black/[0.04] hover:bg-white/75 dark:bg-white/[0.1] dark:ring-white/[0.06] dark:hover:bg-white/[0.1]",
+                          "bg-surface font-semibold text-fg ring-1 ring-inset ring-border hover:bg-surface before:absolute before:inset-y-2.5 before:left-0 before:w-0.5 before:rounded-full before:bg-accent",
                       )}
                     >
+                      <Icon name={GROUP_ICONS[g]} size="md" />
                       {t.groups[g]}
                     </button>
                   </li>
@@ -164,7 +168,7 @@ export function SettingsView() {
         </div>
         <main
           aria-label={t.groups[group]}
-          className="seam-mask relative isolate flex min-w-0 flex-1 flex-col overflow-hidden"
+          className="seam-mask relative isolate flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden max-sm:[--nl:0px]! max-sm:rounded-2xl!"
           style={centerSeamStyle(true, false)}
         >
           {/* 与导航同款液态玻璃；接缝一侧外扩 SEAM_BLEED 由外层裁掉，接缝不露高光线 */}
@@ -174,25 +178,50 @@ export function SettingsView() {
             className="-z-10 pointer-events-none absolute inset-y-0 shadow-none"
             style={{ position: "absolute", left: -SEAM_BLEED, right: 0 }}
           />
-          <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
-            <div className="mx-auto flex max-w-2xl flex-col gap-6 px-8 py-8">
-              <h2 className="font-serif text-2xl font-medium tracking-tight">{t.groups[group]}</h2>
+          <header className="scroll-thin shrink-0 overflow-y-auto border-b border-border bg-surface [scrollbar-gutter:stable]">
+            <div className="mx-auto flex w-full min-w-0 max-w-4xl items-center gap-3 px-4 py-4 sm:px-7 sm:py-5">
+              <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-bubble text-accent">
+                <Icon name={GROUP_ICONS[group]} size="lg" />
+              </span>
+              <h2
+                className={cn(
+                  "text-2xl tracking-tight",
+                  group === "agent" ? "font-[720]" : "font-semibold",
+                )}
+              >
+                {t.groups[group]}
+              </h2>
+              {group === "advanced" && (
+                <Switch
+                  className="ml-auto"
+                  ariaLabel={strings.settings.ssh.enable}
+                  checked={advancedEnabled}
+                  onCheckedChange={setAdvancedEnabled}
+                />
+              )}
+            </div>
+          </header>
+          <div
+            key={group}
+            className="scroll-thin min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
+          >
+            <div className="mx-auto flex w-full min-w-0 max-w-4xl flex-col gap-6 px-4 py-5 sm:px-7 sm:py-7">
               {group === "general" ? (
                 <GeneralSettings />
               ) : group === "account" ? (
                 <AccountSettings />
-              ) : group === "models" ? (
-                <>
-                  <ProviderSettings />
-                  <ModelSettings />
-                  <Placeholder group="models" />
-                </>
-              ) : group === "update" ? (
-                <UpdateSettings />
+              ) : group === "usage" ? (
+                <UsageSettings />
+              ) : group === "agent" ? (
+                <AgentSettings />
+              ) : group === "archived" ? (
+                <ArchivedSettings />
               ) : group === "capabilities" ? (
-                <CapabilitiesSettings />
+                <CapabilitySettings />
+              ) : group === "advanced" ? (
+                <AdvancedSettings enabled={advancedEnabled} />
               ) : (
-                <Placeholder group={group} />
+                <AboutSettings />
               )}
             </div>
           </div>

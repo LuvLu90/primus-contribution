@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
 
-/** 设置中的一组卡片（macOS 系统设置的分组样式） */
+/** 设置分组共用同一表面，行之间用细线区分。 */
 export function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="flex flex-col gap-2">
-      <h3 className="px-1 text-xs font-medium text-muted">{title}</h3>
-      <div className="divide-y divide-border rounded-2xl bg-white/70 shadow-[0_1px_2px_rgb(0_0_0/0.04)] ring-1 ring-black/[0.06] dark:bg-white/[0.06] dark:ring-white/[0.08]">
+    <section className="flex min-w-0 flex-col gap-2">
+      <h3 className="px-1 text-sm font-semibold text-fg">{title}</h3>
+      <div className="divide-y divide-border rounded-xl border border-border bg-surface">
         {children}
       </div>
     </section>
@@ -24,12 +24,12 @@ export function Row({
   children: ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-4 px-4 py-3">
-      <div className="min-w-0 flex-1">
-        <p id={labelId} className="text-sm">
+    <div className="flex min-h-14 flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+      <div className="min-w-32 flex-1">
+        <p id={labelId} className="text-sm font-medium">
           {label}
         </p>
-        {hint && <p className="mt-0.5 text-xs text-muted">{hint}</p>}
+        {hint && <p className="mt-1 text-xs leading-relaxed text-muted">{hint}</p>}
       </div>
       {children}
     </div>

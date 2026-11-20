@@ -2,6 +2,7 @@
 
 import { RadioGroup } from "radix-ui";
 import { useEffect, useId, useState } from "react";
+import { Icon } from "@/components/icons";
 import { type AuthStatus, getPlatform, type ModelSummary, type ModelsInfo } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { useModelsInfo } from "@/lib/use-models";
@@ -10,6 +11,7 @@ import { Row, Section } from "./settings-section";
 
 const ta = strings.settings.account;
 const tm = strings.settings.models;
+const agent = strings.settings.agent;
 
 /** 令牌数的简写：1,000,000 → 1M，128,000 → 128K */
 export function formatTokens(n: number): string {
@@ -34,6 +36,7 @@ export function Badge({ children }: { children: string }) {
 export function AccountSettings() {
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -46,25 +49,94 @@ export function AccountSettings() {
     };
   }, []);
 
-  if (error) return <p className="text-sm text-danger">{error}</p>;
+  if (!status && error)
+    return (
+      <p role="alert" className="text-sm text-danger">
+        {error}
+      </p>
+    );
   if (!status) return <p className="text-sm text-muted">{ta.loading}</p>;
 
   const account = status.loggedIn ? status.account : null;
+  const canLogout = status.loggedIn && status.loginAvailable;
+  const actionClass =
+    "shrink-0 rounded-full px-3 py-1 text-sm ring-1 ring-border transition-colors enabled:hover:bg-hover disabled:text-muted";
+
+  async function changeLogin(action: "login" | "logout") {
+    setBusy(true);
+    setError(null);
+    try {
+      const platform = await getPlatform();
+      if (action === "login") {
+        setStatus(await platform.authLogin());
+      } else {
+        await platform.authLogout();
+        setStatus(await platform.authStatus());
+      }
+    } catch (failure) {
+      setError(errorText(failure, action === "login" ? ta.loginFailed : ta.logoutFailed));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <Section title={ta.title}>
-      <Row label={account?.name ?? ta.notSignedIn}>
-        {status.loggedIn && <span className="shrink-0 text-sm text-muted">{ta.signedIn}</span>}
-      </Row>
-      <Row label={status.loggedIn ? ta.logout : ta.login} hint={ta.loginUnavailable}>
-        <button
-          type="button"
-          disabled={!status.loginAvailable}
-          className="rounded-full px-3 py-1 text-sm ring-1 ring-border transition-colors enabled:hover:bg-hover disabled:opacity-50"
-        >
-          {status.loggedIn ? ta.logout : ta.login}
-        </button>
-      </Row>
-    </Section>
+    <>
+      <Section title={ta.title}>
+        <Row label={ta.avatar} hint={ta.notProvided}>
+          <span className="grid size-9 shrink-0 place-items-center rounded-full bg-hover text-muted">
+            <Icon name="user" size="lg" />
+          </span>
+        </Row>
+        <Row label={ta.name}>
+          <span className="min-w-0 break-all text-right text-sm text-muted">
+            {account?.name || ta.notProvided}
+          </span>
+        </Row>
+        <Row label={ta.email}>
+          <span className="text-sm text-muted">{ta.notProvided}</span>
+        </Row>
+        <Row label={ta.status}>
+          <span role="status" className="text-sm text-muted">
+            {status.loggedIn ? ta.signedIn : ta.notSignedIn}
+          </span>
+        </Row>
+      </Section>
+      <Section title={ta.actions}>
+        {!status.loggedIn && (
+          <Row label={ta.login} hint={!status.loginAvailable ? ta.loginUnavailable : undefined}>
+            <button
+              type="button"
+              disabled={busy || !status.loginAvailable}
+              onClick={() => void changeLogin("login")}
+              className={actionClass}
+            >
+              {ta.login}
+            </button>
+          </Row>
+        )}
+        <Row label={ta.switchAccount} hint={ta.loginUnavailable}>
+          <button type="button" disabled className={actionClass}>
+            {ta.switchAccount}
+          </button>
+        </Row>
+        <Row label={ta.logout} hint={!canLogout ? ta.loginUnavailable : undefined}>
+          <button
+            type="button"
+            disabled={busy || !canLogout}
+            onClick={() => void changeLogin("logout")}
+            className={actionClass}
+          >
+            {ta.logout}
+          </button>
+        </Row>
+      </Section>
+      {error && (
+        <p role="alert" className="text-sm text-danger">
+          {error}
+        </p>
+      )}
+    </>
   );
 }
 
@@ -131,6 +203,17 @@ export function ModelSettings() {
         </div>
       )}
       <Section title={tm.defaultModel}>
+        <Row label={agent.modelMode} hint={agent.modelHint}>
+          <select
+            aria-label={agent.modelMode}
+            value="manual"
+            className="max-w-full rounded-lg border border-border bg-surface px-3 py-1.5 text-sm"
+            disabled
+          >
+            <option value="automatic">{agent.modelAutomatic}</option>
+            <option value="manual">{agent.modelManual}</option>
+          </select>
+        </Row>
         <p id={labelId} className="sr-only">
           {tm.defaultModel}
         </p>

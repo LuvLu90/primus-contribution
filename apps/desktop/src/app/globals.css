@@ -43,6 +43,11 @@
   --color-chart-4: #ff9f0a;
   --color-chart-5: #30d158;
   --color-chart-6: #32ade6;
+  --color-usage-0: #e8eef8;
+  --color-usage-1: #c8ddf8;
+  --color-usage-2: #8ebbf1;
+  --color-usage-3: #4389da;
+  --color-usage-4: #174f9f;
   /* 输入框附件图块、唇条与进度环轨道 */
   --color-tile: rgb(0 0 0 / 0.045);
   --color-tile-ring: rgb(0 0 0 / 0.06);

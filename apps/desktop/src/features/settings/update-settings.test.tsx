@@ -36,6 +36,18 @@ function usePlatform(initial: UpdateStatus, overrides: Partial<Platform> = {}) {
 }
 
 describe("设置·更新", () => {
+  it("关于页精简版本区，立刻更新调用真实检查流程", async () => {
+    const updateCheck = vi.fn(async () => ({ ...base, lastCheck: 1 }));
+    usePlatform(base, { updateCheck });
+    render(<UpdateSettings compact />);
+    expect(await screen.findByText(base.currentVersion)).toBeTruthy();
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.queryByText(tu.unavailableHint)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: strings.settings.about.updateNow }));
+    expect(await screen.findByText(tu.upToDate)).toBeTruthy();
+    expect(updateCheck).toHaveBeenCalled();
+  });
   afterEach(() => {
     setPlatformForTesting(undefined);
     resetUpdateStoreForTesting();

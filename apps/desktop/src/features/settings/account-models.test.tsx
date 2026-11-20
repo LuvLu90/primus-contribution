@@ -71,6 +71,37 @@ describe("设置·账号与模型", () => {
     expect((screen.getByRole("button", { name: ta.login }) as HTMLButtonElement).disabled).toBe(
       true,
     );
+    for (const name of [ta.switchAccount, ta.logout]) {
+      expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(true);
+    }
+  });
+
+  it("显示当前账户的姓名，退出登录后重新读取状态", async () => {
+    const signedIn: AuthStatus = {
+      loggedIn: true,
+      account: { id: "test-account", name: "测试教师", kind: "service" },
+      loginAvailable: true,
+    };
+    const authStatus = vi
+      .fn()
+      .mockResolvedValueOnce(signedIn)
+      .mockResolvedValue({
+        ...auth,
+        loginAvailable: true,
+      });
+    const authLogout = vi.fn(async () => {});
+    usePlatform({ authStatus, authLogout });
+    render(<AccountSettings />);
+
+    expect(await screen.findByText(signedIn.account?.name ?? "")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe(ta.signedIn);
+    expect(screen.getByText(ta.email)).toBeTruthy();
+    expect(screen.getByText(ta.avatar)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: ta.logout }));
+    await screen.findByText(ta.notSignedIn);
+    expect(authLogout).toHaveBeenCalledTimes(1);
+    expect(authStatus).toHaveBeenCalledTimes(2);
   });
 
   it("模型页随 models_watch 推送更新", async () => {

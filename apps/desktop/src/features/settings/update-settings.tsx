@@ -36,7 +36,13 @@ export function updateStateText(status: UpdateStatus, checked: boolean): string 
 
 // 设置·更新（第 18 章、第 3.6 节）：当前版本、自动更新开关（默认开）、通道（稳定 / Beta）、立即检查。
 // 下载完成后的重启提示由根布局中的 UpdatePrompt 显示。
-export function UpdateSettings() {
+export function UpdateSettings({
+  installLabel = strings.update.restartNow,
+  compact = false,
+}: {
+  installLabel?: string;
+  compact?: boolean;
+} = {}) {
   const status = useUpdateStore((s) => s.status);
   const loadError = useUpdateStore((s) => s.loadError);
   const start = useUpdateStore((s) => s.start);
@@ -91,42 +97,65 @@ export function UpdateSettings() {
         </div>
       )}
       <Section title={tu.title}>
-        <Row label={tu.currentVersion} hint={status.available ? undefined : tu.unavailableHint}>
+        <Row
+          label={tu.currentVersion}
+          hint={compact || status.available ? undefined : tu.unavailableHint}
+        >
           <span className="text-sm text-muted tabular-nums">{status.currentVersion}</span>
         </Row>
-        <Row label={tu.autoUpdate}>
-          <Switch
-            ariaLabel={tu.autoUpdate}
-            checked={status.settings.autoUpdate}
-            disabled={saving}
-            onCheckedChange={(autoUpdate) => void save({ autoUpdate })}
-          />
-        </Row>
-        <Row label={tu.channel} labelId={channelLabel}>
-          <Tabs
-            value={status.settings.channel}
-            onValueChange={(v) => void save({ channel: v as UpdateChannel })}
-          >
-            <TabsList aria-labelledby={channelLabel}>
-              {CHANNELS.map((c) => (
-                <TabsTrigger key={c} value={c} disabled={saving}>
-                  {tu.channels[c]}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
-        </Row>
-        <Row label={tu.checkNow} hint={stateText ?? undefined}>
+        {!compact && (
+          <>
+            <Row label={tu.autoUpdate}>
+              <Switch
+                ariaLabel={tu.autoUpdate}
+                checked={status.settings.autoUpdate}
+                disabled={saving}
+                onCheckedChange={(autoUpdate) => void save({ autoUpdate })}
+              />
+            </Row>
+            <Row label={tu.channel} labelId={channelLabel}>
+              <Tabs
+                value={status.settings.channel}
+                onValueChange={(v) => void save({ channel: v as UpdateChannel })}
+              >
+                <TabsList aria-labelledby={channelLabel}>
+                  {CHANNELS.map((c) => (
+                    <TabsTrigger key={c} value={c} disabled={saving}>
+                      {tu.channels[c]}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
+            </Row>
+          </>
+        )}
+        <Row
+          label={compact ? strings.settings.about.updateNow : tu.checkNow}
+          hint={stateText ?? undefined}
+        >
           <button
             type="button"
-            onClick={() => void checkNow()}
-            disabled={!status.available || working}
+            onClick={() => (compact && status.pending ? restartUpdate.restart() : void checkNow())}
+            disabled={
+              working ||
+              restartUpdate.working ||
+              (!status.available && !(compact && status.pending))
+            }
             className="shrink-0 rounded-full px-3 py-1 text-sm ring-1 ring-border transition-colors enabled:hover:bg-hover disabled:opacity-50"
           >
-            {status.phase === "checking" ? tu.checking : tu.checkNow}
+            {status.phase === "checking"
+              ? tu.checking
+              : compact
+                ? strings.settings.about.updateNow
+                : tu.checkNow}
           </button>
         </Row>
-        {status.pending && (
+        {compact && restartUpdate.error && (
+          <p role="alert" className="px-4 py-3 text-sm text-danger">
+            {restartUpdate.error}
+          </p>
+        )}
+        {!compact && status.pending && (
           <Row
             label={tu.pendingReady.replace("{version}", status.pending.version)}
             hint={restartUpdate.error ?? undefined}
@@ -137,7 +166,7 @@ export function UpdateSettings() {
               disabled={restartUpdate.working}
               className="shrink-0 rounded-full bg-fg px-3 py-1 text-sm font-medium text-surface transition-opacity enabled:hover:opacity-90 disabled:opacity-50"
             >
-              {strings.update.restartNow}
+              {installLabel}
             </button>
           </Row>
         )}
