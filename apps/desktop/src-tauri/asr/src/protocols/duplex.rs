@@ -10,12 +10,17 @@ use tokio_tungstenite::tungstenite::Message;
 use super::{Emit, FINISH_TIMEOUT, Out, START_TIMEOUT};
 use crate::audio::{Feed, downsample_half};
 use crate::failure::{Failure, classify};
+use crate::hotwords;
 use crate::models::Model;
 use crate::net::{self, Net};
 
 pub const PATH: &str = "/api-ws/v1/inference";
 
 pub fn run_task(model: &Model, task_id: &str) -> String {
+    let mut parameters = json!({"format": "pcm", "sample_rate": model.sample_rate});
+    if hotwords::takes_vocabulary(model.id) {
+        parameters["vocabulary"] = hotwords::vocabulary();
+    }
     json!({
         "header": {"action": "run-task", "task_id": task_id, "streaming": "duplex"},
         "payload": {
@@ -23,7 +28,7 @@ pub fn run_task(model: &Model, task_id: &str) -> String {
             "task": "asr",
             "function": "recognition",
             "model": model.id,
-            "parameters": {"format": "pcm", "sample_rate": model.sample_rate},
+            "parameters": parameters,
             "input": {}
         }
     })
@@ -211,6 +216,22 @@ mod tests {
         assert_eq!(v["payload"]["model"], m.id);
         assert_eq!(v["payload"]["parameters"]["sample_rate"], 8000);
         assert_eq!(v["payload"]["parameters"]["format"], "pcm");
+    }
+
+    #[test]
+    fn run_task_carries_hotwords_where_supported() {
+        for m in MODELS
+            .iter()
+            .filter(|m| m.protocol == crate::models::Protocol::Duplex)
+        {
+            let v: Value = serde_json::from_str(&run_task(m, "abc")).unwrap();
+            let vocab = &v["payload"]["parameters"]["vocabulary"];
+            if m.id.starts_with("paraformer") || m.id.contains("8k") {
+                assert!(vocab.is_null(), "{}", m.id);
+            } else {
+                assert_eq!(vocab["乾元"], 5, "{}", m.id);
+            }
+        }
     }
 
     #[test]

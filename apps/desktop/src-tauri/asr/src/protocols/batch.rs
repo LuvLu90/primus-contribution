@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use super::{Emit, Out};
 use crate::audio::{BYTES_PER_MS, Feed, for_rate, wav};
 use crate::failure::Failure;
+use crate::hotwords;
 use crate::models::{BATCH_MAX_SECONDS, Model, Protocol};
 use crate::net::Net;
 
@@ -21,17 +22,28 @@ fn audio_part(wav_bytes: &[u8]) -> Value {
 }
 
 pub fn request(model: &Model, wav_bytes: &[u8]) -> (&'static str, Value) {
-    let messages = json!([{"role": "user", "content": [audio_part(wav_bytes)]}]);
+    let audio = json!({"role": "user", "content": [audio_part(wav_bytes)]});
+    let context = hotwords::context();
     match model.protocol {
+        // 千问 3-ASR-Flash：热词作为 system 上下文
         Protocol::Compatible => (
             COMPATIBLE_PATH,
-            json!({"model": model.id, "messages": messages, "stream": false}),
+            json!({
+                "model": model.id,
+                "messages": [{"role": "system", "content": [{"type": "text", "text": context}]}, audio],
+                "stream": false
+            }),
         ),
+        // 多模态接口：音频前一条 input_text 作上下文。实测上下文比即时热词准
+        // （Fun-ASR-Flash 带热词反而把 Primus 认成 PROMPTS），所以这里只带上下文。
         _ => (
             MULTIMODAL_PATH,
             json!({
                 "model": model.id,
-                "input": {"messages": messages},
+                "input": {"messages": [
+                    {"role": "user", "content": [{"type": "input_text", "text": context}]},
+                    audio
+                ]},
                 "parameters": {"format": "wav", "sample_rate": model.sample_rate.to_string()}
             }),
         ),
@@ -131,8 +143,9 @@ mod tests {
         let (p, b) = request(flash, b"RIFF");
         assert_eq!(p, COMPATIBLE_PATH);
         assert_eq!(b["model"], "qwen3-asr-flash");
+        assert_eq!(b["messages"][0]["role"], "system");
         assert_eq!(
-            b["messages"][0]["content"][0]["input_audio"]["data"],
+            b["messages"][1]["content"][0]["input_audio"]["data"],
             "data:audio/wav;base64,UklGRg=="
         );
         let mm = MODELS
@@ -142,7 +155,13 @@ mod tests {
         let (p, b) = request(mm, b"RIFF");
         assert_eq!(p, MULTIMODAL_PATH);
         assert_eq!(b["parameters"]["sample_rate"], "16000");
-        assert!(b["input"]["messages"][0]["content"][0]["input_audio"].is_object());
+        assert!(b["input"]["messages"][1]["content"][0]["input_audio"].is_object());
+        assert!(
+            b["input"]["messages"][0]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("小元")
+        );
     }
 
     #[test]
