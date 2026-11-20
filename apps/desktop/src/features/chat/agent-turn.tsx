@@ -580,6 +580,8 @@ export const AgentTurn = memo(function AgentTurn({
         const result = results.get(call.id);
         const run = toolRuns[call.id];
         const details = (result?.details ?? run?.result?.details) as ImageGenDetails | undefined;
+        // 参数还在流式输出（尺寸可能还没到）时先不出卡片，否则框会先按默认比例展开、再跳成实际比例
+        if (streaming && running && !result && !run) return null;
         return (
           <ImageGenCard
             key={call.id}

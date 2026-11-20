@@ -28,9 +28,9 @@ export const DISPLAY_EDGE = 2048;
 export const FRAME_MAX_W = 360;
 export const FRAME_MAX_H = 450;
 
-/** 把 w×h 按比例缩进 FRAME_MAX_W×FRAME_MAX_H 内（不放大超过该框）；宽高缺失时退回默认框 */
+/** 把 w×h 按比例缩进 FRAME_MAX_W×FRAME_MAX_H 内（不放大超过该框）；宽高缺失（含 auto）时按方图，与工具默认尺寸 1024x1024 一致 */
 export function frameBox(w?: number, h?: number): { w: number; h: number } {
-  if (!w || !h || w <= 0 || h <= 0) return { w: FRAME_MAX_W, h: FRAME_MAX_H };
+  if (!w || !h || w <= 0 || h <= 0) return frameBox(1024, 1024);
   const scale = Math.min(FRAME_MAX_W / w, FRAME_MAX_H / h);
   return { w: Math.round(w * scale), h: Math.round(h * scale) };
 }

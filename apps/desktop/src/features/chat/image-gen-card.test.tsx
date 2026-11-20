@@ -46,7 +46,7 @@ async function shownImage() {
 }
 
 describe("图片生成卡片", () => {
-  it("生成中：按张数显示展开的 360×450 生成框、粒子画布，框下是流光文字与计时", () => {
+  it("生成中：按张数显示展开的生成框、粒子画布，框下是流光文字与计时", () => {
     const { container } = render(
       <ImageGenCard args={{ prompt: "猫", n: 2, intent: "fast" }} details={undefined} running />,
     );
@@ -191,11 +191,11 @@ describe("图片生成卡片", () => {
     expect(elapsedSeconds(-5)).toBe(0);
   });
 
-  it("框按图片比例缩进 360×450 内、不裁切，缺宽高时退回默认框", () => {
+  it("框按图片比例缩进 360×450 内、不裁切，缺宽高时按方图", () => {
     expect(frameBox(1024, 1024)).toEqual({ w: 360, h: 360 });
     expect(frameBox(1536, 1024)).toEqual({ w: 360, h: 240 });
     expect(frameBox(1024, 1536)).toEqual({ w: 300, h: 450 });
-    expect(frameBox()).toEqual({ w: 360, h: 450 });
+    expect(frameBox()).toEqual({ w: 360, h: 360 });
   });
 
   it("粒子：按 6px 格距铺满框，一格一颗", () => {
