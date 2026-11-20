@@ -21,7 +21,7 @@ const PREVIEWS: readonly [ChimeKind, string][] = [
 ];
 
 export function NotificationSettingsSection() {
-  const { settings, loaded, error, saving, load, update } = useNotificationSettings();
+  const { settings, loaded, ready, error, saving, load, update } = useNotificationSettings();
   const modeLabel = useId();
   useEffect(() => {
     if (!loaded) void load();
@@ -29,11 +29,16 @@ export function NotificationSettingsSection() {
 
   const errorText =
     error && (error === "load" ? t.loadFailed : error === "save" ? t.saveFailed : error);
-  const disabled = !loaded || saving;
+  const disabled = !ready || saving;
 
   return (
     <Section title={strings.settings.notifications}>
       <Row label={t.turnComplete} hint={errorText ?? t.turnCompleteHint} labelId={modeLabel}>
+        {loaded && !ready && (
+          <button type="button" onClick={() => void load()} className={buttonClass}>
+            {t.retry}
+          </button>
+        )}
         <Tabs
           value={settings.turnComplete}
           onValueChange={(v) => void update({ turnComplete: v as TurnCompleteNotify })}

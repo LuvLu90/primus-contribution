@@ -1104,14 +1104,17 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     notificationSettingsGet: async () => ({ ...notificationSettings }),
     notificationSettingsSet: async (next) => {
       notificationSettings = { ...next };
+      // 浏览器预览：网页通知要用户授权，且浏览器（如 Firefox）只接受用户操作触发的授权请求。
+      // 修改设置来自设置页的点击，在这里请求；notificationShow 在后台触发，不请求
+      const N = (globalThis as { Notification?: typeof Notification }).Notification;
+      const wants = next.turnComplete !== "never" || next.needsInput;
+      if (N?.permission === "default" && wants) void N.requestPermission().catch(() => "denied");
       return { ...notificationSettings };
     },
     // 浏览器预览：用网页通知代替系统通知（用户允许后才显示；不出声，提示音由前端播放）
     notificationShow: async ({ title, body, tag }) => {
       const N = (globalThis as { Notification?: typeof Notification }).Notification;
-      if (!N) return;
-      if (N.permission === "default") await N.requestPermission().catch(() => "denied");
-      if (N.permission !== "granted") return;
+      if (N?.permission !== "granted") return;
       const n = new N(title, { body, tag, silent: true });
       n.onclick = () => {
         window.focus();

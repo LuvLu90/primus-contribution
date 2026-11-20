@@ -13,7 +13,12 @@ import { strings } from "@/lib/strings";
 import { initialSessionState, type SessionState } from "@/stores/session-store";
 import * as chime from "./chime";
 import { resetNotificationSettingsForTest } from "./notification-settings-store";
-import { shouldAlert, useAttentionAlerts } from "./use-attention-alerts";
+import {
+  activateNotification,
+  resetNotifiedSessionsForTest,
+  shouldAlert,
+  useAttentionAlerts,
+} from "./use-attention-alerts";
 
 const t = strings.notifications;
 const user = (text: string): AgentMessage => ({ role: "user", content: text, timestamp: 0 });
@@ -103,5 +108,42 @@ describe("useAttentionAlerts", () => {
     run();
     await waitFor(() => expect(show).toHaveBeenCalled());
     expect(play).not.toHaveBeenCalled();
+  });
+});
+
+describe("activateNotification", () => {
+  afterEach(() => {
+    setPlatformForTesting(undefined);
+    resetNotifiedSessionsForTest();
+    vi.restoreAllMocks();
+  });
+
+  it("标签已关闭：按通知时记下的会话重新打开", async () => {
+    const show = setup();
+    vi.spyOn(chime, "playChime").mockResolvedValue(true);
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    useSessionsStore.setState({
+      tabs: [
+        {
+          id: "tab-x",
+          sessionPath: "/s/a.jsonl",
+          sessionId: "a",
+          workspace: "/w",
+          running: false,
+          opening: false,
+        },
+      ],
+      activeTabId: "tab-x",
+    });
+    const running: SessionState = { ...initialSessionState, running: true, messages: [user("a")] };
+    const hook = renderHook(({ s }) => useAttentionAlerts(s, "tab-x"), {
+      initialProps: { s: running },
+    });
+    hook.rerender({ s: { ...running, running: false, messages: [user("a"), done] } });
+    await waitFor(() => expect(show).toHaveBeenCalled());
+    useSessionsStore.getState().closeTab("tab-x");
+    const open = vi.spyOn(useSessionsStore.getState(), "openSession");
+    await activateNotification("tab-x");
+    expect(open).toHaveBeenCalledWith({ path: "/s/a.jsonl", id: "a", workspace: "/w" });
   });
 });

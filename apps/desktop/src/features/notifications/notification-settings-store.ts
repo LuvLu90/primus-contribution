@@ -10,8 +10,13 @@ import {
 
 export interface NotificationSettingsState {
   settings: NotificationSettings;
-  /** 已从薄壳读到（成功或失败）；之前提醒用默认值 */
+  /** 已从薄壳读过（成功或失败）；之前提醒用默认值 */
   loaded: boolean;
+  /**
+   * 已成功读到设置。读取失败时 settings 只是默认值，不能拿它与修改合并保存（会覆盖用户没改的项），
+   * 因此读到前设置页禁止修改、提供重试
+   */
+  ready: boolean;
   /** 最近一次读取或保存的错误 */
   error: string | null;
   saving: boolean;
@@ -30,6 +35,7 @@ function message(e: unknown): string | null {
 export const useNotificationSettings = create<NotificationSettingsState>()((set, get) => ({
   settings: { ...DEFAULT_NOTIFICATION_SETTINGS },
   loaded: false,
+  ready: false,
   error: null,
   saving: false,
 
@@ -37,7 +43,7 @@ export const useNotificationSettings = create<NotificationSettingsState>()((set,
     loading ??= (async () => {
       try {
         const settings = await (await getPlatform()).notificationSettingsGet();
-        set({ settings, loaded: true, error: null });
+        set({ settings, loaded: true, ready: true, error: null });
       } catch (e) {
         set({ loaded: true, error: message(e) ?? "load" });
       } finally {
@@ -48,6 +54,7 @@ export const useNotificationSettings = create<NotificationSettingsState>()((set,
   },
 
   update: async (patch) => {
+    if (!get().ready) return;
     const prev = get().settings;
     const next = { ...prev, ...patch };
     set({ settings: next, saving: true, error: null });
@@ -66,6 +73,7 @@ export function resetNotificationSettingsForTest(): void {
   useNotificationSettings.setState({
     settings: { ...DEFAULT_NOTIFICATION_SETTINGS },
     loaded: false,
+    ready: false,
     error: null,
     saving: false,
   });

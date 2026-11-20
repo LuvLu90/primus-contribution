@@ -39,6 +39,75 @@ export function shouldAlert(
   return settings.turnComplete === "background" && !viewing;
 }
 
+/** 通知所属会话：标签关掉后点通知，靠它重新打开会话（只记最近的若干条） */
+interface NotifiedSession {
+  sessionPath: string | null;
+  sessionId: string | null;
+  workspace: string | null;
+}
+const NOTIFIED_MAX = 50;
+const notified = new Map<string, NotifiedSession>();
+
+function rememberSession(tabId: string): void {
+  const tab = useSessionsStore.getState().tabs.find((t) => t.id === tabId);
+  if (!tab) return;
+  notified.delete(tabId);
+  notified.set(tabId, {
+    sessionPath: tab.sessionPath,
+    sessionId: tab.sessionId,
+    workspace: tab.workspace,
+  });
+  while (notified.size > NOTIFIED_MAX) {
+    const oldest = notified.keys().next().value;
+    if (oldest === undefined) break;
+    notified.delete(oldest);
+  }
+}
+
+/** 新会话的标签只有会话 ID：在会话列表的前几页里找到它的文件 */
+async function findSessionPath(id: string): Promise<{ path: string; workspace: string } | null> {
+  const platform = await getPlatform();
+  let cursor: string | undefined;
+  for (let page = 0; page < 3; page++) {
+    const { items, nextCursor } = await platform.sessionList(null, cursor);
+    const hit = items.find((s) => s.id === id);
+    if (hit) return { path: hit.path, workspace: hit.workspace };
+    if (!nextCursor) break;
+    cursor = nextCursor;
+  }
+  return null;
+}
+
+/**
+ * 点通知后切到它的会话：标签还在就切过去；标签已关闭则重新打开那个会话（标签已满打不开时，
+ * 会话列表会提示）；会话还没落盘、找不到文件时只回到主界面
+ */
+export async function activateNotification(tag: string): Promise<void> {
+  const sessions = useSessionsStore.getState();
+  if (sessions.tabs.some((t) => t.id === tag)) {
+    sessions.activate(tag);
+    return;
+  }
+  const info = notified.get(tag);
+  if (!info) return;
+  let path = info.sessionPath;
+  let workspace = info.workspace;
+  if (!path && info.sessionId) {
+    const found = await findSessionPath(info.sessionId).catch(() => null);
+    path = found?.path ?? null;
+    workspace = found?.workspace ?? workspace;
+  }
+  if (!path) return;
+  useSessionsStore
+    .getState()
+    .openSession({ path, id: info.sessionId ?? "", workspace: workspace ?? "" });
+}
+
+/** 测试用 */
+export function resetNotifiedSessionsForTest(): void {
+  notified.clear();
+}
+
 async function alert(event: AttentionEvent, state: SessionState, tabId: string | undefined) {
   const store = useNotificationSettings.getState();
   if (!store.loaded) await store.load();
@@ -47,6 +116,7 @@ async function alert(event: AttentionEvent, state: SessionState, tabId: string |
   const viewing = isAppForeground() && (tabId === undefined || tabId === active);
   if (!shouldAlert(event.kind, settings, viewing)) return;
   if (settings.sound) void playChime(event.kind);
+  if (tabId) rememberSession(tabId);
   try {
     await (await getPlatform()).notificationShow({
       title: `${event.headline} · ${sessionLabel(state.messages)}`,
@@ -85,7 +155,7 @@ export function useNotificationActivation(): void {
       .then((p) =>
         p.notificationWatch((tag) => {
           if (!active) return;
-          if (tag) useSessionsStore.getState().activate(tag);
+          if (tag) void activateNotification(tag);
           const path = window.location.pathname;
           if (path !== "/" && path !== "") router.push("/");
         }),

@@ -1,6 +1,7 @@
 // 从会话状态的变化里找出需要提醒用户的时刻（ADR 0023，纯函数，便于测试）。
 // 与 Codex 的两类事件对应：一轮结束（agent-turn-complete）与需要用户处理（approval-requested / 提问 / 计划审批）。
-//   - 结束：运行中 → 空闲。用户自己停止的（stopReason 为 aborted）不提醒；出错单独一类；
+//   - 结束：两次观察之间有一轮结束（agent_settled 计数增加；get_state 校正时退化为运行中 → 空闲）。
+//     用户自己停止的（agent_settled 的 aborted，或最后一条回复 stopReason 为 aborted）不提醒；出错单独一类；
 //     结束时正停在提问或计划审批上，按“需要处理”提醒，不再另报完成。
 //   - 需要处理：新到的确认框 / 选择框 / 输入框（primus-guard 等扩展的对话框）、新的 ask_user 提问、
 //     新进入等待批准的计划。同一次变化有多件时只报一件（先到的对话框优先）。
@@ -103,8 +104,12 @@ export function detectAttention(prev: SessionState, next: SessionState): Attenti
     const detail = plainText(plan.plan?.title ?? "") || t.plan;
     return { kind: "input", headline: t.plan, detail: truncate(detail, BODY_MAX) };
   }
-  // 一轮结束
-  if (!prev.running || next.running) return null;
+  // 一轮结束：同一批记录里可能已经开始又结束，只看 running 会漏掉
+  if (next.running) return null;
+  const settled = next.settledTurns !== prev.settledTurns;
+  if (!settled && !prev.running) return null;
+  // 用户停止（含工具执行期间停止：此时最后一条回复的 stopReason 是 toolUse）
+  if (settled && next.lastTurnAborted) return null;
   // 停在提问或计划审批上：已按“需要处理”提醒过
   if (next.ask || plan) return null;
   const last = lastAssistant(next.messages);

@@ -4,12 +4,16 @@
 //! - Toast 本身静音（`<audio silent="true"/>`）：提示音由前端按设置播放，完成 / 需要处理 / 出错各是一种声音，
 //!   不与系统通知音叠在一起。
 //! - 同一个会话的通知用同一个 Tag 替换（操作中心里每个会话只留最新一条）。
-//! - 点击通知触发 `Activated`，回调收到发送时给的 `tag`。只对本进程运行期间发出的通知有效；
-//!   应用已退出后点击操作中心里的旧通知，由系统按快捷方式启动应用。
+//! - 激活有两条路径：
+//!   1. 点击横幅：触发本进程注册的 `Activated`，回调收到发送时给的 `tag`，切回对应会话；
+//!   2. 横幅消失后从通知中心点击（或应用已退出）：系统可能不调用 `Activated`，而是按快捷方式启动应用，
+//!      单实例插件把已运行的主窗口拉到前台，但不切会话。完整支持要注册 COM 激活器
+//!      （`ToastActivatorCLSID` + `INotificationActivationCallback`），暂不做（ADR 0023 后果）。
 //! - 开发模式没有开始菜单快捷方式时系统不显示通知（不报错），提示音照常。
 //! - 其他平台暂不显示系统通知（第 20 章，P3 适配）。
 
 /// 应用的 AppUserModelID（与 `tauri.conf.json` 的 identifier、MSI 快捷方式一致）。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const APP_USER_MODEL_ID: &str = "com.primus.desktop";
 
 /// 通知分组：本应用的全部 Toast 同一组。
@@ -21,6 +25,7 @@ const GROUP: &str = "primus";
 const TAG_MAX: usize = 64;
 
 /// 转义 XML 文本中的特殊字符（标题与正文来自对话内容）。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn xml_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -39,6 +44,7 @@ pub(crate) fn xml_escape(text: &str) -> String {
 }
 
 /// Toast 的 XML：标题一行、正文一行，静音。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn toast_xml(title: &str, body: &str) -> String {
     format!(
         "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual><audio silent=\"true\"/></toast>",

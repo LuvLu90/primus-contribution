@@ -51,6 +51,33 @@ describe("detectAttention", () => {
     });
   });
 
+  it("同一批记录里开始又结束（提交前后都空闲）：按结束轮数识别，出错照样提醒", () => {
+    const prev = state({ messages: [user("a")] });
+    const next = state({
+      settledTurns: 1,
+      messages: [user("a"), assistant("", "error", "额度不足")],
+    });
+    expect(detectAttention(prev, next)).toEqual({
+      kind: "error",
+      headline: t.error,
+      detail: "额度不足",
+    });
+    expect(
+      detectAttention(prev, state({ settledTurns: 1, messages: [user("a"), assistant("好了")] }))
+        ?.kind,
+    ).toBe("done");
+  });
+
+  it("工具执行期间停止（最后一条回复是 toolUse）：不提醒", () => {
+    const prev = state({ running: true, messages: [user("a")] });
+    const next = state({
+      settledTurns: 1,
+      lastTurnAborted: true,
+      messages: [user("a"), assistant("先看看文件", "toolUse")],
+    });
+    expect(detectAttention(prev, next)).toBeNull();
+  });
+
   it("用户自己停止的不提醒；出错单独一类", () => {
     const prev = state({ running: true, messages: [user("a")] });
     expect(
