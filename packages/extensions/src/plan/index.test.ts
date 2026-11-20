@@ -575,6 +575,77 @@ describe("primus-plan", () => {
     expect(entries.length).toBe(before);
   });
 
+  it("从 off 直接提交后中断并恢复会话：恢复为 off 且不开启只读", async () => {
+    const entries: { type: string; customType?: string; data?: unknown }[] = [];
+    const a = setup(entries);
+    void (a.tools[PLAN_SUBMIT_TOOL] as Tool).execute("t", PLAN, undefined, undefined, a.ctx);
+    await Promise.resolve();
+    expect(a.plan.state.phase).toBe("awaiting");
+
+    const b = setup(entries);
+    b.handlers.session_start?.({ reason: "resume" }, b.ctx);
+    expect(b.plan.state).toMatchObject({ phase: "off", status: "cancelled" });
+    expect(b.gate.readOnly).toBe(false);
+    expect(b.userTurn()).toBeUndefined();
+  });
+
+  it("executing 中提交新计划后取消：恢复原执行计划与待办，压缩提醒仍指向原计划", async () => {
+    const { tools, ctx, cmd, plan, gate, handlers, userTurn } = setup();
+    const submit = tools[PLAN_SUBMIT_TOOL] as Tool;
+    const planB = {
+      title: "新计划 B",
+      summary: "替换方案",
+      steps: [{ id: "1", title: "新步骤 B1" }],
+      verification: ["验证 B"],
+    };
+
+    // 批准计划 A，进入 executing
+    const p1 = submit.execute("t1", PLAN, undefined, undefined, ctx);
+    await Promise.resolve();
+    await cmd(`approve ${JSON.stringify({ id: "p1", permission: "keep" })}`);
+    await p1;
+    expect(plan.state.phase).toBe("executing");
+    const pathA = plan.state.path;
+
+    // 执行中提交计划 B，随后取消
+    const ac = new AbortController();
+    const p2 = submit.execute("t2", planB, ac.signal, undefined, ctx);
+    await Promise.resolve();
+    expect(plan.state.phase).toBe("awaiting");
+    ac.abort();
+    expect((await p2).details?.status).toBe("cancelled");
+
+    // 完整恢复原执行计划 A 的状态
+    expect(plan.state).toMatchObject({
+      phase: "executing",
+      id: "p1",
+      status: "approved",
+      plan: PLAN,
+      path: pathA,
+    });
+    expect(plan.state.todos.map((i) => i.text)).toEqual(["协议类型", "扩展"]);
+    expect(gate.readOnly).toBe(false);
+
+    // 压缩后的提醒仍指向计划 A，而不是未批准的计划 B
+    handlers.session_compact?.({}, ctx);
+    const reminder = userTurn()?.message.content;
+    expect(reminder).toContain(PLAN.title);
+    expect(reminder).not.toContain(planB.title);
+
+    // 再次提交计划 B 并批准：切换到 B 并重新生成待办
+    const p3 = submit.execute("t3", planB, undefined, undefined, ctx);
+    await Promise.resolve();
+    await cmd(`approve ${JSON.stringify({ id: "p3", permission: "keep" })}`);
+    await p3;
+    expect(plan.state).toMatchObject({
+      phase: "executing",
+      id: "p3",
+      status: "approved",
+      plan: planB,
+    });
+    expect(plan.state.todos).toEqual([{ id: "1", text: "新步骤 B1", status: "in_progress" }]);
+  });
+
   it("normalizePlan 去掉空白项、补步骤编号", () => {
     const p = normalizePlan({
       title: " t ",

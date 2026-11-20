@@ -6,10 +6,10 @@
 
 import { lookup as dnsLookup, type LookupAddress } from "node:dns";
 import * as http from "node:http";
-import * as https from "node:https";
+import https from "node:https";
 import { isIP, type LookupFunction, type Socket } from "node:net";
 import { pipeline, Readable } from "node:stream";
-import * as tls from "node:tls";
+import tls from "node:tls";
 import * as zlib from "node:zlib";
 import { isPrivateAddress, PRIVATE_ADDRESS_MESSAGE, WebError } from "./net.ts";
 
@@ -110,6 +110,7 @@ function tunnel(
   signal: AbortSignal | undefined,
   lookupImpl: Lookup,
   tlsOptions: TlsOptions,
+  resolveViaProxy = false,
 ): (opts: unknown, done: (err: Error | null, socket?: Socket) => void) => undefined {
   return (_opts, done) => {
     const asError = (e: unknown): Error => (e instanceof Error ? e : new Error(String(e)));
@@ -131,10 +132,14 @@ function tunnel(
     signal?.addEventListener("abort", onAbort, { once: true });
     const secure = target.protocol === "https:";
     const port = target.port || (secure ? "443" : "80");
-    resolveChecked(target.hostname, blocked, lookupImpl)
-      .then((ip) => {
+    // 网页读取在本地解析并拦截内网地址；内置搜索服务走代理时交由代理解析域名（与 Core 一致）
+    const connectTarget = resolveViaProxy
+      ? Promise.resolve(target.hostname.replace(/^\[|\]$/g, ""))
+      : resolveChecked(target.hostname, blocked, lookupImpl);
+    connectTarget
+      .then((connectHost) => {
         if (settled) return;
-        const authority = `${isIP(ip) === 6 ? `[${ip}]` : ip}:${port}`;
+        const authority = `${isIP(connectHost) === 6 ? `[${connectHost}]` : connectHost}:${port}`;
         const headers: Record<string, string> = { Host: authority };
         if (proxy.username || proxy.password) {
           let cred: string;
@@ -233,6 +238,7 @@ export function createDirectFetch(
   env: Env = process.env,
   lookupImpl: Lookup = dnsLookup,
   tlsOptions: TlsOptions = {},
+  resolveViaProxy = false,
 ): typeof fetch {
   const lookup = guardedLookup(blocked, lookupImpl);
   return ((input: string | URL | Request, init: RequestInit = {}) => {
@@ -264,7 +270,7 @@ export function createDirectFetch(
         ? proxiedOptions(
             url,
             { method, headers, signal },
-            tunnel(url, proxy, blocked, signal, lookupImpl, tlsOptions),
+            tunnel(url, proxy, blocked, signal, lookupImpl, tlsOptions, resolveViaProxy),
           )
         : { ...tlsOptions, method, headers, signal, lookup };
       const req = mod.request(url, options, (res) => {
@@ -320,6 +326,6 @@ export function pageFetch(): typeof fetch {
  * 同一请求以 TLS 1.2 握手立即返回 200。搜索地址是内置的固定服务，不做内网地址拦截（兼容代理软件的 fake-ip）；
  * 代理设置与 Core 一致（HTTP(S)_PROXY / NO_PROXY）。
  */
-export function searchFetch(env: Env = process.env): typeof fetch {
-  return createDirectFetch(() => false, env, dnsLookup, { maxVersion: "TLSv1.2" });
+export function searchFetch(env: Env = process.env, lookupImpl: Lookup = dnsLookup): typeof fetch {
+  return createDirectFetch(() => false, env, lookupImpl, { maxVersion: "TLSv1.2" }, true);
 }

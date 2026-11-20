@@ -1,6 +1,8 @@
+import { EventEmitter } from "node:events";
 import { createServer, request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
+import https, { request as httpsRequest } from "node:https";
 import { createServer as createNetServer, connect as netConnect } from "node:net";
+import tls from "node:tls";
 import { gzipSync } from "node:zlib";
 import { WEBFETCH_TOOL, WEBSEARCH_TOOL } from "@primus/protocol";
 import { describe, expect, it, vi } from "vitest";
@@ -748,6 +750,90 @@ describe("审查补充", () => {
       ).rejects.toThrow("字符串请求体");
     } finally {
       server.close();
+    }
+  });
+
+  it("searchFetch 走代理时交由代理解析域名，不受本地 DNS 失败影响", async () => {
+    const target = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end('{"ok":true}');
+    });
+    await new Promise<void>((r) => target.listen(0, "127.0.0.1", r));
+    const tport = (target.address() as { port: number }).port;
+    const seen: string[] = [];
+    const proxy = createServer();
+    proxy.on("connect", (req, client) => {
+      seen.push(String(req.url));
+      const up = netConnect(tport, "127.0.0.1", () => {
+        client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        up.pipe(client);
+        client.pipe(up);
+      });
+    });
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+    const pport = (proxy.address() as { port: number }).port;
+    const failingLookup = vi.fn((_host, _opts, cb) => {
+      (cb as (err: Error) => void)(new Error("ENOTFOUND"));
+    }) as unknown as Lookup;
+    try {
+      const env = { HTTP_PROXY: `http://127.0.0.1:${pport}` };
+      const res = await searchFetch(env, failingLookup)("http://proxy-only.example:8080/search");
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+      expect(failingLookup).not.toHaveBeenCalled();
+      expect(seen).toEqual(["proxy-only.example:8080"]);
+    } finally {
+      proxy.close();
+      target.close();
+    }
+  });
+
+  it("searchFetch 直连与代理隧道均向 TLS 传递 maxVersion: TLSv1.2", async () => {
+    // 直连路径：捕获 https.request 收到的选项
+    let directOpts: https.RequestOptions | undefined;
+    const reqSpy = vi.spyOn(https, "request").mockImplementation(((
+      _url: unknown,
+      opts: https.RequestOptions,
+    ) => {
+      directOpts = opts;
+      const fake = new EventEmitter() as ReturnType<typeof https.request>;
+      fake.end = (() => {
+        queueMicrotask(() => fake.emit("error", new Error("stop-direct")));
+        return fake;
+      }) as typeof fake.end;
+      return fake;
+    }) as typeof https.request);
+    try {
+      await expect(searchFetch({})("https://tls-check.invalid/v1/web-search")).rejects.toThrow(
+        "stop-direct",
+      );
+      expect(directOpts?.maxVersion).toBe("TLSv1.2");
+    } finally {
+      reqSpy.mockRestore();
+    }
+
+    // 代理隧道路径：捕获 tls.connect 收到的选项
+    const proxy = createServer();
+    proxy.on("connect", (_req, client) => {
+      client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    });
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+    const pport = (proxy.address() as { port: number }).port;
+    let tlsOpts: tls.ConnectionOptions | undefined;
+    const tlsSpy = vi.spyOn(tls, "connect").mockImplementation(((opts: tls.ConnectionOptions) => {
+      tlsOpts = opts;
+      throw new Error("stop-proxy-tls");
+    }) as typeof tls.connect);
+    try {
+      const env = { HTTPS_PROXY: `http://127.0.0.1:${pport}` };
+      await expect(searchFetch(env)("https://tls-check.invalid/v1/web-search")).rejects.toThrow(
+        "stop-proxy-tls",
+      );
+      expect(tlsOpts?.maxVersion).toBe("TLSv1.2");
+      expect(tlsOpts?.servername).toBe("tls-check.invalid");
+    } finally {
+      tlsSpy.mockRestore();
+      proxy.close();
     }
   });
 
