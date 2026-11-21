@@ -1,32 +1,30 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Switch } from "@/components/ui/switch";
 import { getPlatform } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { useAppStore } from "@/stores/app-store";
+import {
+  type AgentPlanMode,
+  type AgentReplyLanguage,
+  type AgentReplyStyle,
+  useSettingsStore,
+} from "@/stores/settings-store";
 import { ModelSettings } from "./account-models";
 import { ProviderSettings } from "./providers-settings";
-import { Row, Section } from "./settings-section";
+import { Row, Section, SettingsSelect, StatusPill } from "./settings-section";
 
 const t = strings.settings.agent;
 const permissions = strings.chat.permissions;
-const fieldClass =
-  "max-w-full rounded-lg border border-border bg-surface px-3 py-1.5 text-sm disabled:text-muted";
-
-function UnavailableSelect({ label, options }: { label: string; options: readonly string[] }) {
-  return (
-    <select aria-label={label} className={fieldClass} defaultValue="" disabled>
-      <option value="">{t.unavailable}</option>
-      {options.map((option) => (
-        <option key={option}>{option}</option>
-      ))}
-    </select>
-  );
-}
 
 export function AgentSettings() {
   const permissionMode = useAppStore((state) => state.permissionMode);
-  const setPermissionMode = useAppStore((state) => state.setPermissionMode);
+  const autoCompaction = useAppStore((state) => state.autoCompaction);
+  const replyStyle = useSettingsStore((state) => state.agentReplyStyle);
+  const replyLanguage = useSettingsStore((state) => state.agentReplyLanguage);
+  const planMode = useSettingsStore((state) => state.agentPlanMode);
+  const patchSettings = useSettingsStore((state) => state.patch);
   const [voiceAvailable, setVoiceAvailable] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -45,26 +43,55 @@ export function AgentSettings() {
   }, []);
 
   return (
-    <>
+    <div className="flex flex-col gap-7">
       <ProviderSettings />
       <ModelSettings />
       <Section title={t.preferenceTitle}>
-        <Row label={t.replyStyle}>
-          <UnavailableSelect label={t.replyStyle} options={t.replyStyles} />
+        <Row icon="ask" label={t.replyStyle} hint={t.replyStyleHint}>
+          <SettingsSelect
+            aria-label={t.replyStyle}
+            value={replyStyle}
+            onChange={(event) =>
+              void patchSettings({
+                agentReplyStyle: event.currentTarget.value as AgentReplyStyle,
+              })
+            }
+          >
+            {t.replyStyles.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </SettingsSelect>
         </Row>
-        <Row label={t.replyLanguage}>
-          <UnavailableSelect label={t.replyLanguage} options={t.replyLanguages} />
+        <Row icon="globe" label={t.replyLanguage} hint={t.replyLanguageHint}>
+          <SettingsSelect
+            aria-label={t.replyLanguage}
+            value={replyLanguage}
+            onChange={(event) =>
+              void patchSettings({
+                agentReplyLanguage: event.currentTarget.value as AgentReplyLanguage,
+              })
+            }
+          >
+            {t.replyLanguages.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </SettingsSelect>
         </Row>
       </Section>
       <Section title={t.executionTitle}>
-        <Row label={t.execution} hint={permissions[permissionMode].hint}>
-          <select
+        <Row icon="shield-check" label={t.execution} hint={permissions[permissionMode].hint}>
+          <SettingsSelect
             aria-label={t.execution}
-            className={fieldClass}
             value={permissionMode}
             onChange={(event) => {
               const mode = event.currentTarget.value;
-              if (mode === "ask" || mode === "edit") setPermissionMode(mode);
+              if (mode === "ask" || mode === "edit") {
+                void patchSettings({ permissionMode: mode });
+              }
             }}
           >
             <option value="ask">{t.confirmFirst}</option>
@@ -74,20 +101,41 @@ export function AgentSettings() {
                 {permissions.full.label}
               </option>
             )}
-          </select>
+          </SettingsSelect>
         </Row>
-        <Row label={t.plan} hint={t.planHint}>
-          <UnavailableSelect label={t.plan} options={t.planOptions} />
+        <Row icon="list-check" label={t.plan} hint={t.planHint}>
+          <SettingsSelect
+            aria-label={t.plan}
+            value={planMode}
+            onChange={(event) =>
+              void patchSettings({
+                agentPlanMode: event.currentTarget.value as AgentPlanMode,
+              })
+            }
+          >
+            {t.planOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </SettingsSelect>
         </Row>
-        <Row label={t.context} hint={t.contextHint}>
-          <span className="shrink-0 text-sm text-muted">{t.inChat}</span>
+        <Row icon="layers" label={t.context} hint={t.contextHint}>
+          <Switch
+            ariaLabel={t.autoCompaction}
+            checked={autoCompaction ?? true}
+            onCheckedChange={(checked) => void patchSettings({ autoCompaction: checked })}
+          />
         </Row>
-        <Row label={t.voice} hint={t.voiceHint}>
-          <span role="status" className="shrink-0 text-sm text-muted">
+        <Row icon="mic" label={t.voice} hint={t.voiceHint}>
+          <StatusPill
+            role="status"
+            tone={voiceAvailable === null ? "neutral" : voiceAvailable ? "success" : "neutral"}
+          >
             {voiceAvailable === null ? t.checking : voiceAvailable ? t.available : t.unavailable}
-          </span>
+          </StatusPill>
         </Row>
       </Section>
-    </>
+    </div>
   );
 }

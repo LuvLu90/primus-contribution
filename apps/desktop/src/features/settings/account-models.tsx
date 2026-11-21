@@ -7,7 +7,17 @@ import { type AuthStatus, getPlatform, type ModelSummary, type ModelsInfo } from
 import { strings } from "@/lib/strings";
 import { useModelsInfo } from "@/lib/use-models";
 import { cn } from "@/lib/utils";
-import { Row, Section } from "./settings-section";
+import { type AgentModelMode, useSettingsStore } from "@/stores/settings-store";
+import {
+  Row,
+  Section,
+  SettingsAlert,
+  SettingsSelect,
+  StatusPill,
+  settingsButtonClass,
+  settingsDangerButtonClass,
+  settingsPrimaryButtonClass,
+} from "./settings-section";
 
 const ta = strings.settings.account;
 const tm = strings.settings.models;
@@ -26,7 +36,7 @@ export function errorText(e: unknown, fallback: string): string {
 
 export function Badge({ children }: { children: string }) {
   return (
-    <span className="rounded-full bg-black/[0.05] px-2 py-0.5 text-2xs text-muted dark:bg-white/[0.08]">
+    <span className="inline-flex items-center rounded-md bg-black/[0.045] px-1.5 py-0.5 text-2xs font-medium text-muted tabular-nums ring-1 ring-inset ring-black/[0.04] dark:bg-white/[0.07] dark:ring-white/[0.06]">
       {children}
     </span>
   );
@@ -49,18 +59,17 @@ export function AccountSettings() {
     };
   }, []);
 
-  if (!status && error)
+  if (!status && error) return <SettingsAlert message={error} />;
+  if (!status)
     return (
-      <p role="alert" className="text-sm text-danger">
-        {error}
-      </p>
+      <div className="flex items-center gap-2 px-1 text-sm text-muted">
+        <Icon name="loader" size="sm" className="session-spinner shrink-0" />
+        <span>{ta.loading}</span>
+      </div>
     );
-  if (!status) return <p className="text-sm text-muted">{ta.loading}</p>;
 
   const account = status.loggedIn ? status.account : null;
   const canLogout = status.loggedIn && status.loginAvailable;
-  const actionClass =
-    "shrink-0 rounded-full px-3 py-1 text-sm ring-1 ring-border transition-colors enabled:hover:bg-hover disabled:text-muted";
 
   async function changeLogin(action: "login" | "logout") {
     setBusy(true);
@@ -91,15 +100,27 @@ export function AccountSettings() {
   }
 
   return (
-    <>
-      <Section title={ta.title}>
+    <div className="flex flex-col gap-7">
+      <Section title={ta.title} description={ta.localModeNote}>
         <Row label={ta.avatar} hint={ta.notProvided}>
-          <span className="grid size-9 shrink-0 place-items-center rounded-full bg-hover text-muted">
+          <span
+            className={cn(
+              "grid size-11 shrink-0 place-items-center rounded-full ring-1 ring-inset transition-colors",
+              status.loggedIn
+                ? "bg-fg/[0.08] text-fg ring-black/[0.08] dark:bg-white/[0.12] dark:ring-white/[0.12]"
+                : "bg-black/[0.04] text-muted ring-black/[0.06] dark:bg-white/[0.06] dark:ring-white/[0.08]",
+            )}
+          >
             <Icon name="user" size="lg" />
           </span>
         </Row>
         <Row label={ta.name}>
-          <span className="min-w-0 break-all text-right text-sm text-muted">
+          <span
+            className={cn(
+              "min-w-0 break-all text-right text-sm",
+              account?.name ? "font-medium text-fg" : "text-muted",
+            )}
+          >
             {account?.name || ta.notProvided}
           </span>
         </Row>
@@ -107,9 +128,9 @@ export function AccountSettings() {
           <span className="text-sm text-muted">{ta.notProvided}</span>
         </Row>
         <Row label={ta.status}>
-          <span role="status" className="text-sm text-muted">
+          <StatusPill role="status" tone={status.loggedIn ? "success" : "neutral"}>
             {status.loggedIn ? ta.signedIn : ta.notSignedIn}
-          </span>
+          </StatusPill>
         </Row>
       </Section>
       <Section title={ta.actions}>
@@ -119,14 +140,15 @@ export function AccountSettings() {
               type="button"
               disabled={busy || !status.loginAvailable}
               onClick={() => void changeLogin("login")}
-              className={actionClass}
+              className={settingsPrimaryButtonClass}
             >
+              <Icon name="log-in" size="xs" />
               {ta.login}
             </button>
           </Row>
         )}
         <Row label={ta.switchAccount} hint={ta.loginUnavailable}>
-          <button type="button" disabled className={actionClass}>
+          <button type="button" disabled className={settingsButtonClass}>
             {ta.switchAccount}
           </button>
         </Row>
@@ -135,24 +157,21 @@ export function AccountSettings() {
             type="button"
             disabled={busy || !canLogout}
             onClick={() => void changeLogin("logout")}
-            className={actionClass}
+            className={settingsDangerButtonClass}
           >
+            <Icon name="log-out" size="xs" />
             {ta.logout}
           </button>
         </Row>
       </Section>
-      {error && (
-        <p role="alert" className="text-sm text-danger">
-          {error}
-        </p>
-      )}
-    </>
+      {error && <SettingsAlert message={error} />}
+    </div>
   );
 }
 
 function ModelDetail({ model }: { model: ModelSummary }) {
   return (
-    <span className="mt-1 flex flex-wrap items-center gap-1.5">
+    <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
       <Badge>{tm.protocols[model.api] ?? model.api}</Badge>
       <Badge>{`${tm.context} ${formatTokens(model.contextWindow)}`}</Badge>
       <Badge>{`${tm.maxOutput} ${formatTokens(model.maxTokens)}`}</Badge>
@@ -166,6 +185,8 @@ function ModelDetail({ model }: { model: ModelSummary }) {
 // 随 models_watch 更新：添加、修改渠道或后台获取到模型列表后立即刷新。
 export function ModelSettings() {
   const { info, error: loadError, update } = useModelsInfo();
+  const modelMode = useSettingsStore((s) => s.agentModelMode);
+  const patchSettings = useSettingsStore((s) => s.patch);
   const error = loadError ? errorText(loadError, tm.loadFailed) : null;
   // 改选与刷新的失败分别用各自的标题
   const [actionError, setActionError] = useState<{ title: string; message: string } | null>(null);
@@ -190,39 +211,36 @@ export function ModelSettings() {
 
   if (!info) {
     return error ? (
-      <p className="text-sm text-danger">{error}</p>
+      <SettingsAlert message={error} />
     ) : (
-      <p className="text-sm text-muted">{tm.loading}</p>
+      <div className="flex items-center gap-2 px-1 text-sm text-muted">
+        <Icon name="loader" size="sm" className="session-spinner shrink-0" />
+        <span>{tm.loading}</span>
+      </div>
     );
   }
 
   const nameOf = (key: string | null) => info.models.find((m) => m.key === key)?.name ?? key ?? "—";
 
   return (
-    <div className="flex flex-col gap-6">
-      {info.error && (
-        <div role="alert" className="rounded-2xl px-4 py-3 text-sm ring-1 ring-danger/40">
-          <p className="font-medium text-danger">{tm.configError}</p>
-          <p className="mt-1 text-muted">{info.error}</p>
-        </div>
-      )}
-      {actionError && (
-        <div role="alert" className="rounded-2xl px-4 py-3 text-sm ring-1 ring-danger/40">
-          <p className="font-medium text-danger">{actionError.title}</p>
-          <p className="mt-1 text-muted">{actionError.message}</p>
-        </div>
-      )}
+    <div className="flex flex-col gap-7">
+      {info.error && <SettingsAlert title={tm.configError} message={info.error} />}
+      {actionError && <SettingsAlert title={actionError.title} message={actionError.message} />}
       <Section title={tm.defaultModel}>
         <Row label={agent.modelMode} hint={agent.modelHint}>
-          <select
+          <SettingsSelect
             aria-label={agent.modelMode}
-            value="manual"
-            className="max-w-full rounded-lg border border-border bg-surface px-3 py-1.5 text-sm"
-            disabled
+            value={modelMode}
+            onChange={(event) => {
+              const next = event.currentTarget.value as AgentModelMode;
+              if (next === "automatic" || next === "manual") {
+                void patchSettings({ agentModelMode: next });
+              }
+            }}
           >
             <option value="automatic">{agent.modelAutomatic}</option>
             <option value="manual">{agent.modelManual}</option>
-          </select>
+          </SettingsSelect>
         </Row>
         <p id={labelId} className="sr-only">
           {tm.defaultModel}
@@ -232,10 +250,10 @@ export function ModelSettings() {
           value={info.defaultModel ?? undefined}
           onValueChange={choose}
           disabled={busy}
-          className="flex flex-col"
+          className="flex flex-col divide-y divide-black/[0.045] dark:divide-white/[0.05]"
         >
           {info.models.length === 0 && !info.error && (
-            <p className="px-4 pt-1 pb-3 text-sm text-muted">{tm.noModels}</p>
+            <p className="px-4 py-4 text-xs text-muted">{tm.noModels}</p>
           )}
           {info.models.map((model) => (
             <RadioGroup.Item
@@ -243,15 +261,15 @@ export function ModelSettings() {
               value={model.key}
               aria-label={model.name}
               className={cn(
-                "flex items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-hover",
+                "group flex cursor-pointer items-start gap-3 px-4 py-3.5 text-left transition-colors duration-150 hover:bg-black/[0.025] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/45 data-[state=checked]:bg-black/[0.028] dark:hover:bg-white/[0.03] dark:data-[state=checked]:bg-white/[0.04]",
                 "disabled:cursor-not-allowed disabled:opacity-60",
               )}
             >
-              <span className="mt-1 flex size-4 shrink-0 items-center justify-center rounded-full ring-1 ring-border">
-                <RadioGroup.Indicator className="size-2 rounded-full bg-accent" />
+              <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full ring-1 ring-inset ring-black/[0.18] transition-colors group-data-[state=checked]:ring-select dark:ring-white/[0.22] dark:group-data-[state=checked]:ring-select">
+                <RadioGroup.Indicator className="size-2 rounded-full bg-select" />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block text-sm">{model.name}</span>
+                <span className="block text-sm font-medium text-fg">{model.name}</span>
                 <ModelDetail model={model} />
               </span>
             </RadioGroup.Item>
@@ -260,12 +278,12 @@ export function ModelSettings() {
       </Section>
       <Section title={tm.background}>
         <Row label={nameOf(info.compactionModel)}>
-          <button
-            type="button"
-            onClick={refresh}
-            disabled={busy}
-            className="shrink-0 rounded-full px-3 py-1 text-sm ring-1 ring-border transition-colors enabled:hover:bg-hover disabled:opacity-50"
-          >
+          <button type="button" onClick={refresh} disabled={busy} className={settingsButtonClass}>
+            <Icon
+              name={busy ? "loader" : "refresh"}
+              size="xs"
+              className={busy ? "session-spinner" : undefined}
+            />
             {busy ? tm.refreshing : tm.refresh}
           </button>
         </Row>

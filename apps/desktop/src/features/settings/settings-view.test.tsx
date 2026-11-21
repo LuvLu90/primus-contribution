@@ -5,6 +5,7 @@ import { type Platform, type SessionSummary, setPlatformForTesting } from "@/lib
 import { strings } from "@/lib/strings";
 import { initialAppState, useAppStore } from "@/stores/app-store";
 import { initialAppearance, useAppearanceStore } from "@/stores/appearance-store";
+import { resetSettingsStoreForTesting, useSettingsStore } from "@/stores/settings-store";
 import { groupFromSearch, SettingsView } from "./settings-view";
 
 const t = strings.settings;
@@ -55,6 +56,7 @@ describe("设置页", () => {
   afterEach(() => {
     useAppearanceStore.setState(initialAppearance);
     useAppStore.setState(initialAppState);
+    resetSettingsStoreForTesting();
     setPlatformForTesting(undefined);
   });
 
@@ -97,7 +99,23 @@ describe("设置页", () => {
     window.history.replaceState(null, "", "/");
   });
 
-  it("Agent 页复用聊天权限偏好，并标明尚未开放的全局选项", () => {
+  it("Agent 页读写聊天权限偏好、回复风格、默认语言、计划模式与自动压缩", async () => {
+    const settingsSet = vi.fn(async () => {});
+    setPlatformForTesting({
+      settingsGet: async () => ({}),
+      settingsSet,
+      speechAvailable: async () => true,
+      providersList: async () => [],
+      modelsGet: async () => ({
+        version: 1,
+        models: [],
+        defaultModel: null,
+        compactionModel: null,
+        titleModel: null,
+        error: null,
+      }),
+      modelsWatch: async () => {},
+    } as unknown as Platform);
     expect(groupFromSearch("?group=models")).toBe("agent");
     render(<SettingsView />);
     fireEvent.click(screen.getByRole("button", { name: t.groups.agent }));
@@ -107,9 +125,29 @@ describe("设置页", () => {
     expect(useAppStore.getState().permissionMode).toBe("edit");
     fireEvent.change(execution, { target: { value: "ask" } });
     expect(useAppStore.getState().permissionMode).toBe("ask");
-    for (const name of [t.agent.replyStyle, t.agent.replyLanguage, t.agent.plan]) {
-      expect(screen.getByRole<HTMLSelectElement>("combobox", { name }).disabled).toBe(true);
-    }
+
+    const styleSelect = screen.getByRole<HTMLSelectElement>("combobox", {
+      name: t.agent.replyStyle,
+    });
+    expect(styleSelect.disabled).toBe(false);
+    fireEvent.change(styleSelect, { target: { value: "简洁" } });
+    expect(useSettingsStore.getState().agentReplyStyle).toBe("简洁");
+
+    const langSelect = screen.getByRole<HTMLSelectElement>("combobox", {
+      name: t.agent.replyLanguage,
+    });
+    expect(langSelect.disabled).toBe(false);
+    fireEvent.change(langSelect, { target: { value: "English" } });
+    expect(useSettingsStore.getState().agentReplyLanguage).toBe("English");
+
+    const planSelect = screen.getByRole<HTMLSelectElement>("combobox", { name: t.agent.plan });
+    expect(planSelect.disabled).toBe(false);
+    fireEvent.change(planSelect, { target: { value: "开启" } });
+    expect(useSettingsStore.getState().agentPlanMode).toBe("开启");
+
+    const compactionSwitch = screen.getByRole("switch", { name: t.agent.autoCompaction });
+    fireEvent.click(compactionSwitch);
+    await waitFor(() => expect(settingsSet).toHaveBeenCalledWith({ autoCompaction: false }));
   });
 
   it("归档页仅展示归档命中，恢复直接保存，删除需要确认", async () => {
@@ -190,12 +228,21 @@ describe("设置页", () => {
     expect(sessionDelete).toHaveBeenCalledWith(other.path);
   });
 
-  it("启动与通知开关在接入 settings.toml 前禁用；未实现的“恢复工作区”不显示", () => {
+  it("启动与通知开关通过 settingsSet 持久化保存；未实现的“恢复工作区”不显示", async () => {
+    const settingsSet = vi.fn(async () => {});
+    setPlatformForTesting({
+      settingsGet: async () => ({ minimizeToTray: false, notifyEnabled: true }),
+      settingsSet,
+    } as unknown as Platform);
     render(<SettingsView />);
     expect(screen.queryByRole("switch", { name: /工作区/ })).toBeNull();
-    for (const name of [t.minimizeToTray, t.notifyEnabled]) {
-      expect((screen.getByRole("switch", { name }) as HTMLInputElement).disabled).toBe(true);
-    }
+    const traySwitch = screen.getByRole("switch", { name: t.minimizeToTray }) as HTMLInputElement;
+    const notifySwitch = screen.getByRole("switch", { name: t.notifyEnabled }) as HTMLInputElement;
+    expect(traySwitch.disabled).toBe(false);
+    expect(notifySwitch.disabled).toBe(false);
+    fireEvent.click(traySwitch);
+    await waitFor(() => expect(settingsSet).toHaveBeenCalledWith({ minimizeToTray: true }));
+    expect(useSettingsStore.getState().minimizeToTray).toBe(true);
   });
 
   it("主题选项写入外观设置", () => {
@@ -212,8 +259,29 @@ describe("设置页", () => {
     render(<SettingsView />);
     const slider = screen.getByRole("slider", { name: t.glass }) as HTMLInputElement;
     expect(slider.value).toBe("60");
+    expect(screen.getByText("60%")).toBeTruthy();
     fireEvent.change(slider, { target: { value: "20" } });
     expect(useAppearanceStore.getState().glassTint).toBe(0.2);
+    expect(screen.getByText("20%")).toBeTruthy();
+  });
+
+  it("侧栏支持方向键与 Home/End 切换分组并展示分组说明", () => {
+    render(<SettingsView />);
+    const general = screen.getByRole("button", { name: t.groups.general });
+    expect(screen.getByText(t.groupDescriptions.general)).toBeTruthy();
+
+    fireEvent.keyDown(general, { key: "ArrowDown" });
+    const account = screen.getByRole("button", { name: t.groups.account });
+    expect(account.getAttribute("aria-current")).toBe("page");
+    expect(screen.getByText(t.groupDescriptions.account)).toBeTruthy();
+
+    fireEvent.keyDown(account, { key: "End" });
+    const about = screen.getByRole("button", { name: t.groups.about });
+    expect(about.getAttribute("aria-current")).toBe("page");
+    expect(screen.getByText(t.groupDescriptions.about)).toBeTruthy();
+
+    fireEvent.keyDown(about, { key: "Home" });
+    expect(general.getAttribute("aria-current")).toBe("page");
   });
 
   it("返回按钮回到主界面", () => {

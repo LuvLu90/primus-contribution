@@ -20,14 +20,21 @@ import {
 import { tabsForDeletion, useSessionsStore } from "@/features/sessions/sessions-store";
 import { getPlatform, type SessionSummary, type WorkspaceInfo } from "@/lib/platform";
 import { strings } from "@/lib/strings";
-import { Row, Section } from "./settings-section";
+import { cn } from "@/lib/utils";
+import {
+  Row,
+  Section,
+  SettingsAlert,
+  settingsButtonClass,
+  settingsDangerButtonClass,
+  settingsInputClass,
+} from "./settings-section";
 
 const t = strings.settings.archived;
 /** `sessionSearch` 的返回上限（含未归档会话） */
 const SEARCH_LIMIT = 50;
 const sessionText = strings.sessions;
-const actionClass =
-  "rounded-lg border border-border px-2.5 py-1.5 text-sm enabled:hover:bg-hover disabled:text-muted";
+const actionClass = settingsButtonClass;
 
 export function ArchivedSettings() {
   const router = useRouter();
@@ -60,6 +67,7 @@ export function ArchivedSettings() {
   }, []);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SessionSummary[] | null>(null);
+  const [hasArchivedList, setHasArchivedList] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -73,9 +81,24 @@ export function ArchivedSettings() {
     const timer = setTimeout(async () => {
       const keyword = query.trim();
       if (!keyword) {
-        setResults(null);
         setTruncated(false);
-        setSearching(false);
+        try {
+          const platform = await getPlatform();
+          if (typeof platform.sessionListArchived === "function") {
+            setSearching(true);
+            const archivedList = await platform.sessionListArchived(project || null);
+            if (active) {
+              setHasArchivedList(true);
+              setResults(archivedList.filter((session) => session.archived));
+            }
+          } else if (active) {
+            setResults(null);
+          }
+        } catch {
+          if (active) setResults(null);
+        } finally {
+          if (active) setSearching(false);
+        }
         return;
       }
       setResults(null);
@@ -154,32 +177,48 @@ export function ArchivedSettings() {
       );
     });
   const menuItemClass =
-    "relative mx-2 flex cursor-default items-center rounded-lg py-2 pl-8 pr-3 text-sm outline-none data-[highlighted]:bg-hover data-[disabled]:text-muted";
-  const triggerClass =
-    "flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-sm hover:bg-hover";
+    "relative mx-2 flex cursor-default select-none items-center rounded-[10px] py-2 pl-8 pr-3 text-sm outline-none transition-colors data-[highlighted]:bg-black/8 data-[disabled]:text-muted dark:data-[highlighted]:bg-white/12";
+  const triggerClass = cn(settingsButtonClass, "h-9 px-3 font-normal data-[state=open]:bg-hover");
 
   return (
-    <>
+    <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-2">
-        <input
-          type="search"
-          aria-label={t.search}
-          placeholder={t.search}
-          value={query}
-          disabled={busy}
-          onChange={(event) => setQuery(event.currentTarget.value)}
-          className="min-w-40 flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm"
-        />
+        <div className="relative flex min-w-48 flex-1 items-center">
+          <Icon
+            name="search"
+            size="sm"
+            className="pointer-events-none absolute left-3 text-muted"
+          />
+          <input
+            type="search"
+            aria-label={t.search}
+            placeholder={t.search}
+            value={query}
+            disabled={busy}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            className={cn(settingsInputClass, "h-9 pl-9", query && "pr-8")}
+          />
+          {query && !busy && (
+            <button
+              type="button"
+              aria-label={t.clearSearch}
+              onClick={() => setQuery("")}
+              className="absolute right-1.5 inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
+            >
+              <Icon name="x" size="xs" />
+            </button>
+          )}
+        </div>
 
         <GlassPopover>
           <GlassPopoverTrigger asChild>
             <button type="button" className={triggerClass}>
-              <Icon name="ask" size="sm" />
+              <Icon name="filter" size="sm" className="text-muted" />
               {kind === "local" ? t.local : t.allChats}
-              <Icon name="chevron-down" size="sm" />
+              <Icon name="chevron-down" size="xs" className="text-muted" />
             </button>
           </GlassPopoverTrigger>
-          <GlassPopoverContent align="end">
+          <GlassPopoverContent align="end" tint={0.78}>
             <DropdownMenu.Label className="px-5 py-1 text-xs text-muted">
               {t.type}
             </DropdownMenu.Label>
@@ -230,16 +269,16 @@ export function ArchivedSettings() {
         <GlassPopover>
           <GlassPopoverTrigger asChild>
             <button type="button" className={triggerClass}>
-              <Icon name="folder" size="sm" />
+              <Icon name="folder" size="sm" className="text-muted" />
               {!project
                 ? t.allProjects
                 : project === defaultWorkspace
                   ? t.chats
                   : projectNames.get(project) || project}
-              <Icon name="chevron-down" size="sm" />
+              <Icon name="chevron-down" size="xs" className="text-muted" />
             </button>
           </GlassPopoverTrigger>
-          <GlassPopoverContent align="end">
+          <GlassPopoverContent align="end" tint={0.78}>
             <DropdownMenu.RadioGroup value={project} onValueChange={setProject}>
               <DropdownMenu.RadioItem value="" className={menuItemClass}>
                 <DropdownMenu.ItemIndicator className="absolute left-2">
@@ -276,33 +315,49 @@ export function ArchivedSettings() {
         </GlassPopover>
       </div>
       {projectsFailed && (
-        <p role="status" className="text-xs text-muted">
+        <p role="status" className="px-1 text-xs text-muted">
           {t.projectsFailed}
         </p>
       )}
 
-      <p className="text-xs text-muted">{t.hint}</p>
-      {error && (
-        <p role="alert" className="text-sm text-danger">
-          {error}
-        </p>
-      )}
-      {notice && (
-        <p role="status" className="text-sm text-muted">
-          {notice}
-        </p>
-      )}
+      {error && <SettingsAlert message={error} />}
+      {notice && <SettingsAlert tone="neutral" role="status" message={notice} />}
       {searching && results === null && (
-        <p role="status" className="text-sm">
-          {sessionText.searching}
-        </p>
+        <div
+          role="status"
+          className="settings-card flex items-center justify-center gap-2 rounded-2xl px-4 py-10 text-sm text-muted"
+        >
+          <Icon name="loader" size="sm" className="session-spinner shrink-0" />
+          <span>{sessionText.searching}</span>
+        </div>
       )}
       {truncated && results !== null && (
-        <p role="status" className="text-sm text-muted">
+        <p role="status" className="px-1 text-xs text-muted">
           {t.truncated}
         </p>
       )}
-      {visible?.length === 0 && <p className="text-sm text-muted">{t.empty}</p>}
+      {!searching && results === null && (
+        <div className="settings-card flex flex-col items-center gap-2 rounded-2xl px-6 py-10 text-center">
+          <span className="grid size-10 place-items-center rounded-xl bg-black/[0.045] text-muted dark:bg-white/[0.06]">
+            <Icon name="archive" size="md" />
+          </span>
+          <p className="text-sm font-medium text-fg">{t.searchPromptTitle}</p>
+          <p className="max-w-md text-xs leading-relaxed text-muted">{t.hint}</p>
+        </div>
+      )}
+      {!searching && visible?.length === 0 && (
+        <div className="settings-card flex flex-col items-center gap-2 rounded-2xl px-6 py-10 text-center">
+          <span className="grid size-10 place-items-center rounded-xl bg-black/[0.045] text-muted dark:bg-white/[0.06]">
+            <Icon name={query.trim() ? "search" : "archive"} size="md" />
+          </span>
+          <p className="text-sm text-muted">
+            {query.trim() || !hasArchivedList ? t.empty : t.emptyList}
+          </p>
+          <p className="max-w-md text-xs text-muted/80">
+            {query.trim() || !hasArchivedList ? t.hint : t.emptyListHint}
+          </p>
+        </div>
+      )}
       {Boolean(visible?.length) && (
         <Section title={strings.settings.groups.archived}>
           {visible?.map((session) => {
@@ -310,6 +365,7 @@ export function ArchivedSettings() {
             return (
               <Row
                 key={session.path}
+                interactive
                 label={title}
                 hint={
                   session.workspace === defaultWorkspace
@@ -342,12 +398,13 @@ export function ArchivedSettings() {
                     className={actionClass}
                     onClick={() => void changeSession(session, false)}
                   >
+                    <Icon name="archive-restore" size="xs" />
                     {t.restore}
                   </button>
                   <button
                     type="button"
                     disabled={busy}
-                    className={`${actionClass} text-danger`}
+                    className={settingsDangerButtonClass}
                     onClick={() => setPendingDelete(session)}
                   >
                     {sessionText.delete}
@@ -370,8 +427,25 @@ export function ArchivedSettings() {
               ? t.standaloneChats
               : projectNames.get(projectSession?.workspace ?? "") || t.project}
           </GlassDialogDescription>
-          <p className="mt-3 break-all text-sm text-muted">{projectSession?.workspace}</p>
-          <div className="mt-4 flex justify-end">
+          <p className="mt-3 rounded-lg bg-black/[0.04] px-3 py-2 font-mono text-xs break-all text-muted dark:bg-white/[0.06]">
+            {projectSession?.workspace}
+          </p>
+          <div className="mt-4 flex justify-end gap-2">
+            {projectSession?.workspace && (
+              <button
+                type="button"
+                className={actionClass}
+                onClick={() => {
+                  const target = projectSession.workspace;
+                  void getPlatform()
+                    .then((p) => p.revealPath?.(target))
+                    .catch(() => {});
+                }}
+              >
+                <Icon name="folder-open" size="xs" />
+                {t.revealFolder}
+              </button>
+            )}
             <GlassDialogClose asChild>
               <button type="button" className={actionClass}>
                 {sessionText.cancel}
@@ -395,7 +469,7 @@ export function ArchivedSettings() {
             </GlassDialogClose>
             <button
               type="button"
-              className={`${actionClass} text-danger`}
+              className={settingsDangerButtonClass}
               onClick={() => pendingDelete && void changeSession(pendingDelete, true)}
             >
               {sessionText.deleteConfirm}
@@ -403,6 +477,6 @@ export function ArchivedSettings() {
           </div>
         </GlassDialogContent>
       </GlassDialog>
-    </>
+    </div>
   );
 }

@@ -1,13 +1,20 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
+import { Icon } from "@/components/icons";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/glass-tabs";
 import { Switch } from "@/components/ui/switch";
 import { useRestartUpdate } from "@/features/update/restart-update";
 import { useUpdateStore } from "@/features/update/update-store";
 import type { UpdateChannel, UpdateStatus } from "@/lib/platform";
 import { strings } from "@/lib/strings";
-import { Row, Section } from "./settings-section";
+import {
+  Row,
+  Section,
+  SettingsAlert,
+  settingsButtonClass,
+  settingsPrimaryButtonClass,
+} from "./settings-section";
 
 const tu = strings.settings.update;
 const CHANNELS: UpdateChannel[] = ["stable", "beta"];
@@ -60,9 +67,12 @@ export function UpdateSettings({
 
   if (!status) {
     return loadError ? (
-      <p className="text-sm text-danger">{loadError || tu.loadFailed}</p>
+      <SettingsAlert message={loadError || tu.loadFailed} />
     ) : (
-      <p className="text-sm text-muted">{tu.loading}</p>
+      <div className="flex items-center gap-2 px-1 text-sm text-muted">
+        <Icon name="loader" size="sm" className="session-spinner shrink-0" />
+        <span>{tu.loading}</span>
+      </div>
     );
   }
 
@@ -88,17 +98,19 @@ export function UpdateSettings({
   };
   const working = status.phase !== "idle";
   const stateText = updateStateText(status, checked);
+  const downloadPercent =
+    status.phase === "downloading" && status.progress?.total
+      ? Math.min(100, Math.floor((status.progress.downloaded / status.progress.total) * 100))
+      : null;
 
   return (
-    <div className="flex flex-col gap-6">
-      {actionError && (
-        <div role="alert" className="rounded-2xl px-4 py-3 text-sm ring-1 ring-danger/40">
-          <p className="text-danger">{actionError}</p>
-        </div>
-      )}
+    <div className="flex flex-col gap-7">
+      {actionError && <SettingsAlert message={actionError} />}
       <Section title={tu.title}>
         <Row label={tu.currentVersion} hint={status.available ? undefined : tu.unavailableHint}>
-          <span className="text-sm text-muted tabular-nums">{status.currentVersion}</span>
+          <span className="inline-flex items-center rounded-md bg-black/[0.045] px-2 py-0.5 font-mono text-xs font-medium text-fg tabular-nums ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.07] dark:ring-white/[0.08]">
+            {status.currentVersion}
+          </span>
         </Row>
         {/* 自动更新与更新通道在紧凑模式（关于页）也保留：应用内没有其他入口能改这两项 */}
 
@@ -137,8 +149,11 @@ export function UpdateSettings({
               restartUpdate.working ||
               (!status.available && !(compact && status.pending))
             }
-            className="shrink-0 rounded-full px-3 py-1 text-sm ring-1 ring-border transition-colors enabled:hover:bg-hover disabled:opacity-50"
+            className={compact && status.pending ? settingsPrimaryButtonClass : settingsButtonClass}
           >
+            {status.phase === "checking" && (
+              <Icon name="loader" size="xs" className="session-spinner shrink-0" />
+            )}
             {status.phase === "checking"
               ? tu.checking
               : compact
@@ -146,10 +161,20 @@ export function UpdateSettings({
                 : tu.checkNow}
           </button>
         </Row>
+        {downloadPercent !== null && (
+          <div className="px-4 py-3">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-track">
+              <div
+                className="h-full rounded-full bg-fg transition-[width] duration-200 ease-out"
+                style={{ width: `${downloadPercent}%` }}
+              />
+            </div>
+          </div>
+        )}
         {compact && restartUpdate.error && (
-          <p role="alert" className="px-4 py-3 text-sm text-danger">
-            {restartUpdate.error}
-          </p>
+          <div className="p-3">
+            <SettingsAlert message={restartUpdate.error} />
+          </div>
         )}
         {!compact && status.pending && (
           <Row
@@ -160,7 +185,7 @@ export function UpdateSettings({
               type="button"
               onClick={restartUpdate.restart}
               disabled={restartUpdate.working}
-              className="shrink-0 rounded-full bg-fg px-3 py-1 text-sm font-medium text-surface transition-opacity enabled:hover:opacity-90 disabled:opacity-50"
+              className={settingsPrimaryButtonClass}
             >
               {installLabel}
             </button>

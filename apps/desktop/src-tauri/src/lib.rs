@@ -6,6 +6,7 @@
 //! 各模块随开发计划逐步实现。
 
 mod account;
+mod app_settings;
 mod attachments;
 mod builtin;
 mod commands;
@@ -32,6 +33,7 @@ mod skills;
 mod supervisor;
 mod tray;
 mod updater;
+mod usage_stats;
 mod vault;
 mod window_placement;
 mod workspaces;
@@ -98,6 +100,8 @@ pub fn run() {
 
     // 最近工作区与信任状态：users/<SID>/app/workspaces.json（第 15.1 节）
     let workspaces_dir = data_paths.app_dir();
+    // App 设置：users/<SID>/app/settings.json（第 18 章）
+    let app_settings = app_settings::AppSettings::load(&workspaces_dir);
     // 内置语音转文字：各模型暂停记录放在 app 目录
     let speech = platform::speech::Speech::new(data_paths.app_dir().join("asr-state.json"));
 
@@ -266,10 +270,15 @@ pub fn run() {
         .manage(sessions::AppSessions::default())
         .manage(preview_protocol::PreviewRoots::default())
         .manage(workspaces::Workspaces::new(&workspaces_dir))
+        .manage(app_settings)
         .manage(model_config)
         .manage(updater)
         .manage(speech)
         .invoke_handler(tauri::generate_handler![
+            commands::app_info,
+            commands::settings_get,
+            commands::settings_set,
+            commands::usage_stats,
             commands::window_set_bounds,
             commands::open_external,
             commands::open_path,
@@ -298,6 +307,7 @@ pub fn run() {
             commands::image_save,
             commands::session_default_workspace,
             commands::session_list,
+            commands::session_list_archived,
             commands::session_search,
             commands::session_watch,
             commands::session_archive,

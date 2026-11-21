@@ -1,5 +1,6 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { type Platform, setPlatformForTesting } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { type ModelCall, UsageSettings } from "./usage-settings";
 
@@ -26,6 +27,10 @@ function call(id: string, days: number, model: string, total: number): ModelCall
 }
 
 describe("用量设置", () => {
+  afterEach(() => {
+    setPlatformForTesting(undefined);
+  });
+
   it("无统计来源时显示空状态，并以浅蓝显示日历", () => {
     render(<UsageSettings />);
 
@@ -95,6 +100,21 @@ describe("用量设置", () => {
     fireEvent.keyDown(screen.getByRole("dialog", { name: t.date }), { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: t.date })).toBeNull();
     expect(table.getByText("Older")).toBeTruthy();
+
+    // 焦点停留在触发按钮上时，全局按 Escape 也应关闭弹层
+    fireEvent.click(screen.getByRole("button", { name: t.time }));
+    expect(screen.getByRole("dialog", { name: t.date })).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: t.date })).toBeNull();
+  });
+
+  it("热力图与模型列使用统一委托悬停提示，不使用原生 title", () => {
+    const { container } = render(<UsageSettings calls={[call("m1", -1, "ModelX", 42)]} />);
+    expect(container.querySelector("[title]")).toBeNull();
+    const modelCell = screen.getByText("ModelX");
+    expect(modelCell.getAttribute("data-tooltip")).toBe("ModelX");
+    const heatmap = within(screen.getByRole("region", { name: t.heatmap }));
+    expect(heatmap.getAllByRole("img")[0]?.getAttribute("data-tooltip")).toBeTruthy();
   });
 
   it("空调用记录的 Token 总量为 0，无来源或 total 未知时保持暂无数据", () => {
@@ -126,6 +146,26 @@ describe("用量设置", () => {
     expect(cell()?.className).toContain("bg-usage-4");
     fireEvent.mouseDown(screen.getByRole("tab", { name: t.metrics.weekly }));
     expect(cell()?.getAttribute("aria-label")).toContain("每周：");
+  });
+
+  it("开启 autoLoad 时自动从平台加载真实会话调用与完成任务统计，并支持手动刷新", async () => {
+    const usageStats = vi.fn(async () => ({
+      calls: [call("real-1", -1, "gemini-4-neon-xhigh", 2400)],
+      completedAt: [todayOffset(-1)],
+    }));
+    setPlatformForTesting({
+      authStatus: async () => ({ loggedIn: false, account: null, loginAvailable: false }),
+      usageStats,
+    } as unknown as Platform);
+
+    render(<UsageSettings autoLoad />);
+    const table = within(await screen.findByRole("table", { name: t.calls }));
+    expect(await table.findByText("gemini-4-neon-xhigh")).toBeTruthy();
+    expect(screen.getAllByText("2,400").length).toBeGreaterThan(0);
+    expect(usageStats).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: t.refresh }));
+    await waitFor(() => expect(usageStats).toHaveBeenCalledTimes(2));
   });
 
   describe("跨过当地午夜", () => {
