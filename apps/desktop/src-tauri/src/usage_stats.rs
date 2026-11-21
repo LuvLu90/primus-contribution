@@ -5,12 +5,12 @@
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::session_index::{parse_iso_millis, session_files};
+use crate::session_index::{is_session_file_name, parse_iso_millis};
 
 /// 最多返回近 366 天内的记录，避免历史累积造成内存膨胀。
 const WINDOW_MS: i64 = 366 * 24 * 60 * 60 * 1000;
@@ -64,7 +64,7 @@ pub(crate) fn collect(sessions_dir: &Path) -> UsageStats {
 }
 
 pub(crate) fn collect_since(sessions_dir: &Path, min_timestamp_ms: i64) -> UsageStats {
-    let files = session_files(sessions_dir).unwrap_or_default();
+    let files = session_files_lenient(sessions_dir);
     let mut calls = Vec::new();
     let mut completed_at = Vec::new();
     for file in files {
@@ -79,6 +79,30 @@ pub(crate) fn collect_since(sessions_dir: &Path, min_timestamp_ms: i64) -> Usage
         calls,
         completed_at,
     }
+}
+
+/// 用量统计专用的遍历：读不了的子目录或目录项单独跳过，其余可读的会话文件照常统计。
+/// 不改共享的 `session_files`：`SessionIndex::sync_all` 依赖它完整枚举才能判断哪些索引可删。
+fn session_files_lenient(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut dirs = vec![dir.to_path_buf()];
+    while let Some(current) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(ty) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if ty.is_dir() {
+                dirs.push(path);
+            } else if ty.is_file() && is_session_file_name(&path) {
+                files.push(path);
+            }
+        }
+    }
+    files
 }
 
 fn parse_session_file(

@@ -112,6 +112,9 @@ function parseRaw(raw: Record<string, unknown>): PersistedSettings {
 }
 
 let settingsRev = 0;
+let pendingSaves = 0;
+const fieldOwner = new Map<string, number>();
+const PERSISTED_KEYS = Object.keys(DEFAULT_PERSISTED_SETTINGS) as (keyof PersistedSettings)[];
 
 export const useSettingsStore = create<SettingsStoreState>()((set, get) => ({
   ...DEFAULT_PERSISTED_SETTINGS,
@@ -142,7 +145,19 @@ export const useSettingsStore = create<SettingsStoreState>()((set, get) => ({
     const prev = get();
     const prevPerm = useAppStore.getState().permissionMode;
     const prevCompact = useAppStore.getState().autoCompaction;
+    // 每个字段记录最近一次写入它的操作；失败时只回滚仍归本次操作所有的字段，
+    // 避免较早请求失败覆盖较晚请求已成功保存的值
+    const owned: Record<string, number> = {};
+    for (const key of Object.keys(partial)) {
+      if ((partial as Record<string, unknown>)[key] === undefined) continue;
+      const v = (fieldOwner.get(key) ?? 0) + 1;
+      fieldOwner.set(key, v);
+      owned[key] = v;
+    }
+    const stillOwns = (key: string) =>
+      owned[key] !== undefined && fieldOwner.get(key) === owned[key];
 
+    pendingSaves++;
     if (Object.keys(persistedPatch).length > 0) {
       set({ ...persistedPatch, saving: true, error: null });
     } else {
@@ -154,26 +169,30 @@ export const useSettingsStore = create<SettingsStoreState>()((set, get) => ({
     try {
       const platform = await getPlatform();
       await platform.settingsSet(partial as Record<string, unknown>);
-      set({ saving: false, error: null });
+      pendingSaves--;
+      set({ saving: pendingSaves > 0 });
     } catch (e) {
+      pendingSaves--;
+      const rollback: Partial<PersistedSettings> = {};
+      for (const key of PERSISTED_KEYS) {
+        if (stillOwns(key)) {
+          (rollback as Record<string, unknown>)[key] = prev[key];
+        }
+      }
       set({
-        minimizeToTray: prev.minimizeToTray,
-        agentModelMode: prev.agentModelMode,
-        agentReplyStyle: prev.agentReplyStyle,
-        agentReplyLanguage: prev.agentReplyLanguage,
-        agentPlanMode: prev.agentPlanMode,
-        advancedEnabled: prev.advancedEnabled,
-        sshServers: prev.sshServers,
-        saving: false,
+        ...rollback,
+        saving: pendingSaves > 0,
         error: e instanceof Error && e.message ? e.message : "保存设置失败",
       });
-      if (permissionMode !== undefined) useAppStore.getState().setPermissionMode(prevPerm);
-      if (autoCompaction !== undefined) useAppStore.getState().setAutoCompaction(prevCompact);
+      if (stillOwns("permissionMode")) useAppStore.getState().setPermissionMode(prevPerm);
+      if (stillOwns("autoCompaction")) useAppStore.getState().setAutoCompaction(prevCompact);
     }
   },
 }));
 
 export function resetSettingsStoreForTesting() {
+  pendingSaves = 0;
+  fieldOwner.clear();
   useSettingsStore.setState({
     ...DEFAULT_PERSISTED_SETTINGS,
     loaded: false,

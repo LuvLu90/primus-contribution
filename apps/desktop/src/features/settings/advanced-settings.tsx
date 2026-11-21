@@ -102,12 +102,15 @@ export function AdvancedSettings({ enabled }: { enabled: boolean }) {
     const host = draft.address.trim() || "localhost";
     const port = draft.port.trim() || "22";
     const cmd = port === "22" ? `ssh ${user}@${host}` : `ssh -p ${port} ${user}@${host}`;
-    try {
-      void navigator.clipboard?.writeText(cmd);
-    } catch {
-      // 忽略剪贴板权限错误
+    const clipboard = navigator.clipboard;
+    if (!clipboard?.writeText) {
+      setNotice(t.copyFailed);
+      return;
     }
-    setNotice(t.copiedCommand.replace("{cmd}", cmd));
+    clipboard.writeText(cmd).then(
+      () => setNotice(t.copiedCommand.replace("{cmd}", cmd)),
+      () => setNotice(t.copyFailed),
+    );
   }
 
   return (

@@ -88,15 +88,11 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, bytes)?;
+    // std::fs::rename 在 Windows 上以 MOVEFILE_REPLACE_EXISTING 替换已有文件；
+    // 失败时保留旧设置文件，只清理临时文件并返回错误
     if let Err(err) = fs::rename(&tmp, path) {
-        // Windows 上目标已存在时 rename 可能失败，回退为删除再重命名
-        if path.exists() {
-            let _ = fs::remove_file(path);
-            fs::rename(&tmp, path)?;
-        } else {
-            let _ = fs::remove_file(&tmp);
-            return Err(err);
-        }
+        let _ = fs::remove_file(&tmp);
+        return Err(err);
     }
     Ok(())
 }

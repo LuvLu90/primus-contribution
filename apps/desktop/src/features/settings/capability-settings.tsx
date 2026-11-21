@@ -87,8 +87,10 @@ export function CapabilitySettings() {
           w.path === path ? { ...w, trusted: nextTrusted, needsTrust: false } : w,
         ),
       );
-      if (currentWorkspace?.path === path) {
-        setGlobalWorkspace({ ...currentWorkspace, trusted: nextTrusted, needsTrust: false });
+      // 请求期间用户可能已切换项目：读取最新全局工作区，只在仍是同一路径时更新
+      const latest = useAppStore.getState().workspace;
+      if (latest?.path === path) {
+        setGlobalWorkspace({ ...latest, trusted: nextTrusted, needsTrust: false });
       }
     } catch {
       // 忽略写入失败
@@ -141,7 +143,7 @@ export function CapabilitySettings() {
             {category === "skills" && <SkillsSettings />}
             {category === "mcp" && <McpSettings />}
             <Section title={t.tabs[category]} description={t.descriptions[category]}>
-              {(choices.length > 0 || path) && (
+              {
                 <Row icon="folder" label={t.workspace} hint={path || t.selectWorkspace}>
                   <div className="flex flex-wrap items-center gap-2">
                     {choices.length > 0 && (
@@ -167,7 +169,7 @@ export function CapabilitySettings() {
                     </button>
                   </div>
                 </Row>
-              )}
+              }
               {path && (
                 <Row icon="shield-check" label={t.trustedSwitch} hint={t.trustedHint}>
                   <Switch

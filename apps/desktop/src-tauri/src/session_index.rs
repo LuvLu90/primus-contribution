@@ -756,7 +756,7 @@ fn remove_db_files(db_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn is_session_file_name(path: &Path) -> bool {
+pub(crate) fn is_session_file_name(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext == "jsonl")
 }
 

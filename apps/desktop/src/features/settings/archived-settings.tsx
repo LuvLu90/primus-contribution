@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { DropdownMenu } from "radix-ui";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
 import {
   GlassDialog,
@@ -75,6 +75,8 @@ export function ArchivedSettings() {
 
   const [searching, setSearching] = useState(false);
   const [truncated, setTruncated] = useState(false);
+  // 已恢复或删除的会话：操作完成前发起、之后才返回的查询可能仍带着它们，写回列表前剔除
+  const removedPaths = useRef(new Set<string>());
 
   useEffect(() => {
     let active = true;
@@ -89,7 +91,11 @@ export function ArchivedSettings() {
             const archivedList = await platform.sessionListArchived(project || null);
             if (active) {
               setHasArchivedList(true);
-              setResults(archivedList.filter((session) => session.archived));
+              setResults(
+                archivedList.filter(
+                  (session) => session.archived && !removedPaths.current.has(session.path),
+                ),
+              );
             }
           } else if (active) {
             setResults(null);
@@ -111,7 +117,11 @@ export function ArchivedSettings() {
         const matches = await platform.sessionSearch(project || null, keyword);
         if (active) {
           setTruncated(matches.length >= SEARCH_LIMIT);
-          setResults(matches.filter((session) => session.archived));
+          setResults(
+            matches.filter(
+              (session) => session.archived && !removedPaths.current.has(session.path),
+            ),
+          );
         }
       } catch {
         if (active) setError(sessionText.searchFailed);
@@ -140,6 +150,7 @@ export function ArchivedSettings() {
       } else {
         await platform.sessionArchive(session.path, false);
       }
+      removedPaths.current.add(session.path);
       setResults((current) => current?.filter((item) => item.path !== session.path) ?? null);
       setNotice(remove ? t.deleted : t.restored);
     } catch {

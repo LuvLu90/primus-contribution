@@ -1049,6 +1049,7 @@ export const strings = {
       delete: "删除",
       copyCommand: "复制连接命令",
       copiedCommand: "已复制 SSH 命令：{cmd}",
+      copyFailed: "复制失败，请手动复制 SSH 命令",
       login: "登录",
       unavailable: "SSH 连接暂不可用，需要接入安全认证与连接服务。",
       runtimeTitle: "数据与运行环境",
