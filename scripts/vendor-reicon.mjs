@@ -85,7 +85,6 @@ export const ICONS = {
   moon: { source: "Moon" },
   monitor: { source: "Monitor" },
   layers: { source: "Layers" },
-  globe: { source: "Globe" },
   window: { source: "Window" },
   bell: { source: "Bell" },
   calendar: { source: "Calendar" },
